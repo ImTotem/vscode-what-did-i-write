@@ -4,6 +4,7 @@ import { CacheStore } from './analysis/cacheStore.js';
 import { RepositoryRegistry, type RegistryOperation } from './extension/repositoryRegistry.js';
 import { GitCommandError } from './git/gitRunner.js';
 import { MyCodeDecorationProvider } from './ui/fileDecorations.js';
+import { EditorOwnershipController } from './ui/editorOwnership.js';
 import { fileUri, MyCodeTreeProvider, type MyCodeNode } from './ui/myCodeTree.js';
 import { RefreshController } from './ui/refreshController.js';
 import { StatusController } from './ui/statusController.js';
@@ -25,6 +26,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const refreshController = new RefreshController(registry, { onError: reportError });
   const decorationProvider = new MyCodeDecorationProvider(registry);
   const treeProvider = new MyCodeTreeProvider(registry);
+  const editorOwnership = new EditorOwnershipController(registry);
   statusController = new StatusController(registry, statusItem, {
     showWarning: (message, ...actions) => vscode.window.showWarningMessage(message, ...actions),
     showOutput: () => output.show(),
@@ -41,11 +43,13 @@ export function activate(context: vscode.ExtensionContext): void {
     statusController,
     decorationProvider,
     treeProvider,
+    editorOwnership,
     vscode.window.registerFileDecorationProvider(decorationProvider),
     vscode.window.registerTreeDataProvider('myCode.explorer', treeProvider),
     vscode.commands.registerCommand('myCode.refresh', () => refreshController.refreshAll()),
     vscode.commands.registerCommand('myCode.showOutput', () => output.show()),
     vscode.commands.registerCommand('myCode.retryIdentity', () => refreshController.retryIdentity()),
+    vscode.commands.registerCommand('myCode.toggleLineBackground', () => editorOwnership.toggleLineBackground()),
     vscode.commands.registerCommand('myCode.openFile', (node: MyCodeNode) => openFile(node)),
     vscode.commands.registerCommand('myCode.showFileHistory', (node: MyCodeNode) => showFileHistory(node)),
     vscode.workspace.onDidChangeWorkspaceFolders(() => {

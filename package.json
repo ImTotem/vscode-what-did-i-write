@@ -31,8 +31,22 @@
       {
         "command": "myCode.showFileHistory",
         "title": "My Code: Show File History"
+      },
+      {
+        "command": "myCode.toggleLineBackground",
+        "title": "My Code: Toggle Line Background"
       }
     ],
+    "configuration": {
+      "title": "My Code",
+      "properties": {
+        "myCode.editor.lineBackground": {
+          "type": "boolean",
+          "default": false,
+          "description": "Highlight your owned lines with a subtle background color."
+        }
+      }
+    },
     "views": {
       "explorer": [
         {
@@ -50,6 +64,12 @@
         {
           "command": "myCode.showFileHistory",
           "when": "view == myCode.explorer && viewItem == myCode.pastFile"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "myCode.toggleLineBackground",
+          "group": "navigation"
         }
       ]
     }
