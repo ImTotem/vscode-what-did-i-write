@@ -3,10 +3,11 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 import type { CacheStore } from '../analysis/cacheStore.js';
 import {
   RepositoryAnalyzer,
+  type AnalysisPriority,
   type AnalyzerDisposable,
   type RepositoryAccess as AnalyzerRepositoryAccess
 } from '../analysis/repositoryAnalyzer.js';
-import type { RepositorySnapshot } from '../core/model.js';
+import type { FileRecord, RepositorySnapshot } from '../core/model.js';
 import { GitRunner } from '../git/gitRunner.js';
 import type { WorkingChange } from '../git/parsers.js';
 import { GitRepository, type RepositoryFingerprint } from '../git/repository.js';
@@ -23,6 +24,7 @@ export interface RepositoryAccess extends AnalyzerRepositoryAccess {
 export interface AnalyzerAccess {
   initialize(): Promise<void>;
   refresh(reason: string, paths?: readonly string[]): Promise<void>;
+  ensureFile(relativePath: string, priority: AnalysisPriority): Promise<FileRecord | undefined>;
   getSnapshot(): RepositorySnapshot;
   onDidChange(listener: (snapshot: RepositorySnapshot) => void): AnalyzerDisposable;
   dispose(): void;

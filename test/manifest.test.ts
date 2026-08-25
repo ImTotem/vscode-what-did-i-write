@@ -9,6 +9,7 @@ const manifest = JSON.parse(readFileSync('package.json', 'utf8')) as {
   readonly activationEvents?: readonly string[];
   readonly contributes?: {
     readonly commands?: readonly { readonly command: string; readonly title: string }[];
+    readonly views?: { readonly explorer?: readonly { readonly id: string; readonly name: string }[] };
   };
 };
 
@@ -25,7 +26,15 @@ describe('extension manifest', () => {
     expect(commands.map(({ command }) => command)).toEqual(expect.arrayContaining([
       'myCode.refresh',
       'myCode.showOutput',
-      'myCode.retryIdentity'
+      'myCode.retryIdentity',
+      'myCode.openFile',
+      'myCode.showFileHistory'
+    ]));
+  });
+
+  it('contributes the MY CODE Explorer view', () => {
+    expect(manifest.contributes?.views?.explorer).toEqual(expect.arrayContaining([
+      { id: 'myCode.explorer', name: 'MY CODE' }
     ]));
   });
 });

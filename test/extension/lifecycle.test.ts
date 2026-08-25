@@ -372,6 +372,7 @@ function fakeAnalyzer(root: string, initialize = vi.fn(async () => undefined)) {
   return {
     initialize,
     refresh: vi.fn(async () => undefined),
+    ensureFile: vi.fn(async () => undefined),
     getSnapshot: () => current,
     onDidChange: (listener: (value: RepositorySnapshot) => void) => {
       listeners.add(listener);

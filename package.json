@@ -23,8 +23,24 @@
       {
         "command": "myCode.retryIdentity",
         "title": "My Code: Retry"
+      },
+      {
+        "command": "myCode.openFile",
+        "title": "My Code: Open File"
+      },
+      {
+        "command": "myCode.showFileHistory",
+        "title": "My Code: Show File History"
       }
-    ]
+    ],
+    "views": {
+      "explorer": [
+        {
+          "id": "myCode.explorer",
+          "name": "MY CODE"
+        }
+      ]
+    }
   },
   "scripts": {
     "check": "tsc --noEmit",
