@@ -40,6 +40,7 @@ export class EditorOwnershipController implements vscode.Disposable {
   private workingDecoration: vscode.TextEditorDecorationType;
   private readonly generations = new Map<string, number>();
   private readonly dirtyDocumentUris = new Set<string>();
+  private readonly pendingSaveRefreshes = new Map<string, number>();
   private readonly subscriptions: vscode.Disposable[];
   private scheduled = false;
   private disposed = false;
@@ -87,6 +88,7 @@ export class EditorOwnershipController implements vscode.Disposable {
     this.workingDecoration.dispose();
     this.generations.clear();
     this.dirtyDocumentUris.clear();
+    this.pendingSaveRefreshes.clear();
   }
 
   private scheduleRefresh(): void {
@@ -106,7 +108,7 @@ export class EditorOwnershipController implements vscode.Disposable {
     this.generations.set(key, generation);
     this.clear(editor);
 
-    if (this.dirtyDocumentUris.has(key)) return;
+    if (this.dirtyDocumentUris.has(key) || this.pendingSaveRefreshes.has(key)) return;
 
     const repository = this.registry.findByUri(document.uri);
     if (repository === undefined || repository.state !== 'ready') return;
@@ -134,6 +136,7 @@ export class EditorOwnershipController implements vscode.Disposable {
     if (this.disposed || !isSourceUri(uri)) return;
     const key = uri.toString();
     this.dirtyDocumentUris.add(key);
+    this.pendingSaveRefreshes.delete(key);
     this.generations.set(key, (this.generations.get(key) ?? 0) + 1);
     for (const editor of vscode.window.visibleTextEditors) {
       if (editor.document.uri.toString() === key) this.clear(editor);
@@ -142,8 +145,23 @@ export class EditorOwnershipController implements vscode.Disposable {
 
   private resumeUri(uri: vscode.Uri): void {
     if (this.disposed || !isSourceUri(uri)) return;
-    this.dirtyDocumentUris.delete(uri.toString());
-    void this.refreshUri(uri);
+    const key = uri.toString();
+    this.dirtyDocumentUris.delete(key);
+    const repository = this.registry.findByUri(uri);
+    const path = repository === undefined || repository.state !== 'ready'
+      ? undefined
+      : workspaceRelativePath(repository.root, uri.fsPath);
+    if (repository === undefined || path === undefined) return;
+    const token = (this.pendingSaveRefreshes.get(key) ?? 0) + 1;
+    this.pendingSaveRefreshes.set(key, token);
+    void repository.analyzer.refresh('working-tree', [path]).then(
+      () => {
+        if (this.disposed || this.pendingSaveRefreshes.get(key) !== token) return;
+        this.pendingSaveRefreshes.delete(key);
+        void this.refreshUri(uri);
+      },
+      () => undefined
+    );
   }
 
   private clear(editor: vscode.TextEditor): void {

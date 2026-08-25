@@ -139,10 +139,17 @@ describe('EditorOwnershipController', () => {
   });
 
   it('keeps dirty buffers clear through registry and visible-editor refreshes until save analysis resolves', async () => {
-    const current = record([{ start: 0, endExclusive: 2, commit: committed, uncommitted: false }]);
-    const saved = deferred<FileRecord | undefined>();
-    const registry = fakeRegistry(current, Promise.resolve(current));
-    registry.entry.analyzer.ensureFile.mockResolvedValueOnce(current).mockReturnValueOnce(saved.promise);
+    const old = record([{ start: 0, endExclusive: 2, commit: committed, uncommitted: false }]);
+    const fresh = record([{ start: 2, endExclusive: 3, commit: undefined, uncommitted: true }]);
+    const analysis = deferred<void>();
+    let isFresh = false;
+    const registry = fakeRegistry(old, Promise.resolve(old));
+    registry.entry.analyzer.ensureFile.mockImplementation(async () => isFresh ? fresh : old);
+    registry.entry.analyzer.refresh.mockImplementation(async () => {
+      await analysis.promise;
+      isFresh = true;
+      registry.publish(fresh);
+    });
     const editor = editorFor(documentFor('/repo/current.ts', 3));
     setVisibleEditors([editor]);
     const controller = new EditorOwnershipController(registry);
@@ -157,15 +164,21 @@ describe('EditorOwnershipController', () => {
     expect(editor.setDecorations.mock.calls.every(([, options]) => Array.isArray(options) && options.length === 0)).toBe(true);
 
     for (const listener of mocks.saveListeners) listener(editor.document);
+    registry.emit();
+    for (const listener of mocks.visibleListeners) listener();
     await flush();
-    expect(registry.entry.analyzer.ensureFile).toHaveBeenCalledTimes(2);
-    saved.resolve(current);
+    expect(registry.entry.analyzer.refresh).toHaveBeenCalledWith('working-tree', ['current.ts']);
+    expect(registry.entry.analyzer.ensureFile).toHaveBeenCalledTimes(1);
+    expect(editor.setDecorations.mock.calls.every(([, options]) => Array.isArray(options) && options.length === 0)).toBe(true);
+
+    analysis.resolve();
     await flush();
-    expect(editor.setDecorations.mock.calls.slice(-2)[0]?.[1]).toEqual([expect.objectContaining({ range: expect.anything() })]);
+    expect(editor.setDecorations.mock.calls.slice(-1)[0]?.[1]).toEqual([expect.objectContaining({ range: expect.objectContaining({ start: expect.objectContaining({ line: 2 }) }) })]);
     controller.dispose();
   });
 
   it('creates committed green and working blue decorations, applies inclusive full-document ranges, and disposes', () => {
+    mocks.decorations.splice(0);
     const registry = fakeRegistry(record([]), Promise.resolve(undefined));
     const controller = new EditorOwnershipController(registry);
     const decorations = mocks.decorations.slice(-2);
@@ -183,7 +196,7 @@ describe('EditorOwnershipController', () => {
       overviewRulerColor: { id: 'gitDecoration.modifiedResourceForeground' }
     });
     controller.dispose();
-    expect(mocks.decorations.every(({ dispose }) => dispose.mock.calls.length === 1)).toBe(true);
+    expect(decorations.map(({ dispose }) => dispose.mock.calls.length)).toEqual([1, 1]);
   });
 });
 
@@ -205,10 +218,13 @@ function setVisibleEditors(editors: readonly vscode.TextEditor[]): void {
 
 function fakeRegistry(current: FileRecord, ensureResult: Promise<FileRecord | undefined>) {
   const listeners = new Set<() => void>();
+  let currentFile = current;
+  let generatedAt = 1;
   const entry = {
     root: '/repo', state: 'ready' as const,
     analyzer: {
-      getSnapshot: () => ({ root: '/repo', head: 'h', identity: { name: 'Me', email: 'me@example.com' }, files: [current], scanning: false, generatedAt: 1 }),
+      getSnapshot: () => ({ root: '/repo', head: 'h', identity: { name: 'Me', email: 'me@example.com' }, files: [currentFile], scanning: false, generatedAt }),
+      refresh: vi.fn(async () => undefined),
       ensureFile: vi.fn(() => ensureResult)
     }
   };
@@ -216,8 +232,13 @@ function fakeRegistry(current: FileRecord, ensureResult: Promise<FileRecord | un
     entry,
     findByUri: vi.fn((uri: { fsPath: string }) => uri.fsPath.startsWith('/repo/') ? entry : undefined),
     emit: () => { for (const listener of listeners) listener(); },
+    publish: (file: FileRecord) => { currentFile = file; generatedAt += 1; },
     onDidChange: (listener: () => void) => { listeners.add(listener); return { dispose: () => listeners.delete(listener) }; }
-  } as unknown as RepositoryRegistry & { readonly entry: typeof entry; emit(): void };
+  } as unknown as RepositoryRegistry & {
+    readonly entry: typeof entry;
+    emit(): void;
+    publish(file: FileRecord): void;
+  };
 }
 
 function deferred<T>() {
