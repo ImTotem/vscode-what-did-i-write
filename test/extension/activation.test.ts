@@ -104,6 +104,7 @@ describe('extension activation', () => {
       'active-editor',
       'visible-editors',
       'document-change',
+      'save',
       'workspace-folders',
       'save',
       'create',

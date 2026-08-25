@@ -39,6 +39,7 @@ export class EditorOwnershipController implements vscode.Disposable {
   private committedDecoration: vscode.TextEditorDecorationType;
   private workingDecoration: vscode.TextEditorDecorationType;
   private readonly generations = new Map<string, number>();
+  private readonly dirtyDocumentUris = new Set<string>();
   private readonly subscriptions: vscode.Disposable[];
   private scheduled = false;
   private disposed = false;
@@ -50,7 +51,8 @@ export class EditorOwnershipController implements vscode.Disposable {
       registry.onDidChange(() => this.scheduleRefresh()),
       vscode.window.onDidChangeActiveTextEditor(() => this.scheduleRefresh()),
       vscode.window.onDidChangeVisibleTextEditors(() => this.scheduleRefresh()),
-      vscode.workspace.onDidChangeTextDocument(({ document }) => this.invalidateUri(document.uri))
+      vscode.workspace.onDidChangeTextDocument(({ document }) => this.invalidateUri(document.uri)),
+      vscode.workspace.onDidSaveTextDocument((document) => this.resumeUri(document.uri))
     ];
   }
 
@@ -84,6 +86,7 @@ export class EditorOwnershipController implements vscode.Disposable {
     this.committedDecoration.dispose();
     this.workingDecoration.dispose();
     this.generations.clear();
+    this.dirtyDocumentUris.clear();
   }
 
   private scheduleRefresh(): void {
@@ -102,6 +105,8 @@ export class EditorOwnershipController implements vscode.Disposable {
     const generation = (this.generations.get(key) ?? 0) + 1;
     this.generations.set(key, generation);
     this.clear(editor);
+
+    if (this.dirtyDocumentUris.has(key)) return;
 
     const repository = this.registry.findByUri(document.uri);
     if (repository === undefined || repository.state !== 'ready') return;
@@ -128,10 +133,17 @@ export class EditorOwnershipController implements vscode.Disposable {
   private invalidateUri(uri: vscode.Uri): void {
     if (this.disposed || !isSourceUri(uri)) return;
     const key = uri.toString();
+    this.dirtyDocumentUris.add(key);
     this.generations.set(key, (this.generations.get(key) ?? 0) + 1);
     for (const editor of vscode.window.visibleTextEditors) {
       if (editor.document.uri.toString() === key) this.clear(editor);
     }
+  }
+
+  private resumeUri(uri: vscode.Uri): void {
+    if (this.disposed || !isSourceUri(uri)) return;
+    this.dirtyDocumentUris.delete(uri.toString());
+    void this.refreshUri(uri);
   }
 
   private clear(editor: vscode.TextEditor): void {
@@ -168,7 +180,8 @@ function hoverMessage(range: OwnedRange, uri: vscode.Uri, commandFactory: Comman
   } else {
     const commit = range.commit;
     const date = new Date(commit.authoredAt * 1_000).toLocaleDateString();
-    hover.appendMarkdown(`**Your commit**  \n\n\`${escapeMarkdown(commit.hash.slice(0, 7))}\` · ${escapeMarkdown(date)}  \n\n${escapeMarkdown(commit.subject)}`);
+    const author = `${commit.authorName} <${commit.authorEmail}>`;
+    hover.appendMarkdown(`**Your commit**  \n\n${escapeMarkdown(author)}  \n\n\`${escapeMarkdown(commit.hash.slice(0, 7))}\` · ${escapeMarkdown(date)}  \n\n${escapeMarkdown(commit.subject)}`);
   }
   hover.appendMarkdown(`\n\n[$(history) File history](${commandFactory(FILE_HISTORY_COMMAND, [uri.fsPath])})`);
   hover.appendMarkdown(`\n\n[$(list-tree) Line history](${commandFactory(LINE_HISTORY_COMMAND, [uri.fsPath, range.start])})`);

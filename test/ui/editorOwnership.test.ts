@@ -23,6 +23,8 @@ const mocks = vi.hoisted(() => {
   const decorations: Array<{ options: unknown; dispose: ReturnType<typeof vi.fn> }> = [];
   const activeListeners = new Set<() => void>();
   const visibleListeners = new Set<() => void>();
+  const documentListeners = new Set<(event: { document: vscode.TextDocument }) => void>();
+  const saveListeners = new Set<(document: vscode.TextDocument) => void>();
   const configuration = { lineBackground: false, updates: [] as unknown[][] };
   const window = {
     visibleTextEditors: [] as readonly vscode.TextEditor[],
@@ -40,7 +42,9 @@ const mocks = vi.hoisted(() => {
       return { dispose: () => visibleListeners.delete(listener) };
     }
   };
-  return { Position, Range, MarkdownString, ThemeColor, decorations, activeListeners, visibleListeners, configuration, window };
+  return {
+    Position, Range, MarkdownString, ThemeColor, decorations, activeListeners, visibleListeners, documentListeners, saveListeners, configuration, window
+  };
 });
 
 vi.mock('vscode', () => ({
@@ -55,7 +59,14 @@ vi.mock('vscode', () => ({
       get: <T>(_key: string, fallback: T) => (mocks.configuration.lineBackground as unknown as T) ?? fallback,
       update: (...args: unknown[]) => { mocks.configuration.updates.push(args); return Promise.resolve(); }
     }),
-    onDidChangeTextDocument: () => ({ dispose: () => undefined })
+    onDidChangeTextDocument: (listener: (event: { document: vscode.TextDocument }) => void) => {
+      mocks.documentListeners.add(listener);
+      return { dispose: () => mocks.documentListeners.delete(listener) };
+    },
+    onDidSaveTextDocument: (listener: (document: vscode.TextDocument) => void) => {
+      mocks.saveListeners.add(listener);
+      return { dispose: () => mocks.saveListeners.delete(listener) };
+    }
   }
 }));
 
@@ -68,7 +79,7 @@ import type { FileRecord } from '../../src/core/model.js';
 import type { RepositoryRegistry } from '../../src/extension/repositoryRegistry.js';
 
 const committed = {
-  hash: 'abcdef1234567890', authorName: 'Me', authorEmail: 'me@example.com', authoredAt: 1_700_000_000, subject: 'Fix markdown <escaping>'
+  hash: 'abcdef1234567890', authorName: 'Me <owner>', authorEmail: 'me@example.com', authoredAt: 1_700_000_000, subject: 'Fix markdown <escaping>'
 };
 
 describe('toDecorationOptions', () => {
@@ -84,6 +95,7 @@ describe('toDecorationOptions', () => {
     expect(result[1]?.range).toEqual({ start: { line: 2, character: 0 }, end: { line: 3, character: 0 } });
     const hover = result[0]?.hoverMessage as unknown as { value: string; isTrusted: unknown };
     expect(hover.value).toContain('abcdef1');
+    expect(hover.value).toContain('Me &lt;owner&gt;');
     expect(hover.value).toContain('Fix markdown &lt;escaping&gt;');
     expect(hover.value).toContain('$(history) File history');
     expect(hover.value).toContain('$(list-tree) Line history');
@@ -123,6 +135,33 @@ describe('EditorOwnershipController', () => {
     const lastDecorations = editor.setDecorations.mock.calls.slice(-2);
     expect(lastDecorations[0]?.[1]).toEqual([]);
     expect(lastDecorations[1]?.[1]).toEqual([expect.objectContaining({ range: expect.objectContaining({ start: expect.objectContaining({ line: 2 }) }) })]);
+    controller.dispose();
+  });
+
+  it('keeps dirty buffers clear through registry and visible-editor refreshes until save analysis resolves', async () => {
+    const current = record([{ start: 0, endExclusive: 2, commit: committed, uncommitted: false }]);
+    const saved = deferred<FileRecord | undefined>();
+    const registry = fakeRegistry(current, Promise.resolve(current));
+    registry.entry.analyzer.ensureFile.mockResolvedValueOnce(current).mockReturnValueOnce(saved.promise);
+    const editor = editorFor(documentFor('/repo/current.ts', 3));
+    setVisibleEditors([editor]);
+    const controller = new EditorOwnershipController(registry);
+
+    await controller.refreshVisibleEditors();
+    editor.setDecorations.mockClear();
+    for (const listener of mocks.documentListeners) listener({ document: editor.document });
+    registry.emit();
+    for (const listener of mocks.visibleListeners) listener();
+    await flush();
+    expect(registry.entry.analyzer.ensureFile).toHaveBeenCalledTimes(1);
+    expect(editor.setDecorations.mock.calls.every(([, options]) => Array.isArray(options) && options.length === 0)).toBe(true);
+
+    for (const listener of mocks.saveListeners) listener(editor.document);
+    await flush();
+    expect(registry.entry.analyzer.ensureFile).toHaveBeenCalledTimes(2);
+    saved.resolve(current);
+    await flush();
+    expect(editor.setDecorations.mock.calls.slice(-2)[0]?.[1]).toEqual([expect.objectContaining({ range: expect.anything() })]);
     controller.dispose();
   });
 
@@ -176,8 +215,9 @@ function fakeRegistry(current: FileRecord, ensureResult: Promise<FileRecord | un
   return {
     entry,
     findByUri: vi.fn((uri: { fsPath: string }) => uri.fsPath.startsWith('/repo/') ? entry : undefined),
+    emit: () => { for (const listener of listeners) listener(); },
     onDidChange: (listener: () => void) => { listeners.add(listener); return { dispose: () => listeners.delete(listener) }; }
-  } as unknown as RepositoryRegistry & { readonly entry: typeof entry };
+  } as unknown as RepositoryRegistry & { readonly entry: typeof entry; emit(): void };
 }
 
 function deferred<T>() {
