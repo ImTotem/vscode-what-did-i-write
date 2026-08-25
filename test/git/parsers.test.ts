@@ -21,6 +21,18 @@ describe('Git parsers', () => {
     }]);
   });
 
+  it('accepts the double-NUL framing emitted by the prescribed log command', () => {
+    const raw = '\x1eabc\x1fAlice\x1falice@example.com\x1f1700000000\x1fsubject\x00\x00A\x00src/a file.ts\x00';
+
+    expect(parseLogIndex(Buffer.from(raw))).toEqual([{
+      commit: {
+        hash: 'abc', authorName: 'Alice', authorEmail: 'alice@example.com',
+        authoredAt: 1700000000, subject: 'subject'
+      },
+      changes: [{ status: 'A', path: 'src/a file.ts' }]
+    }]);
+  });
+
   it('keeps tabs and Unicode paths in status records and rename pairs', () => {
     const raw = [
       '1 M. N... 100644 100644 100644 abcdef0 abcdef0 src/a\tfile.ts',
@@ -96,5 +108,20 @@ describe('Git parsers', () => {
       .toThrow(GitParseError);
     expect(() => parseHistoryRecords(Buffer.from('\x1eabc\x1fAlice\x1falice@example.com\x1fnot-a-time\x1fsubject\x00')))
       .toThrow(/parseHistoryRecords.*byte offset 0/);
+  });
+
+  it('rejects unterminated status records and malformed status prefixes', () => {
+    expect(() => parsePorcelainV2Status(Buffer.from('? missing-terminator'))).toThrow(GitParseError);
+    expect(() => parsePorcelainV2Status(Buffer.from('?missing-space\x00'))).toThrow(GitParseError);
+    expect(() => parsePorcelainV2Status(Buffer.from('!missing-space\x00'))).toThrow(GitParseError);
+    expect(() => parsePorcelainV2Status(Buffer.from('2 R. N... 100644 100644 100644 abc abc R100 renamed.ts\x00')))
+      .toThrow(GitParseError);
+  });
+
+  it('rejects empty mandatory commit and blame timestamps', () => {
+    expect(() => parseHistoryRecords(Buffer.from('\x1eabc\x1fAlice\x1falice@example.com\x1f\x1fsubject\x00')))
+      .toThrow(GitParseError);
+    expect(() => parseLinePorcelainBlame('abcdef 1 1 1\nauthor Alice\nauthor-mail <alice@example.com>\nauthor-time \nsummary subject\n\tline\n'))
+      .toThrow(GitParseError);
   });
 });

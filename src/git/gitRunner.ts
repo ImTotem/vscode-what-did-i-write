@@ -31,9 +31,22 @@ class Semaphore {
   private active = 0;
   private readonly waiters: (() => void)[] = [];
 
-  public async acquire(): Promise<() => void> {
+  public async acquire(signal?: AbortSignal): Promise<() => void> {
+    if (signal?.aborted) throw new Error('command aborted');
     if (this.active >= MAX_CONCURRENT_GIT_PROCESSES) {
-      await new Promise<void>((resolve) => this.waiters.push(resolve));
+      await new Promise<void>((resolve, reject) => {
+        const onAbort = (): void => {
+          const index = this.waiters.indexOf(continueAcquire);
+          if (index !== -1) this.waiters.splice(index, 1);
+          reject(new Error('command aborted'));
+        };
+        const continueAcquire = (): void => {
+          signal?.removeEventListener('abort', onAbort);
+          resolve();
+        };
+        signal?.addEventListener('abort', onAbort, { once: true });
+        this.waiters.push(continueAcquire);
+      });
     }
     this.active += 1;
     return () => {
@@ -49,7 +62,12 @@ export class GitRunner {
   public constructor(private readonly baseEnv: NodeJS.ProcessEnv = process.env) {}
 
   public async run(cwd: string, args: readonly string[], options: GitRunOptions = {}): Promise<GitResult> {
-    const release = await semaphore.acquire();
+    let release: (() => void);
+    try {
+      release = await semaphore.acquire(options.signal);
+    } catch {
+      throw new GitCommandError(args, '', null, 'command aborted');
+    }
     try {
       return await this.runProcess(cwd, args, options);
     } finally {
@@ -75,6 +93,7 @@ export class GitRunner {
       const stderr: Buffer[] = [];
       let stdoutLength = 0;
       let settled = false;
+      let terminationError: GitCommandError | undefined;
       const finish = (callback: () => void): void => {
         if (!settled) {
           settled = true;
@@ -83,15 +102,15 @@ export class GitRunner {
         }
       };
       const onAbort = (): void => {
+        terminationError ??= new GitCommandError(args, Buffer.concat(stderr).toString('utf8'), null, 'command aborted');
         child.kill();
-        finish(() => reject(new GitCommandError(args, Buffer.concat(stderr).toString('utf8'), null, 'command aborted')));
       };
       options.signal?.addEventListener('abort', onAbort, { once: true });
       child.stdout.on('data', (chunk: Buffer) => {
         stdoutLength += chunk.length;
         if (stdoutLength > limit) {
+          terminationError ??= new GitCommandError(args, Buffer.concat(stderr).toString('utf8'), null, `stdout exceeded ${limit} bytes`);
           child.kill();
-          finish(() => reject(new GitCommandError(args, Buffer.concat(stderr).toString('utf8'), null, `stdout exceeded ${limit} bytes`)));
           return;
         }
         stdout.push(chunk);
@@ -100,6 +119,10 @@ export class GitRunner {
       child.on('error', (error: Error) => finish(() => reject(new GitCommandError(args, Buffer.concat(stderr).toString('utf8'), null, error.message))));
       child.on('close', (exitCode) => finish(() => {
         const stderrText = Buffer.concat(stderr).toString('utf8');
+        if (terminationError !== undefined) {
+          reject(terminationError);
+          return;
+        }
         const allowed = options.allowExitCodes ?? [0];
         if (exitCode === null || !allowed.includes(exitCode)) {
           reject(new GitCommandError(args, stderrText, exitCode, `exited with code ${String(exitCode)}`));

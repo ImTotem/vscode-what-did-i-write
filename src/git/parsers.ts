@@ -43,6 +43,9 @@ export function parseLogIndex(input: Buffer): LogIndexEntry[] {
     const recordEnd = nextRecord === -1 ? input.length : nextRecord;
     const changes: { status: string; path: string }[] = [];
     let cursor = metadataEnd + 1;
+    if (cursor < recordEnd && input[cursor] === NUL) {
+      cursor += 1;
+    }
 
     while (cursor < recordEnd) {
       const statusEnd = input.indexOf(NUL, cursor);
@@ -88,6 +91,10 @@ export function parseHistoryRecords(input: Buffer): CommitSummary[] {
 
 export function parsePorcelainV2Status(input: Buffer): WorkingChange[] {
   const changes: WorkingChange[] = [];
+  if (input.length === 0) return changes;
+  if (input[input.length - 1] !== NUL) {
+    throw parseError('parsePorcelainV2Status', input.length, 'missing NUL record terminator');
+  }
   const records = input.toString('utf8').split('\0');
 
   for (let index = 0; index < records.length - 1; index += 1) {
@@ -95,6 +102,9 @@ export function parsePorcelainV2Status(input: Buffer): WorkingChange[] {
     if (record.length === 0) continue;
     const type = record[0];
     if (type === '?' || type === '!') {
+      if (record[1] !== ' ') {
+        throw parseError('parsePorcelainV2Status', byteOffset(input, record), 'missing status-path separator');
+      }
       changes.push({ status: type, path: requiredPath(record.slice(2), 'parsePorcelainV2Status', input, record) });
       continue;
     }
@@ -165,7 +175,7 @@ function parseCommit(bytes: Buffer, parser: string, offset: number): CommitSumma
   if (fields.length !== 5) throw parseError(parser, offset, 'expected five commit fields');
   const [hash, authorName, authorEmail, authoredAtText, subject] = fields;
   const authoredAt = Number(authoredAtText);
-  if (!hash || !authorName || !authorEmail || !subject || !Number.isSafeInteger(authoredAt)) {
+  if (!hash || !authorName || !authorEmail || !authoredAtText || !subject || !Number.isSafeInteger(authoredAt)) {
     throw parseError(parser, offset, 'invalid mandatory commit field');
   }
   return { hash, authorName, authorEmail, authoredAt, subject };
@@ -174,9 +184,10 @@ function parseCommit(bytes: Buffer, parser: string, offset: number): CommitSumma
 function blameCommit(hash: string, fields: Map<string, string>, input: string, index: number): CommitSummary {
   const authorName = fields.get('author');
   const authorEmail = fields.get('author-mail')?.replace(/^<|>$/g, '');
-  const authoredAt = Number(fields.get('author-time'));
+  const authoredAtText = fields.get('author-time');
+  const authoredAt = Number(authoredAtText);
   const subject = fields.get('summary');
-  if (!authorName || !authorEmail || !subject || !Number.isSafeInteger(authoredAt)) {
+  if (!authorName || !authorEmail || !authoredAtText || !subject || !Number.isSafeInteger(authoredAt)) {
     throw parseError('parseLinePorcelainBlame', byteOffsetString(input, index), 'invalid mandatory blame metadata');
   }
   return { hash, authorName, authorEmail, authoredAt, subject };
