@@ -115,7 +115,7 @@ function isCacheKey(value: unknown): value is CacheIndexKey {
 function isCommitSummary(value: unknown): value is CommitSummary {
   return isRecord(value)
     && typeof value.hash === 'string'
-    && /^[0-9a-f]{40,64}$/i.test(value.hash)
+    && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(value.hash)
     && typeof value.authorName === 'string'
     && typeof value.authorEmail === 'string'
     && typeof value.authoredAt === 'number'

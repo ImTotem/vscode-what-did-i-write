@@ -223,6 +223,40 @@ describe('RepositoryAnalyzer', () => {
     expect(starts.filter(({ path }) => path === 'stale-queue-6.ts')).toHaveLength(1);
   });
 
+  it('retargets an explicit queued file request to the current generation', async () => {
+    const root = await createTemporaryDirectory();
+    const storagePath = await createTemporaryDirectory();
+    const paths = Array.from({ length: 5 }, (_, index) => `retarget-${index + 1}.ts`);
+    await Promise.all(paths.map(async (path) => writeFile(join(root, path), 'owned\n')));
+    const staleReleases: Deferred<void>[] = [];
+    let blameStarts = 0;
+    const repository = new ControlledRepository(root, paths, async () => {
+      blameStarts += 1;
+      if (blameStarts <= 4) {
+        const release = deferred<void>();
+        staleReleases.push(release);
+        await release.promise;
+        return [ownedLine(aliceCommit)];
+      }
+      return [ownedLine(userCommit)];
+    });
+    const analyzer = new RepositoryAnalyzer(repository, new CacheStore(storagePath));
+
+    await analyzer.initialize();
+    await waitUntil(() => staleReleases.length === 4);
+    const explicit = analyzer.ensureFile('retarget-5.ts', 'active-editor');
+    await analyzer.refresh('working-tree', paths);
+    for (const release of staleReleases) release.resolve();
+
+    await expect(explicit).resolves.toMatchObject({
+      relativePath: 'retarget-5.ts',
+      ranges: [expect.objectContaining({
+        commit: expect.objectContaining({ hash: userCommit.hash })
+      })]
+    });
+    await waitUntil(() => !analyzer.getSnapshot().scanning);
+  });
+
   it('discards stale blame writes and settles scanning for the current generation', async () => {
     const root = await createTemporaryDirectory();
     const storagePath = await createTemporaryDirectory();
@@ -317,6 +351,10 @@ describe('RepositoryAnalyzer', () => {
       head: 'a'.repeat(40),
       normalizedIdentity: '["me","me@example.com"]'
     };
+    const malformedHashCommits = [41, 63].map((length) => ({
+      ...userCommit,
+      hash: '3'.repeat(length)
+    }));
     const corruptIndexes: CachedRepositoryIndex[] = [
       {
         commits: [userCommit],
@@ -349,7 +387,15 @@ describe('RepositoryAnalyzer', () => {
           introducedByUser: false,
           commitHashes: ['f'.repeat(40)]
         }]
-      }
+      },
+      ...malformedHashCommits.map((commit) => ({
+        commits: [commit],
+        files: [{
+          relativePath: 'safe.ts',
+          introducedByUser: false,
+          commitHashes: [commit.hash]
+        }]
+      }))
     ];
 
     for (const corrupt of corruptIndexes) {

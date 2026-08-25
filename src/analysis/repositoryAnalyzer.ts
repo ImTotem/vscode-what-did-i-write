@@ -79,6 +79,7 @@ export class RepositoryAnalyzer {
   private readonly listeners = new Set<(snapshot: RepositorySnapshot) => void>();
   private readonly inFlight = new Map<string, AnalysisJob>();
   private readonly queuedJobs: AnalysisJob[] = [];
+  private readonly retargetedJobs: AnalysisJob[] = [];
   private readonly pendingJobs = new Map<number, number>();
   private readonly indexLoads = new Map<string, Promise<Map<string, MutableCandidate>>>();
   private indexedCandidates = new Map<string, MutableCandidate>();
@@ -115,7 +116,10 @@ export class RepositoryAnalyzer {
     try {
       await this.refreshGeneration(generation, paths);
     } catch (error) {
-      if (generation === this.generation) this.publish(false);
+      if (generation === this.generation) {
+        this.settleRetargetedJobs();
+        this.publish(false);
+      }
       throw error;
     }
   }
@@ -176,6 +180,7 @@ export class RepositoryAnalyzer {
     this.head = head ?? '';
     this.candidates = candidates;
     this.publish(true);
+    this.requeueRetargetedJobs(generation);
 
     for (const candidate of candidates.values()) {
       if (candidate.exists) {
@@ -287,7 +292,7 @@ export class RepositoryAnalyzer {
       const job = this.queuedJobs[index];
       if (job !== undefined && job.generation < generation) {
         this.queuedJobs.splice(index, 1);
-        this.settleQueuedJob(job);
+        this.retainOrSettleQueuedJob(job);
       }
     }
   }
@@ -296,6 +301,70 @@ export class RepositoryAnalyzer {
     if (this.inFlight.get(job.key) === job) this.inFlight.delete(job.key);
     this.decrementPending(job.generation);
     job.resolve(toFileRecord(job.candidate));
+  }
+
+  private retainOrSettleQueuedJob(job: AnalysisJob): void {
+    if (this.inFlight.get(job.key) === job) this.inFlight.delete(job.key);
+    this.decrementPending(job.generation);
+    if (job.priority === 'background') {
+      job.resolve(toFileRecord(job.candidate));
+    } else {
+      this.retargetedJobs.push(job);
+    }
+  }
+
+  private requeueRetargetedJobs(generation: number): void {
+    if (generation !== this.generation) return;
+    const previousJobs = this.retargetedJobs.splice(0);
+    for (const previousJob of previousJobs) {
+      const relativePath = previousJob.candidate.relativePath;
+      const candidate = this.candidates.get(relativePath);
+      if (candidate === undefined) {
+        previousJob.resolve(undefined);
+        continue;
+      }
+      if (candidate.resolvedGeneration === generation) {
+        previousJob.resolve(toFileRecord(candidate));
+        continue;
+      }
+
+      const key = `${generation}\0${relativePath}`;
+      const existing = this.inFlight.get(key);
+      if (existing !== undefined) {
+        if (
+          !existing.active
+          && priorityRank(previousJob.priority) < priorityRank(existing.priority)
+        ) {
+          existing.priority = previousJob.priority;
+        }
+        void existing.promise.then(previousJob.resolve, previousJob.reject);
+        continue;
+      }
+
+      const job: AnalysisJob = {
+        generation,
+        key,
+        candidate,
+        promise: previousJob.promise,
+        resolve: previousJob.resolve,
+        reject: previousJob.reject,
+        priority: previousJob.priority,
+        sequence: this.nextJobSequence++,
+        active: false
+      };
+      this.inFlight.set(key, job);
+      this.queuedJobs.push(job);
+      this.pendingJobs.set(generation, (this.pendingJobs.get(generation) ?? 0) + 1);
+    }
+    this.sortQueue();
+    this.pumpQueue();
+  }
+
+  private settleRetargetedJobs(): void {
+    const jobs = this.retargetedJobs.splice(0);
+    for (const job of jobs) {
+      job.resolve(this.getFile(job.candidate.relativePath));
+    }
   }
 
   private decrementPending(generation: number): void {
