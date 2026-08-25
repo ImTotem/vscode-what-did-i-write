@@ -69,10 +69,13 @@ Git worktree share one analysis model; a non-Git folder has no My Code state.
 
 My Code reacts to saves, creates, deletes, renames, workspace-folder changes,
 visible-editor changes, and focused-window repository fingerprint checks. An
-explicit refresh, checkout, commit, rebase, or global identity change rebuilds
-the relevant index. It scans matching reachable paths first, processes active
-editors and Explorer requests ahead of background work, bounds Git subprocesses
-to four per repository, and caches only index metadata—never source contents.
+explicit refresh, checkout, commit, or rebase rebuilds the relevant index. A
+global identity change is not detected by repository fingerprint polling; after
+changing `user.name` or `user.email`, run `My Code: Retry or My Code: Refresh`
+to re-read the identity and rebuild the index. It scans matching reachable
+paths first, processes active editors and Explorer requests ahead of background
+work, bounds Git subprocesses to four per repository, and caches only index
+metadata—never source contents.
 
 ## Privacy and local-only behavior
 
@@ -132,7 +135,10 @@ Development Host**, and then open `$fixture` in that host. `mine.ts` should be
 shown as `A`; `upstream.ts` should not be shown as yours. Add an uncommitted
 line to `mine.ts`, save it, and verify its line decoration and hover appear.
 
-Development verification is run against the local VS Code executable when it
-is available. The package itself remains useful without that optional local
-smoke environment because type checking, automated tests, bundling, and VSIX
-inspection are separate mandatory checks.
+When the `code` executable is installed, live Extension Host activation and
+registration of `myCode.refresh` are required release gates. If VS Code cannot
+start its Extension Host because of an environment problem (such as an updater
+mutex), that gate remains incomplete; rerun it after the problem clears or use
+a separate test runtime. Type checking, automated tests, bundling, and VSIX
+inspection are separate mandatory checks, not substitutes for this live-host
+assertion.
