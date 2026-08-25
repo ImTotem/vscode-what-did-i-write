@@ -2,7 +2,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   CacheStore,
@@ -18,7 +18,8 @@ import type {
   CommitSummary,
   FileKind,
   FileRecord,
-  GitIdentity
+  GitIdentity,
+  RepositorySnapshot
 } from '../../src/core/model.js';
 import { GitCommandError } from '../../src/git/gitRunner.js';
 import type { BlameLine, WorkingChange } from '../../src/git/parsers.js';
@@ -197,6 +198,65 @@ describe('RepositoryAnalyzer', () => {
     expect(maximumActive).toBeLessThanOrEqual(4);
     expect(started[4]).toBe('priority-7.ts');
     expect(started[5]).toBe('priority-6.ts');
+  });
+
+  it('disposes queued work, settles explicit callers, and suppresses late publications', async () => {
+    const root = await createTemporaryDirectory();
+    const storagePath = await createTemporaryDirectory();
+    const paths = Array.from({ length: 6 }, (_, index) => `dispose-${index + 1}.ts`);
+    await Promise.all(paths.map(async (path) => writeFile(join(root, path), 'owned\n')));
+    const starts: { path: string; release: Deferred<void> }[] = [];
+    const repository = new ControlledRepository(root, paths, async (path) => {
+      const release = deferred<void>();
+      starts.push({ path, release });
+      await release.promise;
+      return [ownedLine(userCommit)];
+    });
+    const analyzer = new RepositoryAnalyzer(repository, new CacheStore(storagePath));
+    const publications: RepositorySnapshot[] = [];
+    analyzer.onDidChange((snapshot) => publications.push(snapshot));
+
+    await analyzer.initialize();
+    await waitUntil(() => starts.length === 4);
+    const explicit = analyzer.ensureFile('dispose-5.ts', 'active-editor');
+    const publicationCount = publications.length;
+
+    analyzer.dispose();
+
+    await expect(explicit).resolves.toMatchObject({ relativePath: 'dispose-5.ts' });
+    await expect(analyzer.ensureFile('dispose-6.ts', 'active-editor'))
+      .resolves.toMatchObject({ relativePath: 'dispose-6.ts' });
+    await analyzer.refresh('manual');
+    for (const { release } of starts) release.resolve();
+    await nextTurn();
+    await nextTurn();
+
+    expect(starts).toHaveLength(4);
+    expect(publications).toHaveLength(publicationCount);
+    expect(analyzer.getSnapshot().scanning).toBe(false);
+    const afterDispose = vi.fn();
+    analyzer.onDidChange(afterDispose);
+    await analyzer.refresh('manual');
+    expect(afterDispose).not.toHaveBeenCalled();
+  });
+
+  it('analyzes valid files whose names begin with two dots', async () => {
+    const root = await createTemporaryDirectory();
+    const storagePath = await createTemporaryDirectory();
+    const path = '..generated.ts';
+    await writeFile(join(root, path), 'owned\n');
+    const repository = new ControlledRepository(root, [path], async () => [ownedLine(userCommit)]);
+    const analyzer = new RepositoryAnalyzer(repository, new CacheStore(storagePath));
+
+    await analyzer.initialize();
+    await analyzer.ensureFile(path, 'active-editor');
+
+    expect(analyzer.getFile(path)).toMatchObject({
+      relativePath: path,
+      kind: 'modified',
+      ranges: [expect.objectContaining({ commit: expect.objectContaining({ hash: userCommit.hash }) })]
+    });
+    analyzer.dispose();
   });
 
   it('drops superseded queued blame jobs before they start', async () => {

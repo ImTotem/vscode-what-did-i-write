@@ -1,5 +1,5 @@
 import { readFile, stat } from 'node:fs/promises';
-import { isAbsolute, relative, resolve } from 'node:path';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 import { matchesIdentity, normalizeEmail, normalizeIdentityPart } from '../core/identity.js';
 import type {
@@ -90,6 +90,7 @@ export class RepositoryAnalyzer {
   private generation = 0;
   private activeJobs = 0;
   private nextJobSequence = 0;
+  private disposed = false;
   private snapshot: RepositorySnapshot;
 
   public constructor(
@@ -102,6 +103,7 @@ export class RepositoryAnalyzer {
   public readonly onDidChange = (
     listener: (snapshot: RepositorySnapshot) => void
   ): AnalyzerDisposable => {
+    if (this.disposed) return { dispose: () => undefined };
     this.listeners.add(listener);
     return { dispose: () => this.listeners.delete(listener) };
   };
@@ -111,6 +113,7 @@ export class RepositoryAnalyzer {
   }
 
   public async refresh(_reason: RefreshReason, paths?: readonly string[]): Promise<void> {
+    if (this.disposed) return;
     const generation = ++this.generation;
     this.dropQueuedJobsBefore(generation);
     try {
@@ -224,6 +227,7 @@ export class RepositoryAnalyzer {
     relativePath: string,
     priority: AnalysisPriority
   ): Promise<FileRecord | undefined> {
+    if (this.disposed) return Promise.resolve(this.getFile(relativePath));
     const normalizedPath = normalizeRelativePath(relativePath);
     const candidate = this.candidates.get(normalizedPath);
     if (candidate === undefined) return Promise.resolve(undefined);
@@ -266,6 +270,7 @@ export class RepositoryAnalyzer {
   }
 
   private pumpQueue(): void {
+    if (this.disposed) return;
     while (this.activeJobs < 4) {
       const job = this.queuedJobs.shift();
       if (job === undefined) return;
@@ -386,6 +391,27 @@ export class RepositoryAnalyzer {
     return (this.pendingJobs.get(generation) ?? 0) > 0;
   }
 
+  public dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.generation += 1;
+    const jobs = new Set([
+      ...this.inFlight.values(),
+      ...this.queuedJobs,
+      ...this.retargetedJobs
+    ]);
+    this.inFlight.clear();
+    this.queuedJobs.splice(0);
+    this.retargetedJobs.splice(0);
+    this.pendingJobs.clear();
+    this.indexLoads.clear();
+    for (const job of jobs) {
+      job.resolve(this.getFile(job.candidate.relativePath));
+    }
+    this.snapshot = this.createSnapshot(false);
+    this.listeners.clear();
+  }
+
   public getSnapshot(): RepositorySnapshot {
     return this.snapshot;
   }
@@ -460,13 +486,14 @@ export class RepositoryAnalyzer {
   private absolutePath(relativePath: string): string {
     const absolutePath = resolve(this.repository.root, relativePath);
     const relativeToRoot = relative(this.repository.root, absolutePath);
-    if (relativeToRoot.startsWith('..') || isAbsolute(relativeToRoot)) {
+    if (isParentTraversal(relativeToRoot) || isAbsolute(relativeToRoot)) {
       throw new Error('path is outside the repository');
     }
     return absolutePath;
   }
 
   private publish(scanning: boolean): void {
+    if (this.disposed) return;
     this.snapshot = this.createSnapshot(scanning);
     for (const listener of this.listeners) listener(this.snapshot);
   }
@@ -641,6 +668,10 @@ function priorityRank(priority: AnalysisPriority): number {
 
 function normalizeRelativePath(path: string): string {
   return path.replaceAll('\\', '/').replace(/^\.\//, '');
+}
+
+function isParentTraversal(path: string): boolean {
+  return path === '..' || path.startsWith(`..${sep}`);
 }
 
 async function pathExists(path: string): Promise<boolean> {

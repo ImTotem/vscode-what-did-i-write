@@ -1,4 +1,4 @@
-import { isAbsolute, relative, resolve } from 'node:path';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 import type { CacheStore } from '../analysis/cacheStore.js';
 import {
@@ -25,14 +25,19 @@ export interface AnalyzerAccess {
   refresh(reason: string, paths?: readonly string[]): Promise<void>;
   getSnapshot(): RepositorySnapshot;
   onDidChange(listener: (snapshot: RepositorySnapshot) => void): AnalyzerDisposable;
-  dispose?(): void;
+  dispose(): void;
 }
+
+export type RegisteredRepositoryState = 'initializing' | 'ready' | 'error';
+export type RepositoryRegistryState = 'discovering' | 'initializing' | 'ready' | 'error';
 
 export interface RegisteredRepository {
   readonly root: string;
   readonly repository: RepositoryAccess;
   readonly analyzer: AnalyzerAccess;
   readonly workspaceFolders: readonly UriAccess[];
+  readonly state: RegisteredRepositoryState;
+  readonly error?: unknown;
   readonly ready: boolean;
 }
 
@@ -47,8 +52,13 @@ export interface RepositoryRegistryOptions {
 
 class RepositoryLifetime implements RegisteredRepository {
   public workspaceFolders: readonly UriAccess[];
-  public ready = false;
+  public state: RegisteredRepositoryState = 'initializing';
+  public error: unknown;
   private analyzerSubscription: AnalyzerDisposable | undefined;
+
+  public get ready(): boolean {
+    return this.state === 'ready';
+  }
 
   public constructor(
     public readonly root: string,
@@ -59,7 +69,6 @@ class RepositoryLifetime implements RegisteredRepository {
   ) {
     this.workspaceFolders = workspaceFolders;
     this.analyzerSubscription = analyzer.onDidChange(() => {
-      this.ready = true;
       onAnalyzerChange();
     });
   }
@@ -69,13 +78,19 @@ class RepositoryLifetime implements RegisteredRepository {
   }
 
   public markReady(): void {
-    this.ready = true;
+    this.state = 'ready';
+    this.error = undefined;
+  }
+
+  public markError(error: unknown): void {
+    this.state = 'error';
+    this.error = error;
   }
 
   public dispose(): void {
     this.analyzerSubscription?.dispose();
     this.analyzerSubscription = undefined;
-    this.analyzer.dispose?.();
+    this.analyzer.dispose();
   }
 }
 
@@ -84,6 +99,8 @@ export class RepositoryRegistry {
   private readonly lifetimes = new Map<string, RepositoryLifetime>();
   private generation = 0;
   private disposed = false;
+  private discovering = true;
+  private discoveryFailed = false;
 
   public constructor(private readonly options: RepositoryRegistryOptions) {}
 
@@ -105,6 +122,13 @@ export class RepositoryRegistry {
     return [...this.lifetimes.values()].sort((left, right) => left.root.localeCompare(right.root));
   }
 
+  public get state(): RepositoryRegistryState {
+    if (this.discovering) return 'discovering';
+    if (this.discoveryFailed || this.repositories.some(({ state }) => state === 'error')) return 'error';
+    if (this.repositories.some(({ state }) => state === 'initializing')) return 'initializing';
+    return 'ready';
+  }
+
   public readonly onDidChange = (listener: () => void): AnalyzerDisposable => {
     this.listeners.add(listener);
     return { dispose: () => this.listeners.delete(listener) };
@@ -117,6 +141,9 @@ export class RepositoryRegistry {
   public async updateWorkspaceFolders(workspaceFolders: readonly UriAccess[]): Promise<void> {
     if (this.disposed) return;
     const generation = ++this.generation;
+    this.discovering = true;
+    this.discoveryFailed = false;
+    this.emitChange();
     const discoveries = await Promise.all(workspaceFolders.map(async (folder) => {
       try {
         return { folder, repository: await this.options.discover(folder.fsPath) };
@@ -159,18 +186,15 @@ export class RepositoryRegistry {
       }
     }
 
-    let changed = false;
     for (const [key, lifetime] of this.lifetimes) {
       if (!grouped.has(key)) {
         lifetime.dispose();
         this.lifetimes.delete(key);
-        changed = true;
       }
     }
     for (const [key, group] of grouped) {
       const existing = this.lifetimes.get(key);
       if (existing !== undefined) {
-        if (!sameFolders(existing.workspaceFolders, group.folders)) changed = true;
         existing.setWorkspaceFolders(group.folders);
         continue;
       }
@@ -184,7 +208,6 @@ export class RepositoryRegistry {
         () => this.emitChange()
       );
       this.lifetimes.set(key, lifetime);
-      changed = true;
       void analyzer.initialize().then(
         () => {
           if (this.lifetimes.get(key) !== lifetime) return;
@@ -193,13 +216,15 @@ export class RepositoryRegistry {
         },
         (error: unknown) => {
           if (this.lifetimes.get(key) !== lifetime) return;
-          lifetime.markReady();
+          lifetime.markError(error);
           this.options.onError?.(error, 'initialize', lifetime.root);
           this.emitChange();
         }
       );
     }
-    if (changed) this.emitChange();
+    this.discovering = false;
+    this.discoveryFailed = discoveries.some((discovery) => discovery === undefined);
+    this.emitChange();
   }
 
   public findByUri(uri: UriAccess): RegisteredRepository | undefined {
@@ -229,17 +254,14 @@ export class RepositoryRegistry {
 
 function containsPath(root: string, candidate: string): boolean {
   const path = relative(normalizeFsPath(root), normalizeFsPath(candidate));
-  return path === '' || (!path.startsWith('..') && !isAbsolute(path));
+  return path === '' || (!isParentTraversal(path) && !isAbsolute(path));
+}
+
+function isParentTraversal(path: string): boolean {
+  return path === '..' || path.startsWith(`..${sep}`);
 }
 
 function normalizeFsPath(path: string): string {
   const normalized = resolve(path);
   return process.platform === 'win32' ? normalized.toLocaleLowerCase() : normalized;
-}
-
-function sameFolders(left: readonly UriAccess[], right: readonly UriAccess[]): boolean {
-  if (left.length !== right.length) return false;
-  const leftPaths = left.map(({ fsPath }) => normalizeFsPath(fsPath)).sort();
-  const rightPaths = right.map(({ fsPath }) => normalizeFsPath(fsPath)).sort();
-  return leftPaths.every((path, index) => path === rightPaths[index]);
 }

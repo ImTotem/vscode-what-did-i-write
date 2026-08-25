@@ -46,8 +46,16 @@ export class StatusController {
 
   private render(): void {
     if (this.disposed) return;
+    if (this.registry.state === 'discovering' || this.registry.state === 'initializing') {
+      this.status.text = '$(sync~spin) My Code: Scanning';
+      return;
+    }
+    if (this.registry.state === 'error') {
+      this.status.text = '$(warning) My Code: Error';
+      return;
+    }
     const snapshots = this.registry.repositories
-      .filter(({ ready }) => ready)
+      .filter(({ state }) => state === 'ready')
       .map(({ analyzer }) => analyzer.getSnapshot());
     const missingIdentity = snapshots.some(({ identity }) =>
       identity.name.trim().length === 0 && identity.email.trim().length === 0

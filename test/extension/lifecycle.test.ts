@@ -2,8 +2,10 @@ import { join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import type { WorkingChange } from '../../src/git/parsers.js';
+import { CacheStore } from '../../src/analysis/cacheStore.js';
+import { RepositoryAnalyzer } from '../../src/analysis/repositoryAnalyzer.js';
 import type { RepositorySnapshot } from '../../src/core/model.js';
+import type { WorkingChange } from '../../src/git/parsers.js';
 import {
   RepositoryRegistry,
   type AnalyzerAccess,
@@ -67,8 +69,60 @@ describe('RepositoryRegistry', () => {
       'discover',
       root
     );
+    expect(registry.state).toBe('error');
     expect(registry.repositories).toHaveLength(1);
     expect(analyzer.dispose).not.toHaveBeenCalled();
+    registry.dispose();
+  });
+
+  it('selects the deepest repository and accepts dot-dot-prefixed child names', async () => {
+    const outerRoot = join(process.cwd(), 'outer');
+    const innerRoot = join(outerRoot, 'packages', 'inner');
+    const outer = fakeRepository(outerRoot);
+    const inner = fakeRepository(innerRoot);
+    const registry = new RepositoryRegistry({
+      getWorkspaceFolders: () => [{ fsPath: outerRoot }, { fsPath: innerRoot }],
+      discover: async (path) => path === innerRoot ? inner : outer,
+      createAnalyzer: (repository) => fakeAnalyzer(repository.root)
+    });
+
+    await registry.start();
+
+    expect(registry.findByUri({ fsPath: join(innerRoot, 'src', 'file.ts') })?.root).toBe(innerRoot);
+    expect(registry.findByUri({ fsPath: join(outerRoot, '..generated', 'file.ts') })?.root)
+      .toBe(outerRoot);
+    expect(registry.findByUri({ fsPath: join(outerRoot, '..', 'outside.ts') })).toBeUndefined();
+    registry.dispose();
+  });
+
+  it('disposes a real analyzer when its final workspace folder disappears', async () => {
+    const root = join(process.cwd(), 'actual-analyzer');
+    const repository = {
+      ...fakeRepository(root),
+      getGlobalIdentity: vi.fn(async () => ({ name: 'Me', email: 'me@example.com' })),
+      getHead: vi.fn(async () => undefined),
+      getUserIndex: vi.fn(async () => ({ commits: [], entries: [] })),
+      blame: vi.fn(async () => [])
+    } satisfies RepositoryAccess;
+    let actualAnalyzer: RepositoryAnalyzer | undefined;
+    const registry = new RepositoryRegistry({
+      getWorkspaceFolders: () => [{ fsPath: root }],
+      discover: async () => repository,
+      createAnalyzer: (access) => {
+        actualAnalyzer = new RepositoryAnalyzer(access, new CacheStore(undefined));
+        return actualAnalyzer;
+      }
+    });
+
+    await registry.start();
+    await waitUntil(() => registry.state === 'ready');
+    const headReads = repository.getHead.mock.calls.length;
+
+    await registry.updateWorkspaceFolders([]);
+    await (actualAnalyzer as RepositoryAnalyzer).refresh('manual');
+
+    expect(repository.getHead).toHaveBeenCalledTimes(headReads);
+    expect(registry.repositories).toEqual([]);
     registry.dispose();
   });
 });
@@ -96,7 +150,8 @@ describe('RefreshController', () => {
     expect(scheduler.intervalDelay).toBe(10_000);
     await Promise.resolve();
     await Promise.resolve();
-    expect(repository.getFingerprint).toHaveBeenCalledOnce();
+    expect(repository.getFingerprint).toHaveBeenCalledTimes(2);
+    expect(analyzer.refresh).toHaveBeenLastCalledWith('head');
     controller.setFocused(false);
     expect(scheduler.intervalCleared).toBe(true);
     controller.dispose();
@@ -111,6 +166,7 @@ describe('RefreshController', () => {
 
     repository.getFingerprint
       .mockResolvedValueOnce({ head: 'a', status: 'clean' })
+      .mockResolvedValueOnce({ head: 'a', status: 'clean' })
       .mockResolvedValueOnce({ head: 'b', status: 'clean' })
       .mockResolvedValueOnce({ head: 'b', status: 'dirty' });
     repository.getWorkingChanges.mockResolvedValue([{ status: 'M', path: 'src/changed.ts' }]);
@@ -121,9 +177,66 @@ describe('RefreshController', () => {
     await controller.refreshAll();
 
     expect(analyzer.refresh).toHaveBeenNthCalledWith(1, 'head');
-    expect(analyzer.refresh).toHaveBeenNthCalledWith(2, 'working-tree', ['src/changed.ts']);
-    expect(analyzer.refresh).toHaveBeenNthCalledWith(3, 'manual');
+    expect(analyzer.refresh).toHaveBeenNthCalledWith(2, 'head');
+    expect(analyzer.refresh).toHaveBeenNthCalledWith(3, 'working-tree', ['src/changed.ts']);
+    expect(analyzer.refresh).toHaveBeenNthCalledWith(4, 'manual');
     controller.dispose();
+  });
+
+  it('refreshes before acknowledging an initial fingerprint and retries changes during refresh', async () => {
+    const root = join(process.cwd(), 'repository');
+    const analyzer = fakeAnalyzer(root);
+    const repository = fakeRepository(root);
+    const registry = await registryWith(root, repository, analyzer);
+    const controller = new RefreshController(registry, { scheduler: new FakeScheduler() });
+    repository.getFingerprint
+      .mockResolvedValueOnce({ head: 'h1', status: 's1' })
+      .mockResolvedValueOnce({ head: 'h2', status: 's2' })
+      .mockResolvedValueOnce({ head: 'h2', status: 's2' })
+      .mockResolvedValueOnce({ head: 'h2', status: 's2' })
+      .mockResolvedValueOnce({ head: 'h2', status: 's2' });
+
+    await controller.tick();
+    await controller.tick();
+    await controller.tick();
+
+    expect(analyzer.refresh).toHaveBeenCalledTimes(2);
+    expect(analyzer.refresh).toHaveBeenNthCalledWith(1, 'head');
+    expect(analyzer.refresh).toHaveBeenNthCalledWith(2, 'head');
+    controller.dispose();
+  });
+
+  it('routes delete and cross-repository rename paths including dot-dot-prefixed children', async () => {
+    const outerRoot = join(process.cwd(), 'outer');
+    const innerRoot = join(process.cwd(), 'inner');
+    const outerAnalyzer = fakeAnalyzer(outerRoot);
+    const innerAnalyzer = fakeAnalyzer(innerRoot);
+    const outer = fakeRepository(outerRoot);
+    const inner = fakeRepository(innerRoot);
+    const registry = new RepositoryRegistry({
+      getWorkspaceFolders: () => [{ fsPath: outerRoot }, { fsPath: innerRoot }],
+      discover: async (path) => path === innerRoot ? inner : outer,
+      createAnalyzer: (repository) => repository.root === innerRoot ? innerAnalyzer : outerAnalyzer
+    });
+    await registry.start();
+    const scheduler = new FakeScheduler();
+    const controller = new RefreshController(registry, { scheduler });
+
+    controller.acceptDelete([{ fsPath: join(outerRoot, '..generated', 'deleted.ts') }]);
+    controller.acceptRename([{
+      oldUri: { fsPath: join(outerRoot, 'old.ts') },
+      newUri: { fsPath: join(innerRoot, 'new.ts') }
+    }]);
+    controller.acceptDelete([{ fsPath: join(outerRoot, '..', 'outside.ts') }]);
+    await scheduler.runTimeout();
+
+    expect(outerAnalyzer.refresh).toHaveBeenCalledWith(
+      'working-tree',
+      ['..generated/deleted.ts', 'old.ts']
+    );
+    expect(innerAnalyzer.refresh).toHaveBeenCalledWith('working-tree', ['new.ts']);
+    controller.dispose();
+    registry.dispose();
   });
 
   it('retries a changed fingerprint when its refresh fails', async () => {
@@ -138,6 +251,7 @@ describe('RefreshController', () => {
     });
     repository.getFingerprint
       .mockResolvedValueOnce({ head: 'a', status: 'clean' })
+      .mockResolvedValueOnce({ head: 'b', status: 'clean' })
       .mockResolvedValueOnce({ head: 'b', status: 'clean' })
       .mockResolvedValueOnce({ head: 'b', status: 'clean' });
     analyzer.refresh
@@ -155,6 +269,52 @@ describe('RefreshController', () => {
 });
 
 describe('StatusController', () => {
+  it('distinguishes discovery, initialization, and initialization errors from identity', async () => {
+    const root = join(process.cwd(), 'repository');
+    const discovery = deferred<RepositoryAccess>();
+    const initialization = deferred<void>();
+    const analyzer = fakeAnalyzer(root, vi.fn(() => initialization.promise));
+    const onError = vi.fn();
+    const registry = new RepositoryRegistry({
+      getWorkspaceFolders: () => [{ fsPath: root }],
+      discover: async () => discovery.promise,
+      createAnalyzer: () => analyzer,
+      onError
+    });
+    const status = { text: '', show: vi.fn() };
+    const showWarning = vi.fn(async () => undefined);
+    const controller = new StatusController(registry, status, {
+      showWarning,
+      showOutput: vi.fn(),
+      retryIdentity: vi.fn()
+    });
+
+    const start = registry.start();
+    expect(registry.state).toBe('discovering');
+    expect(status.text).toBe('$(sync~spin) My Code: Scanning');
+    discovery.resolve(fakeRepository(root));
+    await start;
+    expect(registry.state).toBe('initializing');
+    expect(status.text).toBe('$(sync~spin) My Code: Scanning');
+
+    analyzer.publish(snapshot(root, { missingIdentity: true }));
+    expect(status.text).toBe('$(sync~spin) My Code: Scanning');
+    expect(showWarning).not.toHaveBeenCalled();
+
+    initialization.reject(new Error('cache permission denied'));
+    await waitUntil(() => registry.state === 'error');
+
+    expect(status.text).toBe('$(warning) My Code: Error');
+    expect(showWarning).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'cache permission denied' }),
+      'initialize',
+      root
+    );
+    controller.dispose();
+    registry.dispose();
+  });
+
   it('publishes aggregate states and warns once with actionable choices', async () => {
     const root = join(process.cwd(), 'repository');
     const analyzer = fakeAnalyzer(root);
@@ -292,5 +452,33 @@ class FakeScheduler implements TimerScheduler {
     callback?.();
     await Promise.resolve();
     await Promise.resolve();
+  }
+}
+
+interface Deferred<T> {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+  reject(reason: unknown): void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolvePromise: ((value: T) => void) | undefined;
+  let rejectPromise: ((reason: unknown) => void) | undefined;
+  const promise = new Promise<T>((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+  return {
+    promise,
+    resolve: (value) => resolvePromise?.(value),
+    reject: (reason) => rejectPromise?.(reason)
+  };
+}
+
+async function waitUntil(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error('timed out waiting for lifecycle state');
+    await new Promise<void>((resolve) => setImmediate(resolve));
   }
 }

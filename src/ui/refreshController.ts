@@ -37,18 +37,25 @@ const defaultScheduler: TimerScheduler = {
 
 export class RefreshController {
   private readonly scheduler: TimerScheduler;
+  private readonly registrySubscription: { dispose(): void };
   private readonly pendingPaths = new Map<RegisteredRepository, Set<string>>();
   private readonly fingerprints = new Map<string, { readonly head: string | undefined; readonly status: string }>();
   private timeout: unknown;
   private interval: unknown;
   private pollRunning = false;
   private disposed = false;
+  private focused = false;
 
   public constructor(
     private readonly registry: RepositoryRegistry,
     private readonly options: RefreshControllerOptions = {}
   ) {
     this.scheduler = options.scheduler ?? defaultScheduler;
+    this.registrySubscription = registry.onDidChange(() => {
+      if (this.focused && registry.repositories.some(({ root, state }) =>
+        state === 'ready' && !this.fingerprints.has(root)
+      )) void this.tick();
+    });
   }
 
   public acceptSave(uri: UriAccess): void {
@@ -72,6 +79,7 @@ export class RefreshController {
 
   public setFocused(focused: boolean): void {
     if (this.disposed) return;
+    this.focused = focused;
     if (!focused) {
       if (this.interval !== undefined) this.scheduler.clearInterval(this.interval);
       this.interval = undefined;
@@ -86,24 +94,27 @@ export class RefreshController {
     if (this.disposed || this.pollRunning) return;
     this.pollRunning = true;
     try {
-      const activeRoots = new Set(this.registry.repositories.map(({ root }) => root));
+      const repositories = this.registry.repositories.filter(({ state }) => state === 'ready');
+      const activeRoots = new Set(repositories.map(({ root }) => root));
       for (const root of this.fingerprints.keys()) {
         if (!activeRoots.has(root)) this.fingerprints.delete(root);
       }
-      await Promise.all(this.registry.repositories.map(async (entry) => this.checkFingerprint(entry)));
+      await Promise.all(repositories.map(async (entry) => this.checkFingerprint(entry)));
     } finally {
       this.pollRunning = false;
     }
   }
 
   public async refreshAll(reason = 'manual'): Promise<void> {
-    await Promise.all(this.registry.repositories.map(async (entry) => {
-      try {
-        await entry.analyzer.refresh(reason);
-      } catch (error) {
-        this.options.onError?.(error, reason, entry.root);
-      }
-    }));
+    await Promise.all(this.registry.repositories
+      .filter(({ state }) => state === 'ready')
+      .map(async (entry) => {
+        try {
+          await entry.analyzer.refresh(reason);
+        } catch (error) {
+          this.options.onError?.(error, reason, entry.root);
+        }
+      }));
   }
 
   public retryIdentity(): Promise<void> {
@@ -117,6 +128,7 @@ export class RefreshController {
     if (this.interval !== undefined) this.scheduler.clearInterval(this.interval);
     this.timeout = undefined;
     this.interval = undefined;
+    this.registrySubscription.dispose();
     this.pendingPaths.clear();
     this.fingerprints.clear();
   }
@@ -155,9 +167,14 @@ export class RefreshController {
   private async checkFingerprint(entry: RegisteredRepository): Promise<void> {
     try {
       const fingerprint = await entry.repository.getFingerprint();
+      if (this.disposed) return;
       const previous = this.fingerprints.get(entry.root);
       if (previous === undefined) {
-        this.fingerprints.set(entry.root, fingerprint);
+        await entry.analyzer.refresh('head');
+        const afterRefresh = await entry.repository.getFingerprint();
+        if (sameFingerprint(fingerprint, afterRefresh)) {
+          this.fingerprints.set(entry.root, afterRefresh);
+        }
         return;
       }
       if (previous.head !== fingerprint.head) {
@@ -179,8 +196,19 @@ export class RefreshController {
   }
 }
 
+function sameFingerprint(
+  left: { readonly head: string | undefined; readonly status: string },
+  right: { readonly head: string | undefined; readonly status: string }
+): boolean {
+  return left.head === right.head && left.status === right.status;
+}
+
 function relativePath(root: string, path: string): string | undefined {
   const candidate = relative(root, path);
-  if (candidate === '' || candidate.startsWith('..') || isAbsolute(candidate)) return undefined;
+  if (candidate === '' || isParentTraversal(candidate) || isAbsolute(candidate)) return undefined;
   return sep === '/' ? candidate : candidate.split(sep).join('/');
+}
+
+function isParentTraversal(path: string): boolean {
+  return path === '..' || path.startsWith(`..${sep}`);
 }
