@@ -41,6 +41,7 @@ export class EditorOwnershipController implements vscode.Disposable {
   private readonly generations = new Map<string, number>();
   private readonly dirtyDocumentUris = new Set<string>();
   private readonly pendingSaveRefreshes = new Map<string, number>();
+  private readonly saveRefreshGenerations = new Map<string, number>();
   private readonly subscriptions: vscode.Disposable[];
   private scheduled = false;
   private disposed = false;
@@ -89,6 +90,7 @@ export class EditorOwnershipController implements vscode.Disposable {
     this.generations.clear();
     this.dirtyDocumentUris.clear();
     this.pendingSaveRefreshes.clear();
+    this.saveRefreshGenerations.clear();
   }
 
   private scheduleRefresh(): void {
@@ -152,7 +154,8 @@ export class EditorOwnershipController implements vscode.Disposable {
       ? undefined
       : workspaceRelativePath(repository.root, uri.fsPath);
     if (repository === undefined || path === undefined) return;
-    const token = (this.pendingSaveRefreshes.get(key) ?? 0) + 1;
+    const token = (this.saveRefreshGenerations.get(key) ?? 0) + 1;
+    this.saveRefreshGenerations.set(key, token);
     this.pendingSaveRefreshes.set(key, token);
     void repository.analyzer.refresh('working-tree', [path]).then(
       () => {

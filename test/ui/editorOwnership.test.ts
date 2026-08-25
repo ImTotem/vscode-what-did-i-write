@@ -177,6 +177,49 @@ describe('EditorOwnershipController', () => {
     controller.dispose();
   });
 
+  it('keeps save B gated when superseded save A settles first', async () => {
+    const old = record([{ start: 0, endExclusive: 2, commit: committed, uncommitted: false }]);
+    const fresh = record([{ start: 2, endExclusive: 3, commit: undefined, uncommitted: true }]);
+    const saveA = deferred<void>();
+    const saveB = deferred<void>();
+    let refreshes = 0;
+    let savedB = false;
+    const registry = fakeRegistry(old, Promise.resolve(old));
+    registry.entry.analyzer.ensureFile.mockImplementation(async () => savedB ? fresh : old);
+    registry.entry.analyzer.refresh.mockImplementation(async () => {
+      refreshes += 1;
+      if (refreshes === 1) {
+        await saveA.promise;
+        return;
+      }
+      await saveB.promise;
+      savedB = true;
+      registry.publish(fresh);
+    });
+    const editor = editorFor(documentFor('/repo/current.ts', 3));
+    setVisibleEditors([editor]);
+    const controller = new EditorOwnershipController(registry);
+
+    await controller.refreshVisibleEditors();
+    editor.setDecorations.mockClear();
+    for (const listener of mocks.documentListeners) listener({ document: editor.document });
+    for (const listener of mocks.saveListeners) listener(editor.document);
+    for (const listener of mocks.documentListeners) listener({ document: editor.document });
+    for (const listener of mocks.saveListeners) listener(editor.document);
+    await flush();
+    expect(registry.entry.analyzer.refresh).toHaveBeenCalledTimes(2);
+
+    saveA.resolve();
+    await flush();
+    expect(registry.entry.analyzer.ensureFile).toHaveBeenCalledTimes(1);
+    expect(editor.setDecorations.mock.calls.every(([, options]) => Array.isArray(options) && options.length === 0)).toBe(true);
+
+    saveB.resolve();
+    await flush();
+    expect(editor.setDecorations.mock.calls.slice(-1)[0]?.[1]).toEqual([expect.objectContaining({ range: expect.objectContaining({ start: expect.objectContaining({ line: 2 }) }) })]);
+    controller.dispose();
+  });
+
   it('creates committed green and working blue decorations, applies inclusive full-document ranges, and disposes', () => {
     mocks.decorations.splice(0);
     const registry = fakeRegistry(record([]), Promise.resolve(undefined));
