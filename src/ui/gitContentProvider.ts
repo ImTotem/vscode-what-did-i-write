@@ -49,7 +49,10 @@ export function parseRevisionUri(uri: vscode.Uri): RevisionDocument {
 }
 
 export class GitContentProvider implements vscode.TextDocumentContentProvider {
-  public constructor(private readonly registry: RepositoryRegistry) {}
+  public constructor(
+    private readonly registry: RepositoryRegistry,
+    private readonly onError?: (error: unknown, operation: string, path: string) => void
+  ) {}
 
   public async provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
     const descriptor = parseRevisionUri(uri);
@@ -57,7 +60,13 @@ export class GitContentProvider implements vscode.TextDocumentContentProvider {
     if (entry === undefined) return '';
     const repository = entry.repository as unknown as RevisionRepository;
     if (typeof repository.showFile !== 'function') return '';
-    const contents = await repository.showFile(descriptor.revision, descriptor.path);
+    let contents: Buffer | undefined;
+    try {
+      contents = await repository.showFile(descriptor.revision, descriptor.path);
+    } catch (error: unknown) {
+      this.onError?.(error, 'revision-content', descriptor.path);
+      throw error;
+    }
     return contents === undefined ? '' : new TextDecoder('utf-8').decode(contents);
   }
 }

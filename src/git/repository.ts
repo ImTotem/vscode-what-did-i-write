@@ -114,9 +114,12 @@ export class GitRepository {
   public async getLineHistory(path: string, line: number): Promise<CommitSummary[]> {
     if (!Number.isSafeInteger(line) || line < 1) throw new RangeError('line must be a positive one-based integer');
     const result = await this.runner.run(this.root, [
-      '--literal-pathspecs', 'log', 'HEAD', '-L', `${line},${line}:${path}`, LOG_FORMAT
-    ]);
-    return parseHistoryRecords(result.stdout);
+      '--literal-pathspecs', 'log', 'HEAD', '--no-patch',
+      '-L', `${line},${line}:${path}`, LOG_FORMAT
+    ], { allowExitCodes: [0, 1, 128] });
+    return result.exitCode === 0
+      ? parseHistoryRecords(result.stdout)
+      : [];
   }
 
   public async showFile(revision: string, path: string): Promise<Buffer | undefined> {

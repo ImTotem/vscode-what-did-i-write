@@ -29,7 +29,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const decorationProvider = new MyCodeDecorationProvider(registry);
   const treeProvider = new MyCodeTreeProvider(registry);
   const editorOwnership = new EditorOwnershipController(registry);
-  const gitContentProvider = new GitContentProvider(registry);
+  const gitContentProvider = new GitContentProvider(registry, reportError);
   const historyController = new HistoryController(registry);
   statusController = new StatusController(registry, statusItem, {
     showWarning: (message, ...actions) => vscode.window.showWarningMessage(message, ...actions),
@@ -38,6 +38,12 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   const refreshFingerprintsWhenFocused = (): Promise<void> =>
     vscode.window.state.focused ? refreshController.tick() : Promise.resolve();
+
+  const runHistoryCommand = (
+    operation: string, target: unknown, action: () => Promise<void>
+  ): Promise<void> => Promise.resolve()
+    .then(action)
+    .catch((error: unknown) => reportError(error, operation, commandTargetPath(target)));
 
   context.subscriptions.push(
     output,
@@ -56,10 +62,20 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('myCode.retryIdentity', () => refreshController.retryIdentity()),
     vscode.commands.registerCommand('myCode.toggleLineBackground', () => editorOwnership.toggleLineBackground()),
     vscode.commands.registerCommand('myCode.openFile', (node: MyCodeNode) => openFile(node)),
-    vscode.commands.registerCommand('myCode.showFileHistory', (target?: unknown) => historyController.showFileHistory(target)),
-    vscode.commands.registerCommand('myCode.showLineHistory', (target?: unknown, line?: number) => historyController.showLineHistory(target, line)),
-    vscode.commands.registerCommand('myCode.openCommitDiff', (target) => historyController.openCommitDiff(target)),
-    vscode.commands.registerCommand('myCode.openWorkingTreeDiff', (target) => historyController.openWorkingTreeDiff(target)),
+    vscode.commands.registerCommand('myCode.showFileHistory', (target?: unknown) =>
+      runHistoryCommand('file-history', target, () => historyController.showFileHistory(target))),
+    vscode.commands.registerCommand('myCode.showLineHistory', (target?: unknown, line?: number) =>
+      runHistoryCommand('line-history', target, () => historyController.showLineHistory(target, line))),
+    vscode.commands.registerCommand('myCode.openCommitDiff', (
+      target?: Parameters<HistoryController['openCommitDiff']>[0]
+    ) => target === undefined ? undefined : runHistoryCommand(
+      'commit-diff', target, () => historyController.openCommitDiff(target)
+    )),
+    vscode.commands.registerCommand('myCode.openWorkingTreeDiff', (
+      target?: Parameters<HistoryController['openWorkingTreeDiff']>[0]
+    ) => target === undefined ? undefined : runHistoryCommand(
+      'working-tree-diff', target, () => historyController.openWorkingTreeDiff(target)
+    )),
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       void registry
         .updateWorkspaceFolders((vscode.workspace.workspaceFolders ?? []).map(({ uri }) => uri))
@@ -95,4 +111,18 @@ function isMissingGit(error: unknown): boolean {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function commandTargetPath(target: unknown): string {
+  if (typeof target !== 'object' || target === null) return 'active-editor';
+  const candidate = target as {
+    readonly relativePath?: unknown;
+    readonly workingPath?: unknown;
+    readonly path?: unknown;
+    readonly file?: { readonly relativePath?: unknown };
+  };
+  for (const path of [candidate.relativePath, candidate.workingPath, candidate.path, candidate.file?.relativePath]) {
+    if (typeof path === 'string' && path.length > 0) return path;
+  }
+  return 'active-editor';
 }

@@ -30,7 +30,9 @@ describe('extension manifest', () => {
       'myCode.retryIdentity',
       'myCode.openFile',
       'myCode.showFileHistory',
-      'myCode.showLineHistory',
+      'myCode.showLineHistory'
+    ]));
+    expect(commands.map(({ command }) => command)).not.toEqual(expect.arrayContaining([
       'myCode.openCommitDiff',
       'myCode.openWorkingTreeDiff'
     ]));

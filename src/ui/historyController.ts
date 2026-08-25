@@ -31,6 +31,7 @@ export interface WorkingHistoryQuickPickItem extends vscode.QuickPickItem {
   readonly headPath: string;
   readonly workingPath: string;
   readonly exists: boolean;
+  readonly headExists: boolean;
 }
 
 export type HistoryQuickPickItem = CommitHistoryQuickPickItem | WorkingHistoryQuickPickItem;
@@ -77,7 +78,7 @@ export class HistoryController {
     const target = this.resolveTarget(input);
     if (target === undefined) return;
     const repository = historyRepository(target.entry);
-    const working = await currentChangeItem(repository, target.path);
+    const working = await currentChangeItem(repository, target.root, target.path);
     const historyPath = working?.headPath ?? target.path;
     const history = repository.getFileHistoryEntries === undefined
       ? await repository.getFileHistory(historyPath)
@@ -110,8 +111,11 @@ export class HistoryController {
     if (!Number.isSafeInteger(activeLine) || (activeLine as number) < 0) return;
     const line = activeLine as number;
     const repository = historyRepository(target.entry);
-    const history = await repository.getLineHistory(target.path, line + 1);
-    const working = await currentChangeItem(repository, target.path);
+    const working = await currentChangeItem(repository, target.root, target.path);
+    const historyPath = working?.headPath ?? target.path;
+    const history = working?.headExists === false
+      ? []
+      : await repository.getLineHistory(historyPath, line + 1);
     const items: HistoryQuickPickItem[] = [
       ...(working === undefined ? [] : [working]),
       ...commitQuickPickItems(history, target.identity, target.path, this.now())
@@ -149,7 +153,7 @@ export class HistoryController {
     const location = detailed.line === undefined ? displayPath : `${displayPath}:${detailed.line + 1}`;
     const title = `${location} — ${detailed.commit.subject} (${detailed.commit.hash.slice(0, 7)})`;
     await vscode.commands.executeCommand('vscode.diff', before, after, title, { preview: true });
-    if (detailed.line !== undefined) revealLine(detailed.line);
+    if (detailed.line !== undefined) revealLine(detailed.line, before, after);
   }
 
   public async openWorkingTreeDiff(target: {
@@ -171,7 +175,7 @@ export class HistoryController {
     await vscode.commands.executeCommand(
       'vscode.diff', before, after, `${location} — Current changes`, { preview: true }
     );
-    if (target.line !== undefined) revealLine(target.line);
+    if (target.line !== undefined) revealLine(target.line, before, after);
   }
 
   private resolveTarget(input: unknown): ResolvedTarget | undefined {
@@ -232,19 +236,35 @@ function historyRepository(entry: RegisteredRepository): HistoryRepository {
 
 async function currentChangeItem(
   repository: HistoryRepository,
+  root: string,
   path: string
 ): Promise<WorkingHistoryQuickPickItem | undefined> {
   const changes = await repository.getWorkingChanges();
-  const change = changes.find(({ path: changedPath, originalPath }) => changedPath === path || originalPath === path);
-  if (change === undefined) return undefined;
+  const matching = changes.filter(
+    ({ path: changedPath, originalPath }) => changedPath === path || originalPath === path
+  );
+  if (matching.length === 0) return undefined;
+  const rename = matching.find(({ originalPath }) => originalPath !== undefined);
+  const headPath = rename?.originalPath ?? path;
+  const workingPath = rename?.path ?? path;
+  const onlyNew = matching.every(
+    ({ status }) => !status.includes('D') && (status === '?' || status.includes('A'))
+  );
+  const fallbackExists = matching.some(
+    ({ status }) => status === '?' || !status.includes('D')
+  );
+  const exists = await workspacePathExists(join(root, workingPath), fallbackExists);
   return {
     itemType: 'working',
     label: 'Current changes',
-    description: 'Working tree',
-    detail: change.originalPath === undefined ? change.path : `${change.originalPath} → ${change.path}`,
-    headPath: change.originalPath ?? path,
-    workingPath: change.path,
-    exists: !change.status.includes('D')
+    description: matching.map(({ status }) => status).join(', '),
+    detail: rename?.originalPath === undefined
+      ? workingPath
+      : `${rename.originalPath} → ${workingPath}`,
+    headPath,
+    workingPath,
+    exists,
+    headExists: rename !== undefined || !onlyNew
   };
 }
 
@@ -282,15 +302,34 @@ function isHistoryEntry(value: CommitSummary | FileHistoryEntry): value is FileH
   return 'commit' in value;
 }
 
-function revealLine(line: number): void {
+function revealLine(line: number, before: vscode.Uri, after: vscode.Uri): void {
   const editor = vscode.window.activeTextEditor;
-  if (editor === undefined) return;
-  const position = new vscode.Position(line, 0);
+  if (editor === undefined || editor.document.lineCount < 1) return;
+  const activeUri = editor.document.uri.toString();
+  if (activeUri !== before.toString() && activeUri !== after.toString()) {
+    return;
+  }
+  const safeLine = Math.min(Math.max(line, 0), editor.document.lineCount - 1);
+  const position = new vscode.Position(safeLine, 0);
   const selection = new vscode.Selection(position, position);
   editor.selection = selection;
   editor.revealRange(selection, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
 }
 
+async function workspacePathExists(path: string, fallback: boolean): Promise<boolean> {
+  const workspaceFs = (vscode.workspace as unknown as {
+    readonly fs?: { stat(uri: vscode.Uri): Thenable<unknown> };
+  }).fs;
+  if (workspaceFs === undefined) {
+    return fallback;
+  }
+  try {
+    await workspaceFs.stat(vscode.Uri.file(path));
+    return true;
+  } catch {
+    return false;
+  }
+}
 function sameRoot(left: string, right: string): boolean {
   return process.platform === 'win32'
     ? left.toLocaleLowerCase() === right.toLocaleLowerCase()

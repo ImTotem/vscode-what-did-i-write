@@ -42,7 +42,7 @@ const mocks = vi.hoisted(() => {
 
   class Selection extends Range {}
 
-  const executeCommand = vi.fn(async () => undefined);
+  const executeCommand = vi.fn(async (..._args: unknown[]) => undefined);
   const showQuickPick = vi.fn(async (_items: unknown) => undefined as unknown);
   const activeTextEditor = {
     document: { uri: Uri.from({ scheme: 'my-code-git', path: '/revision' }) },
@@ -63,7 +63,8 @@ vi.mock('vscode', () => ({
   window: {
     activeTextEditor: mocks.activeTextEditor,
     showQuickPick: mocks.showQuickPick
-  }
+  },
+  workspace: { fs: undefined },
 }));
 
 import type { CommitSummary, GitIdentity } from '../../src/core/model.js';
@@ -222,6 +223,12 @@ describe('HistoryController', () => {
     } as unknown as vscode.Selection;
     mocks.showQuickPick.mockImplementationOnce(async (items: unknown) => (items as HistoryQuickPickItem[])[0]);
     const controller = new HistoryController(registry, () => 1_700_086_400_000);
+    mocks.executeCommand.mockImplementationOnce(async (_command, _before, after) => {
+      mocks.activeTextEditor.document = {
+        uri: after as InstanceType<typeof mocks.Uri>,
+        lineCount: 5
+      } as unknown as vscode.TextDocument;
+    });
 
     await controller.showLineHistory();
 

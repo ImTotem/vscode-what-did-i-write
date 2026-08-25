@@ -90,7 +90,7 @@ vi.mock('vscode', () => ({
 import { activate } from '../../src/extension.js';
 
 describe('extension activation', () => {
-  it('registers Explorer and history commands plus the read-only revision provider', () => {
+  it('registers Explorer and history commands plus the read-only revision provider', async () => {
     const subscriptions: { dispose(): unknown }[] = [];
     const context = { subscriptions, storageUri: undefined } as unknown as vscode.ExtensionContext;
 
@@ -125,6 +125,13 @@ describe('extension activation', () => {
     expect(subscriptions).toHaveLength(26);
     expect(subscriptions).toEqual(expect.arrayContaining([mocks.output, mocks.status]));
     expect(mocks.status.text).toBe('$(sync~spin) My Code: Scanning');
+
+    const commitDiffHandler = mocks.commandHandlers.get('myCode.openCommitDiff');
+    const workingDiffHandler = mocks.commandHandlers.get('myCode.openWorkingTreeDiff');
+    await expect(
+      Promise.resolve(commitDiffHandler?.())
+    ).resolves.toBeUndefined();
+    await expect(Promise.resolve(workingDiffHandler?.())).resolves.toBeUndefined();
   });
 });
 
