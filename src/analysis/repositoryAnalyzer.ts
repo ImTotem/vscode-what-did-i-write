@@ -80,6 +80,7 @@ export class RepositoryAnalyzer {
   private readonly inFlight = new Map<string, AnalysisJob>();
   private readonly queuedJobs: AnalysisJob[] = [];
   private readonly pendingJobs = new Map<number, number>();
+  private readonly indexLoads = new Map<string, Promise<Map<string, MutableCandidate>>>();
   private indexedCandidates = new Map<string, MutableCandidate>();
   private indexCacheKey: string | undefined;
   private candidates = new Map<string, Candidate>();
@@ -110,6 +111,19 @@ export class RepositoryAnalyzer {
 
   public async refresh(_reason: RefreshReason, paths?: readonly string[]): Promise<void> {
     const generation = ++this.generation;
+    this.dropQueuedJobsBefore(generation);
+    try {
+      await this.refreshGeneration(generation, paths);
+    } catch (error) {
+      if (generation === this.generation) this.publish(false);
+      throw error;
+    }
+  }
+
+  private async refreshGeneration(
+    generation: number,
+    paths: readonly string[] | undefined
+  ): Promise<void> {
     const [identity, head, workingChanges] = await Promise.all([
       this.repository.getGlobalIdentity(),
       this.repository.getHead(),
@@ -127,17 +141,8 @@ export class RepositoryAnalyzer {
       if (this.indexCacheKey === cacheKeyText) {
         indexedCandidates = cloneCandidates(this.indexedCandidates);
       } else {
-        const cached = await this.cacheStore.loadIndex(cacheKey);
+        indexedCandidates = await this.loadIndexedCandidates(cacheKey, identity);
         if (generation !== this.generation) return;
-        if (cached !== undefined) {
-          indexedCandidates = candidatesFromCache(cached);
-        } else {
-          const index = await this.repository.getUserIndex(identity);
-          if (generation !== this.generation) return;
-          indexedCandidates = buildCandidates(index, identity);
-          await this.cacheStore.saveIndex(cacheKey, indexForCache(indexedCandidates));
-          if (generation !== this.generation) return;
-        }
       }
     }
 
@@ -178,6 +183,36 @@ export class RepositoryAnalyzer {
       }
     }
     if (!this.isScanning(generation)) this.publish(false);
+  }
+
+  private loadIndexedCandidates(
+    cacheKey: CacheIndexKey,
+    identity: GitIdentity
+  ): Promise<Map<string, MutableCandidate>> {
+    const key = JSON.stringify(cacheKey);
+    const existing = this.indexLoads.get(key);
+    if (existing !== undefined) return existing;
+
+    const load = this.readIndexedCandidates(cacheKey, identity);
+    this.indexLoads.set(key, load);
+    const clear = (): void => {
+      if (this.indexLoads.get(key) === load) this.indexLoads.delete(key);
+    };
+    void load.then(clear, clear);
+    return load;
+  }
+
+  private async readIndexedCandidates(
+    cacheKey: CacheIndexKey,
+    identity: GitIdentity
+  ): Promise<Map<string, MutableCandidate>> {
+    const cached = await this.cacheStore.loadIndex(cacheKey);
+    if (cached !== undefined) return candidatesFromCache(cached);
+
+    const index = await this.repository.getUserIndex(identity);
+    const candidates = buildCandidates(index, identity);
+    await this.cacheStore.saveIndex(cacheKey, indexForCache(candidates));
+    return candidates;
   }
 
   public ensureFile(
@@ -229,6 +264,10 @@ export class RepositoryAnalyzer {
     while (this.activeJobs < 4) {
       const job = this.queuedJobs.shift();
       if (job === undefined) return;
+      if (job.generation !== this.generation) {
+        this.settleQueuedJob(job);
+        continue;
+      }
       job.active = true;
       this.activeJobs += 1;
       void this.analyzeCandidate(job.candidate, job.generation)
@@ -236,13 +275,35 @@ export class RepositoryAnalyzer {
         .finally(() => {
           if (this.inFlight.get(job.key) === job) this.inFlight.delete(job.key);
           this.activeJobs -= 1;
-          const pending = (this.pendingJobs.get(job.generation) ?? 1) - 1;
-          if (pending === 0) this.pendingJobs.delete(job.generation);
-          else this.pendingJobs.set(job.generation, pending);
+          this.decrementPending(job.generation);
           if (job.generation === this.generation) this.publish(this.isScanning(job.generation));
           this.pumpQueue();
         });
     }
+  }
+
+  private dropQueuedJobsBefore(generation: number): void {
+    for (let index = this.queuedJobs.length - 1; index >= 0; index -= 1) {
+      const job = this.queuedJobs[index];
+      if (job !== undefined && job.generation < generation) {
+        this.queuedJobs.splice(index, 1);
+        this.settleQueuedJob(job);
+      }
+    }
+  }
+
+  private settleQueuedJob(job: AnalysisJob): void {
+    if (this.inFlight.get(job.key) === job) this.inFlight.delete(job.key);
+    this.decrementPending(job.generation);
+    job.resolve(toFileRecord(job.candidate));
+  }
+
+  private decrementPending(generation: number): void {
+    const current = this.pendingJobs.get(generation);
+    if (current === undefined) return;
+    const pending = current - 1;
+    if (pending === 0) this.pendingJobs.delete(generation);
+    else this.pendingJobs.set(generation, pending);
   }
 
   private sortQueue(): void {
@@ -269,6 +330,7 @@ export class RepositoryAnalyzer {
     candidate: Candidate,
     generation: number
   ): Promise<FileRecord | undefined> {
+    if (generation !== this.generation) return this.getFile(candidate.relativePath);
     let contents: Buffer;
     try {
       contents = await readFile(this.absolutePath(candidate.relativePath));
@@ -282,6 +344,8 @@ export class RepositoryAnalyzer {
       this.publish(this.isScanning(generation));
       return toFileRecord(candidate);
     }
+
+    if (generation !== this.generation) return this.getFile(candidate.relativePath);
 
     const binary = contents.subarray(0, 8192).includes(0);
     if (binary) {

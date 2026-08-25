@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { posix, resolve, win32 } from 'node:path';
 
 import type { CommitSummary } from '../core/model.js';
 
@@ -92,7 +92,17 @@ function sameKey(left: CacheIndexKey, right: CacheIndexKey): boolean {
 function isCacheEnvelope(value: unknown): value is CacheEnvelope {
   if (!isRecord(value) || !isCacheKey(value.key) || !isRecord(value.value)) return false;
   if (!Array.isArray(value.value.commits) || !value.value.commits.every(isCommitSummary)) return false;
-  return Array.isArray(value.value.files) && value.value.files.every(isCachedIndexFile);
+  if (!Array.isArray(value.value.files) || !value.value.files.every(isCachedIndexFile)) return false;
+
+  const commitHashes = new Set(value.value.commits.map((commit) => commit.hash));
+  if (commitHashes.size !== value.value.commits.length) return false;
+  const paths = new Set(value.value.files.map((file) => file.relativePath));
+  return paths.size === value.value.files.length
+    && value.value.files.every((file) =>
+      file.commitHashes.length > 0
+      && new Set(file.commitHashes).size === file.commitHashes.length
+      && file.commitHashes.every((hash) => commitHashes.has(hash))
+    );
 }
 
 function isCacheKey(value: unknown): value is CacheIndexKey {
@@ -105,6 +115,7 @@ function isCacheKey(value: unknown): value is CacheIndexKey {
 function isCommitSummary(value: unknown): value is CommitSummary {
   return isRecord(value)
     && typeof value.hash === 'string'
+    && /^[0-9a-f]{40,64}$/i.test(value.hash)
     && typeof value.authorName === 'string'
     && typeof value.authorEmail === 'string'
     && typeof value.authoredAt === 'number'
@@ -115,9 +126,21 @@ function isCommitSummary(value: unknown): value is CommitSummary {
 function isCachedIndexFile(value: unknown): value is CachedIndexFile {
   return isRecord(value)
     && typeof value.relativePath === 'string'
+    && isSafeNormalizedRelativePath(value.relativePath)
     && typeof value.introducedByUser === 'boolean'
     && Array.isArray(value.commitHashes)
     && value.commitHashes.every((hash) => typeof hash === 'string');
+}
+
+function isSafeNormalizedRelativePath(value: string): boolean {
+  return value.length > 0
+    && !value.includes('\0')
+    && !value.includes('\\')
+    && !posix.isAbsolute(value)
+    && !win32.isAbsolute(value)
+    && posix.normalize(value) === value
+    && value !== '.'
+    && value.split('/').every((part) => part.length > 0 && part !== '.' && part !== '..');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

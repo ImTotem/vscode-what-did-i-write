@@ -4,7 +4,12 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { CacheStore } from '../../src/analysis/cacheStore.js';
+import {
+  CacheStore,
+  hashRepositoryRoot,
+  type CachedRepositoryIndex,
+  type CacheIndexKey
+} from '../../src/analysis/cacheStore.js';
 import {
   RepositoryAnalyzer,
   type RepositoryAccess
@@ -44,6 +49,8 @@ describe('RepositoryAnalyzer', () => {
     expect(published[0]).toMatchObject({ scanning: true });
     expect(published[0]?.files.map((file) => file.relativePath)).toEqual(expect.arrayContaining([
       'mine-added.ts',
+      'mine-binary.dat',
+      'mine-deleted.ts',
       'mine-survives.ts',
       'mine-overwritten.ts',
       'mine-reverted.ts',
@@ -52,6 +59,8 @@ describe('RepositoryAnalyzer', () => {
     ]));
     await Promise.all([
       'mine-added.ts',
+      'mine-binary.dat',
+      'mine-deleted.ts',
       'mine-survives.ts',
       'mine-overwritten.ts',
       'mine-reverted.ts',
@@ -62,6 +71,12 @@ describe('RepositoryAnalyzer', () => {
     const find = (path: string): FileRecord | undefined => analyzer.getFile(path);
     const kind = (path: string): FileKind | undefined => find(path)?.kind;
     expect(kind('mine-added.ts')).toBe('added');
+    expect(find('mine-binary.dat')).toMatchObject({
+      kind: 'added',
+      binary: true,
+      ranges: []
+    });
+    expect(find('mine-deleted.ts')).toMatchObject({ kind: 'past', exists: false });
     expect(kind('mine-survives.ts')).toBe('modified');
     expect(kind('mine-overwritten.ts')).toBe('past');
     expect(kind('mine-reverted.ts')).toBe('past');
@@ -106,12 +121,26 @@ describe('RepositoryAnalyzer', () => {
     const persisted = await readFile(join(storagePath, cacheFiles[0] as string), 'utf8');
     expect(persisted).not.toContain('secret source must not persist');
 
+    await fixture.run(['config', '--global', 'user.name', 'Someone Else']);
+    await fixture.run(['config', '--global', 'user.email', 'someone-else@example.com']);
+    const differentIdentity = new RepositoryAnalyzer(repository, cacheStore);
+    await differentIdentity.initialize();
+    expect(calls.logScans).toBe(2);
+    expect(differentIdentity.getSnapshot().files).toEqual([]);
+
+    await fixture.run(['config', '--global', 'user.name', fixture.globalIdentity.name]);
+    await fixture.run(['config', '--global', 'user.email', fixture.globalIdentity.email]);
+    await second.refresh('identity');
+    await second.ensureFile('cached.ts', 'active-editor');
+    const cachedBlamesBeforeHeadChange = count(calls.blamedPaths, 'cached.ts');
+
     await fixture.writeText('head-change.ts', 'export const head = true;\n');
     await fixture.commit('advance head');
     await second.refresh('head');
-    expect(calls.logScans).toBe(2);
-
     await second.ensureFile('cached.ts', 'active-editor');
+    expect(calls.logScans).toBe(3);
+    expect(count(calls.blamedPaths, 'cached.ts')).toBeGreaterThan(cachedBlamesBeforeHeadChange);
+
     await second.ensureFile('unaffected.ts', 'active-editor');
     const cachedBlamesBefore = count(calls.blamedPaths, 'cached.ts');
     const unaffectedBlamesBefore = count(calls.blamedPaths, 'unaffected.ts');
@@ -124,7 +153,7 @@ describe('RepositoryAnalyzer', () => {
     await second.refresh('working-tree', ['cached.ts']);
     await second.ensureFile('cached.ts', 'active-editor');
     await second.ensureFile('unaffected.ts', 'active-editor');
-    expect(calls.logScans).toBe(2);
+    expect(calls.logScans).toBe(3);
     expect(count(calls.blamedPaths, 'cached.ts')).toBeGreaterThan(cachedBlamesBefore);
     expect(count(calls.blamedPaths, 'unaffected.ts')).toBe(unaffectedBlamesBefore);
 
@@ -135,7 +164,7 @@ describe('RepositoryAnalyzer', () => {
   it('prioritizes active editors while limiting blame work to four jobs', async () => {
     const root = await createTemporaryDirectory();
     const storagePath = await createTemporaryDirectory();
-    const paths = Array.from({ length: 6 }, (_, index) => `priority-${index + 1}.ts`);
+    const paths = Array.from({ length: 7 }, (_, index) => `priority-${index + 1}.ts`);
     await Promise.all(paths.map(async (path) => writeFile(join(root, path), 'owned\n')));
     const releases = new Map(paths.map((path) => [path, deferred<void>()]));
     const started: string[] = [];
@@ -154,16 +183,44 @@ describe('RepositoryAnalyzer', () => {
     const analyzer = new RepositoryAnalyzer(repository, new CacheStore(storagePath));
 
     await analyzer.initialize();
-    const urgent = analyzer.ensureFile('priority-6.ts', 'active-editor');
+    const explorer = analyzer.ensureFile('priority-6.ts', 'explorer');
+    const urgent = analyzer.ensureFile('priority-7.ts', 'active-editor');
     await waitUntil(() => started.length >= 4);
     releases.get(started[0] as string)?.resolve();
-    await waitUntil(() => started.length >= 5 && started.includes('priority-6.ts'));
+    await waitUntil(() => started.length >= 5 && started.includes('priority-7.ts'));
+    releases.get(started[1] as string)?.resolve();
+    await waitUntil(() => started.length >= 6 && started.includes('priority-6.ts'));
     for (const release of releases.values()) release.resolve();
-    await urgent;
+    await Promise.all([urgent, explorer]);
     await waitUntil(() => completed === paths.length);
 
     expect(maximumActive).toBeLessThanOrEqual(4);
-    expect(started[4]).toBe('priority-6.ts');
+    expect(started[4]).toBe('priority-7.ts');
+    expect(started[5]).toBe('priority-6.ts');
+  });
+
+  it('drops superseded queued blame jobs before they start', async () => {
+    const root = await createTemporaryDirectory();
+    const storagePath = await createTemporaryDirectory();
+    const paths = Array.from({ length: 6 }, (_, index) => `stale-queue-${index + 1}.ts`);
+    await Promise.all(paths.map(async (path) => writeFile(join(root, path), 'owned\n')));
+    const starts: { path: string; release: Deferred<void> }[] = [];
+    const repository = new ControlledRepository(root, paths, async (path) => {
+      const release = deferred<void>();
+      starts.push({ path, release });
+      await release.promise;
+      return [ownedLine(userCommit)];
+    });
+    const analyzer = new RepositoryAnalyzer(repository, new CacheStore(storagePath));
+
+    await analyzer.initialize();
+    await waitUntil(() => starts.length === 4);
+    await analyzer.refresh('working-tree', paths);
+    await drainBlameStarts(starts, analyzer);
+
+    expect(starts).toHaveLength(10);
+    expect(starts.filter(({ path }) => path === 'stale-queue-5.ts')).toHaveLength(1);
+    expect(starts.filter(({ path }) => path === 'stale-queue-6.ts')).toHaveLength(1);
   });
 
   it('discards stale blame writes and settles scanning for the current generation', async () => {
@@ -230,6 +287,117 @@ describe('RepositoryAnalyzer', () => {
 
     expect(analyzer.getSnapshot()).toMatchObject({ files: [], scanning: false });
   });
+
+  it('shares one cold index scan across concurrent refresh generations', async () => {
+    const root = await createTemporaryDirectory();
+    const storagePath = await createTemporaryDirectory();
+    await writeFile(join(root, 'shared.ts'), 'shared\n');
+    const repository = new DeferredIndexRepository(root, ['shared.ts']);
+    const cacheStore = new AlwaysMissCacheStore(storagePath);
+    const analyzer = new RepositoryAnalyzer(repository, cacheStore);
+
+    const initialize = analyzer.initialize();
+    await waitUntil(() => repository.logScans === 1);
+    const overlappingRefresh = analyzer.refresh('manual');
+    await waitUntil(() => repository.workingReads === 2);
+    await nextTurn();
+    repository.resolveIndex();
+    await Promise.all([initialize, overlappingRefresh]);
+
+    expect(repository.logScans).toBe(1);
+  });
+
+  it('rejects unsafe paths and missing commit references in the disk cache', async () => {
+    const root = await createTemporaryDirectory();
+    const storagePath = await createTemporaryDirectory();
+    await writeFile(join(root, 'safe.ts'), 'safe\n');
+    const cacheStore = new CacheStore(storagePath);
+    const key: CacheIndexKey = {
+      rootHash: hashRepositoryRoot(root),
+      head: 'a'.repeat(40),
+      normalizedIdentity: '["me","me@example.com"]'
+    };
+    const corruptIndexes: CachedRepositoryIndex[] = [
+      {
+        commits: [userCommit],
+        files: [{
+          relativePath: '../outside.ts',
+          introducedByUser: false,
+          commitHashes: [userCommit.hash]
+        }]
+      },
+      {
+        commits: [userCommit],
+        files: [{
+          relativePath: 'nested/../safe.ts',
+          introducedByUser: false,
+          commitHashes: [userCommit.hash]
+        }]
+      },
+      {
+        commits: [userCommit],
+        files: [{
+          relativePath: 'C:/absolute.ts',
+          introducedByUser: false,
+          commitHashes: [userCommit.hash]
+        }]
+      },
+      {
+        commits: [userCommit],
+        files: [{
+          relativePath: 'safe.ts',
+          introducedByUser: false,
+          commitHashes: ['f'.repeat(40)]
+        }]
+      }
+    ];
+
+    for (const corrupt of corruptIndexes) {
+      await cacheStore.saveIndex(key, corrupt);
+      const repository = new StaticRepository(root, ['safe.ts']);
+      const analyzer = new RepositoryAnalyzer(repository, cacheStore);
+
+      await analyzer.initialize();
+      await analyzer.ensureFile('safe.ts', 'active-editor');
+
+      expect(repository.logScans).toBe(1);
+      expect(analyzer.getFile('safe.ts')?.exists).toBe(true);
+    }
+  });
+
+  it('settles the current snapshot when refresh fails', async () => {
+    const root = await createTemporaryDirectory();
+    const storagePath = await createTemporaryDirectory();
+    await writeFile(join(root, 'retained.ts'), 'retained\n');
+    const blameGate = deferred<void>();
+    let blameStarted = false;
+    let failWorkingRead = false;
+    const repository = new ControlledRepository(
+      root,
+      ['retained.ts'],
+      async () => {
+        blameStarted = true;
+        await blameGate.promise;
+        return [ownedLine(userCommit)];
+      },
+      async () => {
+        if (failWorkingRead) throw new Error('controlled refresh failure');
+        return [];
+      }
+    );
+    const analyzer = new RepositoryAnalyzer(repository, new CacheStore(storagePath));
+
+    await analyzer.initialize();
+    await waitUntil(() => blameStarted);
+    expect(analyzer.getSnapshot().scanning).toBe(true);
+    failWorkingRead = true;
+
+    await expect(analyzer.refresh('manual')).rejects.toThrow('controlled refresh failure');
+
+    expect(analyzer.getFile('retained.ts')).toBeDefined();
+    expect(analyzer.getSnapshot().scanning).toBe(false);
+    blameGate.resolve();
+  });
 });
 
 async function createClassificationScenario(): Promise<GitFixture> {
@@ -246,6 +414,8 @@ async function createClassificationScenario(): Promise<GitFixture> {
 
   await fixture.setLocalIdentity(fixture.globalIdentity);
   await fixture.writeText('mine-added.ts', 'export const mine = true;\n');
+  await fixture.writeText('mine-deleted.ts', 'export const deleted = true;\n');
+  await fixture.writeBytes('mine-binary.dat', Buffer.from([65, 0, 66]));
   await fixture.commit('add mine-added');
   await fixture.writeText('mine-survives.ts', 'const first = "alice";\nconst second = "mine";\n');
   await fixture.commit('edit mine-survives');
@@ -257,6 +427,7 @@ async function createClassificationScenario(): Promise<GitFixture> {
 
   await fixture.setLocalIdentity(alice);
   await fixture.run(['revert', '--no-edit', revertedCommit]);
+  await fixture.run(['rm', '--', 'mine-deleted.ts']);
   await fixture.writeText('mine-overwritten.ts', 'export const value = "alice replacement";\n');
   await fixture.commit('replace mine-overwritten');
 
@@ -348,7 +519,8 @@ class ControlledRepository implements RepositoryAccess {
   public constructor(
     public readonly root: string,
     private readonly paths: readonly string[],
-    private readonly runBlame: (path: string) => Promise<BlameLine[]>
+    private readonly runBlame: (path: string) => Promise<BlameLine[]>,
+    private readonly readWorkingChanges: () => Promise<WorkingChange[]> = async () => []
   ) {}
 
   public async getGlobalIdentity(): Promise<GitIdentity> {
@@ -370,11 +542,89 @@ class ControlledRepository implements RepositoryAccess {
   }
 
   public async getWorkingChanges(): Promise<WorkingChange[]> {
-    return [];
+    return this.readWorkingChanges();
   }
 
   public blame(path: string): Promise<BlameLine[]> {
     return this.runBlame(path);
+  }
+}
+
+class AlwaysMissCacheStore extends CacheStore {
+  public override async loadIndex(_key: CacheIndexKey): Promise<CachedRepositoryIndex | undefined> {
+    return undefined;
+  }
+
+  public override async saveIndex(
+    _key: CacheIndexKey,
+    _value: CachedRepositoryIndex
+  ): Promise<void> {}
+}
+
+class DeferredIndexRepository implements RepositoryAccess {
+  private readonly index = deferred<UserIndex>();
+  public logScans = 0;
+  public workingReads = 0;
+
+  public constructor(
+    public readonly root: string,
+    private readonly paths: readonly string[]
+  ) {}
+
+  public async getGlobalIdentity(): Promise<GitIdentity> {
+    return { name: 'Me', email: 'me@example.com' };
+  }
+
+  public async getHead(): Promise<string> {
+    return 'b'.repeat(40);
+  }
+
+  public async getUserIndex(_identity: GitIdentity): Promise<UserIndex> {
+    this.logScans += 1;
+    return this.index.promise;
+  }
+
+  public async getWorkingChanges(): Promise<WorkingChange[]> {
+    this.workingReads += 1;
+    return [];
+  }
+
+  public async blame(_path: string): Promise<BlameLine[]> {
+    return [];
+  }
+
+  public resolveIndex(): void {
+    this.index.resolve(indexForPaths(this.paths));
+  }
+}
+
+class StaticRepository implements RepositoryAccess {
+  public logScans = 0;
+
+  public constructor(
+    public readonly root: string,
+    private readonly paths: readonly string[]
+  ) {}
+
+  public async getGlobalIdentity(): Promise<GitIdentity> {
+    return { name: 'Me', email: 'me@example.com' };
+  }
+
+  public async getHead(): Promise<string> {
+    return 'a'.repeat(40);
+  }
+
+  public async getUserIndex(_identity: GitIdentity): Promise<UserIndex> {
+    this.logScans += 1;
+    return indexForPaths(this.paths);
+  }
+
+  public async getWorkingChanges(): Promise<WorkingChange[]> {
+    return [];
+  }
+
+  public async blame(_path: string): Promise<BlameLine[]> {
+    return [];
   }
 }
 
@@ -403,5 +653,41 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
   while (!predicate()) {
     if (Date.now() > deadline) throw new Error('timed out waiting for analyzer state');
     await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+function indexForPaths(paths: readonly string[]): UserIndex {
+  return {
+    commits: [userCommit],
+    entries: [{
+      commit: userCommit,
+      changes: paths.map((path) => ({ status: 'M', path }))
+    }]
+  };
+}
+
+async function nextTurn(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+async function drainBlameStarts(
+  starts: readonly { readonly release: Deferred<void> }[],
+  analyzer: RepositoryAnalyzer
+): Promise<void> {
+  const released = new Set<Deferred<void>>();
+  const deadline = Date.now() + 5_000;
+  while (true) {
+    for (const { release } of starts) {
+      if (!released.has(release)) {
+        released.add(release);
+        release.resolve();
+      }
+    }
+    await nextTurn();
+    if (!analyzer.getSnapshot().scanning && starts.every(({ release }) => released.has(release))) {
+      await nextTurn();
+      if (starts.every(({ release }) => released.has(release))) return;
+    }
+    if (Date.now() > deadline) throw new Error('timed out draining blame jobs');
   }
 }
