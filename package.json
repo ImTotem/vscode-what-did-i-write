@@ -6,14 +6,25 @@
   "version": "0.1.0",
   "description": "Show local Git code owned by the current Git user.",
   "license": "UNLICENSED",
-  "categories": ["Other"],
-  "keywords": ["git", "history", "blame", "local-only"],
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "git",
+    "history",
+    "blame",
+    "local-only"
+  ],
   "main": "./dist/extension.js",
   "engines": {
     "vscode": "^1.96.0"
   },
-  "extensionKind": ["workspace"],
-  "activationEvents": ["onStartupFinished"],
+  "extensionKind": [
+    "workspace"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "contributes": {
     "commands": [
       {
@@ -88,11 +99,13 @@
     "watch": "node esbuild.mjs --watch",
     "test": "vitest",
     "test:run": "vitest run",
+    "test:extension-host": "node test/extensionHost/runSmoke.cjs",
     "package": "vsce package --allow-missing-repository"
   },
   "devDependencies": {
     "@types/node": "^22.10.1",
     "@types/vscode": "^1.96.0",
+    "@vscode/test-electron": "3.1.0",
     "@vscode/vsce": "^3.2.1",
     "esbuild": "^0.24.0",
     "typescript": "^5.7.2",
