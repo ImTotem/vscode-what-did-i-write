@@ -1,6 +1,6 @@
 {
   "name": "my-code",
-  "type": "module",
+  "type": "commonjs",
   "displayName": "My Code",
   "version": "0.1.0",
   "description": "Show code owned by the current Git user.",
@@ -10,6 +10,22 @@
   },
   "extensionKind": ["workspace"],
   "activationEvents": ["onStartupFinished"],
+  "contributes": {
+    "commands": [
+      {
+        "command": "myCode.refresh",
+        "title": "My Code: Refresh"
+      },
+      {
+        "command": "myCode.showOutput",
+        "title": "My Code: Show Output"
+      },
+      {
+        "command": "myCode.retryIdentity",
+        "title": "My Code: Retry"
+      }
+    ]
+  },
   "scripts": {
     "check": "tsc --noEmit",
     "build": "node esbuild.mjs",
