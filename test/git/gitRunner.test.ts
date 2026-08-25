@@ -12,6 +12,7 @@ import { GitCommandError, GitRunner } from '../../src/git/gitRunner.js';
 interface FakeChild extends ChildProcessWithoutNullStreams {
   readonly killMock: ReturnType<typeof vi.fn>;
   close(code?: number | null): void;
+  fail(error: Error): void;
   writeStdout(chunk: string): void;
 }
 
@@ -22,6 +23,7 @@ function createChild(): FakeChild {
   const killMock = vi.fn(() => true);
   Object.assign(child, { stdout, stderr, kill: killMock, killMock });
   child.close = (code: number | null = 0) => child.emit('close', code);
+  child.fail = (error: Error) => child.emit('error', error);
   child.writeStdout = (chunk: string) => stdout.emit('data', Buffer.from(chunk));
   return child;
 }
@@ -48,6 +50,40 @@ describe('GitRunner', () => {
     expect(spawnMock).toHaveBeenCalledTimes(5);
     children[4]?.close(0);
     await expect(queued).resolves.toMatchObject({ exitCode: 0 });
+  });
+
+  it('holds process slots when a kill reports an error before close', async () => {
+    const children = Array.from({ length: 5 }, createChild);
+    spawnMock.mockImplementation(() => children[spawnMock.mock.calls.length - 1] as FakeChild);
+    const runner = new GitRunner();
+    const limited = Array.from({ length: 4 }, () => runner.run(process.cwd(), ['version'], { maxBufferBytes: 0 }));
+    const queued = runner.run(process.cwd(), ['version']);
+
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(4));
+    for (const child of children.slice(0, 4)) {
+      child.writeStdout('x');
+      child.fail(new Error('kill failed'));
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    expect(spawnMock).toHaveBeenCalledTimes(4);
+
+    for (const child of children.slice(0, 4)) child.close(null);
+    await expect(Promise.all(limited)).rejects.toBeInstanceOf(GitCommandError);
+    expect(spawnMock).toHaveBeenCalledTimes(5);
+    children[4]?.close(0);
+    await expect(queued).resolves.toMatchObject({ exitCode: 0 });
+  });
+
+  it('rejects a spawn error without waiting indefinitely for close', async () => {
+    const child = createChild();
+    spawnMock.mockReturnValue(child);
+    const runner = new GitRunner();
+    const running = runner.run(process.cwd(), ['version']);
+
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1));
+    child.fail(new Error('spawn failed'));
+
+    await expect(running).rejects.toMatchObject({ message: expect.stringContaining('spawn failed') });
   });
 
   it('rejects a queued request immediately when its signal aborts', async () => {

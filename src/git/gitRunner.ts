@@ -116,7 +116,10 @@ export class GitRunner {
         stdout.push(chunk);
       });
       child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
-      child.on('error', (error: Error) => finish(() => reject(new GitCommandError(args, Buffer.concat(stderr).toString('utf8'), null, error.message))));
+      child.on('error', (error: Error) => {
+        if (terminationError !== undefined) return;
+        finish(() => reject(new GitCommandError(args, Buffer.concat(stderr).toString('utf8'), null, error.message)));
+      });
       child.on('close', (exitCode) => finish(() => {
         const stderrText = Buffer.concat(stderr).toString('utf8');
         if (terminationError !== undefined) {
