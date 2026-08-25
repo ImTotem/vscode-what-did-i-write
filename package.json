@@ -1,0 +1,29 @@
+{
+  "name": "my-code",
+  "type": "module",
+  "displayName": "My Code",
+  "version": "0.1.0",
+  "description": "Show code owned by the current Git user.",
+  "main": "./dist/extension.js",
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "extensionKind": ["workspace"],
+  "activationEvents": ["onStartupFinished"],
+  "scripts": {
+    "check": "tsc --noEmit",
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.1",
+    "@types/vscode": "^1.96.0",
+    "@vscode/vsce": "^3.2.1",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

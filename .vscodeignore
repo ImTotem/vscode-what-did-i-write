@@ -1,0 +1,14 @@
+.gitignore
+.github
+.vscode
+.worktrees
+.superpowers
+docs
+src
+test
+coverage
+node_modules
+*.ts
+tsconfig.json
+vitest.config.ts
+esbuild.mjs
