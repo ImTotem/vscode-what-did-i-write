@@ -40,6 +40,18 @@
           "name": "MY CODE"
         }
       ]
+    },
+    "menus": {
+      "view/item": [
+        {
+          "command": "myCode.showFileHistory",
+          "when": "view == myCode.explorer && viewItem == myCode.file"
+        },
+        {
+          "command": "myCode.showFileHistory",
+          "when": "view == myCode.explorer && viewItem == myCode.pastFile"
+        }
+      ]
     }
   },
   "scripts": {

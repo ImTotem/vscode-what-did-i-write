@@ -9,6 +9,7 @@ const manifest = JSON.parse(readFileSync('package.json', 'utf8')) as {
   readonly activationEvents?: readonly string[];
   readonly contributes?: {
     readonly commands?: readonly { readonly command: string; readonly title: string }[];
+    readonly menus?: { readonly 'view/item'?: readonly { readonly command: string; readonly when: string }[] };
     readonly views?: { readonly explorer?: readonly { readonly id: string; readonly name: string }[] };
   };
 };
@@ -35,6 +36,13 @@ describe('extension manifest', () => {
   it('contributes the MY CODE Explorer view', () => {
     expect(manifest.contributes?.views?.explorer).toEqual(expect.arrayContaining([
       { id: 'myCode.explorer', name: 'MY CODE' }
+    ]));
+  });
+
+  it('routes file history from current and past MY CODE tree items', () => {
+    expect(manifest.contributes?.menus?.['view/item']).toEqual(expect.arrayContaining([
+      { command: 'myCode.showFileHistory', when: 'view == myCode.explorer && viewItem == myCode.file' },
+      { command: 'myCode.showFileHistory', when: 'view == myCode.explorer && viewItem == myCode.pastFile' }
     ]));
   });
 });

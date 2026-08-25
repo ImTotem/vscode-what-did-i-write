@@ -11,7 +11,8 @@ const mocks = vi.hoisted(() => {
   const disposable = () => ({ dispose: vi.fn() });
   const output = { appendLine: vi.fn(), show: vi.fn(), dispose: vi.fn() };
   const status = { text: '', show: vi.fn(), dispose: vi.fn() };
-  const showQuickPick = vi.fn(async () => undefined);
+  const showQuickPick = vi.fn<(items: unknown[]) => Promise<unknown>>();
+  const executeCommand = vi.fn(async () => undefined);
   class EventEmitter {
     public readonly event = () => disposable();
     public fire(): void {}
@@ -24,6 +25,7 @@ const mocks = vi.hoisted(() => {
     decorationProviders,
     commandHandlers,
     showQuickPick,
+    executeCommand,
     disposable,
     output,
     status,
@@ -38,7 +40,8 @@ vi.mock('vscode', () => ({
       mocks.commandHandlers.set(command, handler);
       mocks.commandIds.push(command);
       return mocks.disposable();
-    }
+    },
+    executeCommand: mocks.executeCommand
   },
   EventEmitter: mocks.EventEmitter,
   window: {
@@ -101,6 +104,7 @@ describe('extension activation', () => {
     expect(mocks.status.text).toBe('$(sync~spin) My Code: Scanning');
     const showFileHistory = mocks.commandHandlers.get('myCode.showFileHistory');
     if (showFileHistory === undefined) throw new Error('showFileHistory was not registered');
+    mocks.showQuickPick.mockImplementationOnce(async (items: unknown[]) => items[0]);
     await showFileHistory({
       kind: 'file',
       root: '/workspace',
@@ -117,6 +121,7 @@ describe('extension activation', () => {
       }
     });
     expect(mocks.showQuickPick).toHaveBeenCalledWith([expect.objectContaining({ label: 'Add auth', description: 'abcdef1' })], expect.objectContaining({ placeHolder: 'My Code history for src/auth.ts' }));
+    expect(mocks.executeCommand).toHaveBeenCalledWith('myCode.openCommitDiff', expect.objectContaining({ kind: 'history', relativePath: 'src/auth.ts', commit: expect.objectContaining({ hash: 'abcdef123456' }) }));
   });
 });
 

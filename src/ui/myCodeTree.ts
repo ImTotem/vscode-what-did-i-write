@@ -100,6 +100,7 @@ export class MyCodeTreeProvider implements vscode.TreeDataProvider<MyCodeNode>, 
       };
     }
     item.contextValue = node.file.exists ? 'myCode.file' : 'myCode.pastFile';
+    if (!node.file.exists && node.file.kind === 'past') item.iconPath = new vscode.ThemeIcon('history');
     return item;
   }
 
