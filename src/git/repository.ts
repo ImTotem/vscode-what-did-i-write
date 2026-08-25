@@ -26,6 +26,12 @@ export interface RepositoryFingerprint {
   readonly status: string;
 }
 
+export interface FileHistoryEntry {
+  readonly commit: CommitSummary;
+  readonly path: string;
+  readonly parentPath?: string;
+}
+
 export class GitRepository {
   private constructor(
     readonly root: string,
@@ -80,6 +86,30 @@ export class GitRepository {
     ]);
     return parseHistoryRecords(result.stdout);
   }
+  public async getFileHistoryEntries(path: string): Promise<FileHistoryEntry[]> {
+    const result = await this.runner.run(this.root, [
+      '--literal-pathspecs', 'log', 'HEAD', '--follow', LOG_FORMAT,
+      '--name-status', '-z', '--find-renames', '--', path
+    ]);
+    let trackedPath = path;
+    const history: FileHistoryEntry[] = [];
+    for (const entry of parseLogIndex(result.stdout)) {
+      const change = entry.changes.find(({ path: changedPath, originalPath }) =>
+        changedPath === trackedPath || originalPath === trackedPath
+      );
+      if (change === undefined) continue;
+      const renamed = /^[RC]\d*$/.test(change.status) && change.originalPath !== undefined;
+      const parentPath = change.status === 'A'
+        ? undefined
+        : renamed
+          ? change.originalPath
+          : change.path;
+      history.push({ commit: entry.commit, path: change.path, parentPath });
+      if (renamed) trackedPath = change.originalPath as string;
+    }
+    return history;
+  }
+
 
   public async getLineHistory(path: string, line: number): Promise<CommitSummary[]> {
     if (!Number.isSafeInteger(line) || line < 1) throw new RangeError('line must be a positive one-based integer');
@@ -90,10 +120,15 @@ export class GitRepository {
   }
 
   public async showFile(revision: string, path: string): Promise<Buffer | undefined> {
+    const objectName = `${revision}:${path}`;
+    const exists = await this.runner.run(this.root, ['cat-file', '-e', objectName], {
+      allowExitCodes: [0, 128]
+    });
+    if (exists.exitCode === 128) return undefined;
     const result = await this.runner.run(this.root, [
-      '--literal-pathspecs', 'show', `${revision}:${path}`
-    ], { allowExitCodes: [0, 128] });
-    return result.exitCode === 0 ? result.stdout : undefined;
+      '--literal-pathspecs', 'show', objectName
+    ]);
+    return result.stdout;
   }
 
   public async getFingerprint(): Promise<RepositoryFingerprint> {

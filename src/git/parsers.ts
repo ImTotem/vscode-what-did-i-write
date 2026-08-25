@@ -2,7 +2,11 @@ import type { CommitSummary, OwnedLine } from '../core/model.js';
 
 export interface LogIndexEntry {
   readonly commit: CommitSummary;
-  readonly changes: readonly { readonly status: string; readonly path: string }[];
+  readonly changes: readonly {
+    readonly status: string;
+    readonly path: string;
+    readonly originalPath?: string;
+  }[];
 }
 
 export interface WorkingChange {
@@ -41,9 +45,9 @@ export function parseLogIndex(input: Buffer): LogIndexEntry[] {
     const commit = parseCommit(input.subarray(recordOffset + 1, metadataEnd), 'parseLogIndex', recordOffset);
     const nextRecord = input.indexOf(RECORD_SEPARATOR, metadataEnd + 1);
     const recordEnd = nextRecord === -1 ? input.length : nextRecord;
-    const changes: { status: string; path: string }[] = [];
+    const changes: Array<LogIndexEntry['changes'][number]> = [];
     let cursor = metadataEnd + 1;
-    if (cursor < recordEnd && input[cursor] === NUL) {
+    while (cursor < recordEnd && (input[cursor] === NUL || input[cursor] === 0x0a || input[cursor] === 0x0d)) {
       cursor += 1;
     }
 
@@ -62,8 +66,22 @@ export function parseLogIndex(input: Buffer): LogIndexEntry[] {
       if (status.length === 0 || path.length === 0) {
         throw parseError('parseLogIndex', cursor, 'empty change status or path');
       }
-      changes.push({ status, path });
-      cursor = pathEnd + 1;
+      if (/^[RC]\d*$/.test(status)) {
+        const renamedPathStart = pathEnd + 1;
+        const renamedPathEnd = input.indexOf(NUL, renamedPathStart);
+        if (renamedPathEnd === -1 || renamedPathEnd > recordEnd) {
+          throw parseError('parseLogIndex', renamedPathStart, 'missing NUL after renamed path');
+        }
+        const renamedPath = input.subarray(renamedPathStart, renamedPathEnd).toString('utf8');
+        if (renamedPath.length === 0) {
+          throw parseError('parseLogIndex', renamedPathStart, 'empty renamed path');
+        }
+        changes.push({ status, path: renamedPath, originalPath: path });
+        cursor = renamedPathEnd + 1;
+      } else {
+        changes.push({ status, path });
+        cursor = pathEnd + 1;
+      }
     }
 
     entries.push({ commit, changes });

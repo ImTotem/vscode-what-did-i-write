@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => {
   const eventRegistrations: string[] = [];
   const treeViewIds: string[] = [];
   const decorationProviders: unknown[] = [];
+  const contentProviderSchemes: string[] = [];
   const commandHandlers = new Map<string, (...args: unknown[]) => unknown>();
   const disposable = () => ({ dispose: vi.fn() });
   const output = { appendLine: vi.fn(), show: vi.fn(), dispose: vi.fn() };
@@ -23,6 +24,7 @@ const mocks = vi.hoisted(() => {
     eventRegistrations,
     treeViewIds,
     decorationProviders,
+    contentProviderSchemes,
     commandHandlers,
     showQuickPick,
     executeCommand,
@@ -72,6 +74,10 @@ vi.mock('vscode', () => ({
   workspace: {
     workspaceFolders: [],
     getConfiguration: () => ({ get: <T>(_key: string, fallback: T) => fallback, update: vi.fn(async () => undefined) }),
+    registerTextDocumentContentProvider: (scheme: string) => {
+      mocks.contentProviderSchemes.push(scheme);
+      return mocks.disposable();
+    },
     onDidChangeTextDocument: () => registerEvent('document-change'),
     onDidChangeWorkspaceFolders: () => registerEvent('workspace-folders'),
     onDidSaveTextDocument: () => registerEvent('save'),
@@ -84,7 +90,7 @@ vi.mock('vscode', () => ({
 import { activate } from '../../src/extension.js';
 
 describe('extension activation', () => {
-  it('registers Explorer commands and shows a selected file\'s inline history', async () => {
+  it('registers Explorer and history commands plus the read-only revision provider', () => {
     const subscriptions: { dispose(): unknown }[] = [];
     const context = { subscriptions, storageUri: undefined } as unknown as vscode.ExtensionContext;
 
@@ -96,10 +102,14 @@ describe('extension activation', () => {
       'myCode.retryIdentity',
       'myCode.toggleLineBackground',
       'myCode.openFile',
-      'myCode.showFileHistory'
+      'myCode.showFileHistory',
+      'myCode.showLineHistory',
+      'myCode.openCommitDiff',
+      'myCode.openWorkingTreeDiff'
     ]);
     expect(mocks.treeViewIds).toEqual(['myCode.explorer']);
     expect(mocks.decorationProviders).toHaveLength(1);
+    expect(mocks.contentProviderSchemes).toEqual(['my-code-git']);
     expect(mocks.eventRegistrations).toEqual([
       'active-editor',
       'visible-editors',
@@ -112,29 +122,9 @@ describe('extension activation', () => {
       'rename',
       'window-state'
     ]);
-    expect(subscriptions).toHaveLength(22);
+    expect(subscriptions).toHaveLength(26);
     expect(subscriptions).toEqual(expect.arrayContaining([mocks.output, mocks.status]));
     expect(mocks.status.text).toBe('$(sync~spin) My Code: Scanning');
-    const showFileHistory = mocks.commandHandlers.get('myCode.showFileHistory');
-    if (showFileHistory === undefined) throw new Error('showFileHistory was not registered');
-    mocks.showQuickPick.mockImplementationOnce(async (items: unknown[]) => items[0]);
-    await showFileHistory({
-      kind: 'file',
-      root: '/workspace',
-      label: 'src/auth.ts',
-      children: [],
-      file: {
-        relativePath: 'src/auth.ts',
-        kind: 'modified',
-        exists: true,
-        working: false,
-        binary: false,
-        ranges: [],
-        history: [{ hash: 'abcdef123456', authorName: 'Me', authorEmail: 'me@example.com', authoredAt: 1, subject: 'Add auth' }]
-      }
-    });
-    expect(mocks.showQuickPick).toHaveBeenCalledWith([expect.objectContaining({ label: 'Add auth', description: 'abcdef1' })], expect.objectContaining({ placeHolder: 'My Code history for src/auth.ts' }));
-    expect(mocks.executeCommand).toHaveBeenCalledWith('myCode.openCommitDiff', expect.objectContaining({ kind: 'history', relativePath: 'src/auth.ts', commit: expect.objectContaining({ hash: 'abcdef123456' }) }));
   });
 });
 

@@ -33,6 +33,18 @@
         "title": "My Code: Show File History"
       },
       {
+        "command": "myCode.showLineHistory",
+        "title": "My Code: Show Line History"
+      },
+      {
+        "command": "myCode.openCommitDiff",
+        "title": "My Code: Open Commit Diff"
+      },
+      {
+        "command": "myCode.openWorkingTreeDiff",
+        "title": "My Code: Open Working Tree Diff"
+      },
+      {
         "command": "myCode.toggleLineBackground",
         "title": "My Code: Toggle Line Background"
       }

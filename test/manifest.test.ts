@@ -29,7 +29,10 @@ describe('extension manifest', () => {
       'myCode.showOutput',
       'myCode.retryIdentity',
       'myCode.openFile',
-      'myCode.showFileHistory'
+      'myCode.showFileHistory',
+      'myCode.showLineHistory',
+      'myCode.openCommitDiff',
+      'myCode.openWorkingTreeDiff'
     ]));
   });
 
