@@ -16,7 +16,7 @@ describe('README accuracy', () => {
     const readme = readFileSync('README.md', 'utf8');
 
     expect(readme).toContain('not detected by repository fingerprint polling');
-    expect(readme).toContain('`My Code: Retry` or `My Code: Refresh`');
+    expect(readme).toContain('`What Did I Write?: Retry` or `What Did I Write?: Refresh`');
   });
 
   it('documents the gutter-to-timeline workflow instead of the retired history picker', () => {

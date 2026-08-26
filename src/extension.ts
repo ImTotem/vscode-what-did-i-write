@@ -7,12 +7,16 @@ import { MyCodeDecorationProvider } from './ui/fileDecorations.js';
 import { EditorOwnershipController } from './ui/editorOwnership.js';
 import { GIT_CONTENT_SCHEME, GitContentProvider } from './ui/gitContentProvider.js';
 import { HistoryController } from './ui/historyController.js';
-import { fileUri, MyCodeTreeProvider, type MyCodeNode } from './ui/myCodeTree.js';
+import { HistoryTimelineViewProvider } from './ui/historyTimeline.js';
+import { MyCodeDragAndDropController } from './ui/myCodeDragAndDrop.js';
+import { MyCodeFileActions } from './ui/myCodeFileActions.js';
+import { MyCodeTreeProvider, PastActivityTreeProvider, type MyCodeNode, type PastActivityNode } from './ui/myCodeTree.js';
+import { MyCodeViewController, VisualModeController } from './ui/myCodeViewController.js';
 import { RefreshController } from './ui/refreshController.js';
 import { StatusController } from './ui/statusController.js';
 
 export function activate(context: vscode.ExtensionContext): void {
-  const output = vscode.window.createOutputChannel('My Code');
+  const output = vscode.window.createOutputChannel('What Did I Write?');
   const statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   let statusController: StatusController | undefined;
   const reportError = (error: unknown, operation: string, path: string): void => {
@@ -28,9 +32,32 @@ export function activate(context: vscode.ExtensionContext): void {
   const refreshController = new RefreshController(registry, { onError: reportError });
   const decorationProvider = new MyCodeDecorationProvider(registry, reportError);
   const treeProvider = new MyCodeTreeProvider(registry);
+  const pastActivityProvider = new PastActivityTreeProvider(registry);
   const editorOwnership = new EditorOwnershipController(registry, { onError: reportError });
   const gitContentProvider = new GitContentProvider(registry, reportError);
   const historyController = new HistoryController(registry);
+  const historyTimeline = new HistoryTimelineViewProvider(historyController, reportError);
+  const refreshAllViews = async (): Promise<void> => {
+    await refreshController.refreshAll();
+    await historyTimeline.refresh();
+    await treeProvider.refresh();
+    await pastActivityProvider.refresh();
+  };
+  let myChangesView: vscode.TreeView<MyCodeNode>;
+  const fileActions = new MyCodeFileActions({
+    selection: () => myChangesView.selection,
+    roots: () => registry.repositories.map(({ root }) => root),
+    refresh: refreshAllViews,
+    onError: reportError
+  });
+  const dragAndDropController = new MyCodeDragAndDropController(treeProvider, fileActions);
+  myChangesView = vscode.window.createTreeView<MyCodeNode>('myCode.explorer', {
+    treeDataProvider: treeProvider,
+    canSelectMany: true,
+    dragAndDropController
+  });
+  const viewController = new MyCodeViewController(treeProvider, myChangesView);
+  const visualModeController = new VisualModeController(decorationProvider, editorOwnership);
   statusController = new StatusController(registry, statusItem, {
     showWarning: (message, ...actions) => vscode.window.showWarningMessage(message, ...actions),
     showOutput: () => output.show(),
@@ -44,6 +71,50 @@ export function activate(context: vscode.ExtensionContext): void {
   ): Promise<void> => Promise.resolve()
     .then(action)
     .catch((error: unknown) => reportError(error, operation, commandTargetPath(target)));
+  const focusHistory = async (target: unknown, line?: number): Promise<void> => {
+    await historyTimeline.focus(target, line);
+    await vscode.commands.executeCommand('myCode.history.focus');
+  };
+  const currentNode = (target: unknown): MyCodeNode | undefined => {
+    if (typeof target !== 'object' || target === null || !('id' in target)) return undefined;
+    const id = (target as { readonly id?: unknown }).id;
+    return typeof id === 'string' ? treeProvider.resolveNode(id) : undefined;
+  };
+  const pastNode = (target: unknown): PastActivityNode | undefined => {
+    if (typeof target !== 'object' || target === null || !('id' in target)) return undefined;
+    const id = (target as { readonly id?: unknown }).id;
+    return typeof id === 'string' ? pastActivityProvider.resolveNode(id) : undefined;
+  };
+  const withCurrentNode = async (
+    target: unknown,
+    action: (node: MyCodeNode) => Promise<void>
+  ): Promise<void> => {
+    const node = currentNode(target);
+    if (node === undefined) {
+      await vscode.window.showWarningMessage('That MY CHANGES item is no longer available. Refresh and try again.');
+      return;
+    }
+    await action(node);
+  };
+  const withPastNode = async (
+    target: unknown,
+    action: (node: PastActivityNode) => Promise<void>
+  ): Promise<void> => {
+    const node = pastNode(target);
+    if (node === undefined) {
+      await vscode.window.showWarningMessage('That PAST ACTIVITY item is no longer available. Refresh and try again.');
+      return;
+    }
+    await action(node);
+  };
+  const runUiCommand = async (operation: string, action: () => Promise<void>): Promise<void> => {
+    try {
+      await action();
+    } catch (error) {
+      reportError(error, operation, 'myCode.explorer');
+      await vscode.window.showErrorMessage('Could not ' + operation + '. See the What Did I Write? output for details.');
+    }
+  };
 
   context.subscriptions.push(
     output,
@@ -53,19 +124,74 @@ export function activate(context: vscode.ExtensionContext): void {
     statusController,
     decorationProvider,
     treeProvider,
+    pastActivityProvider,
     editorOwnership,
+    historyTimeline,
+    myChangesView,
+    viewController,
+    registry.onDidChange(() => { void historyTimeline.refresh(); }),
     vscode.window.registerFileDecorationProvider(decorationProvider),
-    vscode.window.registerTreeDataProvider('myCode.explorer', treeProvider),
+    vscode.window.registerTreeDataProvider('myCode.pastActivity', pastActivityProvider),
+    vscode.window.registerWebviewViewProvider('myCode.history', historyTimeline, {
+      webviewOptions: { retainContextWhenHidden: true }
+    }),
     vscode.workspace.registerTextDocumentContentProvider(GIT_CONTENT_SCHEME, gitContentProvider),
-    vscode.commands.registerCommand('myCode.refresh', () => refreshController.refreshAll()),
+    vscode.commands.registerCommand('myCode.refresh', refreshAllViews),
     vscode.commands.registerCommand('myCode.showOutput', () => output.show()),
     vscode.commands.registerCommand('myCode.retryIdentity', () => refreshController.retryIdentity()),
     vscode.commands.registerCommand('myCode.toggleLineBackground', () => editorOwnership.toggleLineBackground()),
-    vscode.commands.registerCommand('myCode.openFile', (node: MyCodeNode) => openFile(node)),
+    vscode.commands.registerCommand('myCode.expandAll', () =>
+      runUiCommand('expand MY CHANGES', () => viewController.expandAll())),
+    vscode.commands.registerCommand('myCode.collapseAll', () =>
+      runUiCommand('collapse MY CHANGES', () => viewController.collapseAll())),
+    vscode.commands.registerCommand('myCode.hideDecorations', () =>
+      runUiCommand('hide decorations', () => visualModeController.toggle())),
+    vscode.commands.registerCommand('myCode.showDecorations', () =>
+      runUiCommand('show decorations', () => visualModeController.toggle())),
+    vscode.commands.registerCommand('myCode.openFile', (target: unknown) =>
+      withCurrentNode(target, (node) => fileActions.open(node))),
+    vscode.commands.registerCommand('myCode.openToSide', (target: unknown) =>
+      withCurrentNode(target, (node) => fileActions.openToSide(node))),
+    vscode.commands.registerCommand('myCode.revealInExplorer', (target: unknown) =>
+      withCurrentNode(target, (node) => fileActions.revealInExplorer(node))),
+    vscode.commands.registerCommand('myCode.revealInOs', (target: unknown) =>
+      withCurrentNode(target, (node) => fileActions.revealInOs(node))),
+    vscode.commands.registerCommand('myCode.copyPath', (target: unknown) =>
+      withCurrentNode(target, (node) => fileActions.copyPath(node))),
+    vscode.commands.registerCommand('myCode.copyRelativePath', (target: unknown) =>
+      withCurrentNode(target, (node) => fileActions.copyRelativePath(node))),
+    vscode.commands.registerCommand('myCode.copyHistoricalPath', (target: unknown) =>
+      withPastNode(target, (node) => fileActions.copyPath(node))),
+    vscode.commands.registerCommand('myCode.copyHistoricalRelativePath', (target: unknown) =>
+      withPastNode(target, (node) => fileActions.copyRelativePath(node))),
+    vscode.commands.registerCommand('myCode.cut', (target: unknown) =>
+      withCurrentNode(target, (node) => fileActions.cut(node))),
+    vscode.commands.registerCommand('myCode.copy', (target: unknown) =>
+      withCurrentNode(target, (node) => fileActions.copy(node))),
+    vscode.commands.registerCommand('myCode.paste', (target: unknown) =>
+      withCurrentNode(target, (node) => fileActions.paste(node))),
+    vscode.commands.registerCommand('myCode.newFile', (target: unknown) =>
+      withCurrentNode(target, (node) => fileActions.newFile(node))),
+    vscode.commands.registerCommand('myCode.newFolder', (target: unknown) =>
+      withCurrentNode(target, (node) => fileActions.newFolder(node))),
+    vscode.commands.registerCommand('myCode.rename', (target: unknown) =>
+      withCurrentNode(target, (node) => fileActions.rename(node))),
+    vscode.commands.registerCommand('myCode.delete', (target: unknown) =>
+      withCurrentNode(target, (node) => fileActions.delete(node))),
+    vscode.commands.registerCommand('myCode.focusFileHistory', (target?: unknown) =>
+      runHistoryCommand('file-history', target, () => focusHistory(target))),
+    vscode.commands.registerCommand('myCode.focusLineHistory', (target?: unknown, line?: number) =>
+      runHistoryCommand('line-history', target, () => focusHistory(
+        target,
+        line ?? vscode.window.activeTextEditor?.selection.active.line
+      ))),
     vscode.commands.registerCommand('myCode.showFileHistory', (target?: unknown) =>
-      runHistoryCommand('file-history', target, () => historyController.showFileHistory(target))),
+      runHistoryCommand('file-history', target, () => focusHistory(target))),
     vscode.commands.registerCommand('myCode.showLineHistory', (target?: unknown, line?: number) =>
-      runHistoryCommand('line-history', target, () => historyController.showLineHistory(target, line))),
+      runHistoryCommand('line-history', target, () => focusHistory(
+        target,
+        line ?? vscode.window.activeTextEditor?.selection.active.line
+      ))),
     vscode.commands.registerCommand('myCode.openCommitDiff', (
       target?: Parameters<HistoryController['openCommitDiff']>[0]
     ) => target === undefined ? undefined : runHistoryCommand(
@@ -86,10 +212,17 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidCreateFiles(({ files }) => refreshController.acceptCreate(files)),
     vscode.workspace.onDidDeleteFiles(({ files }) => refreshController.acceptDelete(files)),
     vscode.workspace.onDidRenameFiles(({ files }) => refreshController.acceptRename(files)),
-    vscode.window.onDidChangeWindowState(({ focused }) => refreshController.setFocused(focused))
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration('myCode.visuals.enabled')) {
+        void runUiCommand('update visual settings', () => visualModeController.acceptConfigurationChange());
+      }
+    }),
+    vscode.window.onDidChangeWindowState(({ focused }) => refreshController.setFocused(focused)),
+    vscode.window.onDidChangeActiveTextEditor((editor) => historyTimeline.followEditor(editor))
   );
 
   refreshController.setFocused(vscode.window.state.focused);
+  historyTimeline.followEditor(vscode.window.activeTextEditor);
   void registry
     .start()
     .then(refreshFingerprintsWhenFocused)
@@ -98,10 +231,6 @@ export function activate(context: vscode.ExtensionContext): void {
 
 export function deactivate(): void {}
 
-function openFile(node: MyCodeNode): Thenable<unknown> | undefined {
-  if (node.kind !== 'file' || !node.file.exists) return undefined;
-  return vscode.commands.executeCommand('vscode.open', fileUri(node));
-}
 
 function isMissingGit(error: unknown): boolean {
   return error instanceof GitCommandError

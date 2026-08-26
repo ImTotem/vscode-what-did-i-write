@@ -94,7 +94,7 @@ describe('MyCodeFileActions validation', () => {
     expect(boundary.renames).toEqual([]);
     expect(boundary.warnings).toEqual([
       'Past activity is read-only.',
-      'Missing paths cannot be changed from My Code.'
+      'Missing paths cannot be changed from What Did I Write?.'
     ]);
   });
 
@@ -371,6 +371,37 @@ describe('MyCodeFileActions conflicts and clipboard state', () => {
     expect(boundary.errors).toEqual([]);
   });
 
+
+  it('copies an external source only after resolving a non-conflicting destination name', async () => {
+    const external = resolve(ROOT, '..', 'outside', 'asset.txt');
+    const destination = folderNode('dest');
+    const boundary = fakeBoundary([
+      [external, 'file'],
+      [join(ROOT, 'dest'), 'directory'],
+      [join(ROOT, 'dest', 'asset.txt'), 'file']
+    ]);
+    boundary.names.push('asset-copy.txt');
+    const { actions, refresh } = actionHarness({ boundary });
+
+    await actions.copyExternal([external], destination);
+
+    expect(boundary.copies).toEqual([[external, join(ROOT, 'dest', 'asset-copy.txt')]]);
+    expect(boundary.copies).not.toContainEqual([external, join(ROOT, 'dest', 'asset.txt')]);
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects copying an external directory into one of its descendants', async () => {
+    const source = join(ROOT, 'assets');
+    const destination = folderNode('assets', ROOT);
+    const boundary = fakeBoundary([[source, 'directory']]);
+    const { actions, refresh } = actionHarness({ boundary });
+
+    await actions.copyExternal([source], destination);
+
+    expect(boundary.copies).toEqual([]);
+    expect(boundary.warnings).toContain('A folder cannot be copied into itself or one of its descendants.');
+    expect(refresh).not.toHaveBeenCalled();
+  });
   it('retains only failed cut entries after a partial move and reports one error notification', async () => {
     const first = fileNode('first.ts');
     const second = fileNode('second.ts');
@@ -394,7 +425,7 @@ describe('MyCodeFileActions conflicts and clipboard state', () => {
     ]);
     expect(onError).toHaveBeenCalledTimes(1);
     expect(onError).toHaveBeenCalledWith(expect.any(Error), 'move', join(ROOT, 'second.ts'));
-    expect(boundary.errors).toEqual(['Could not move 1 item. See My Code output for details.']);
+    expect(boundary.errors).toEqual(['Could not move 1 item. See What Did I Write? output for details.']);
   });
 });
 

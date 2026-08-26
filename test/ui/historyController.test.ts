@@ -43,7 +43,7 @@ const mocks = vi.hoisted(() => {
   class Selection extends Range {}
 
   const executeCommand = vi.fn(async (..._args: unknown[]) => undefined);
-  const showQuickPick = vi.fn(async (_items: unknown) => undefined as unknown);
+  const showQuickPick = vi.fn(async (_items: unknown, _options?: vscode.QuickPickOptions) => undefined as unknown);
   const activeTextEditor = {
     document: { uri: Uri.from({ scheme: 'my-code-git', path: '/revision' }) },
     selection: undefined as Selection | undefined,
@@ -59,6 +59,7 @@ vi.mock('vscode', () => ({
   Range: mocks.Range,
   Selection: mocks.Selection,
   TextEditorRevealType: { InCenterIfOutsideViewport: 2 },
+  ViewColumn: { One: 1, Beside: -2 },
   commands: { executeCommand: mocks.executeCommand },
   window: {
     activeTextEditor: mocks.activeTextEditor,
@@ -67,7 +68,7 @@ vi.mock('vscode', () => ({
   workspace: { fs: undefined },
 }));
 
-import type { CommitSummary, GitIdentity } from '../../src/core/model.js';
+import type { CommitSummary, FileRecord, GitIdentity } from '../../src/core/model.js';
 import type { RepositoryRegistry } from '../../src/extension/repositoryRegistry.js';
 import {
   GitContentProvider,
@@ -146,6 +147,95 @@ describe('history QuickPick rows', () => {
   });
 });
 
+describe('history timeline model', () => {
+  it('puts working changes first and matching name-or-email commits newest first', async () => {
+    const newestByName = commit('ccccccc33333333', 'Me', 'different@example.com', 1_700_000_200, 'Newest by name');
+    const repository = {
+      getFileHistoryEntries: vi.fn(async () => [
+        { commit: mine, path: 'src/old name.ts', parentPath: 'src/older name.ts' },
+        { commit: other, path: 'src/old name.ts', parentPath: 'src/old name.ts' },
+        { commit: newestByName, path: 'src/new name.ts', parentPath: 'src/old name.ts' }
+      ]),
+      getFileHistory: vi.fn(async () => []),
+      getLineHistory: vi.fn(async () => []),
+      getWorkingChanges: vi.fn(async () => [
+        { status: 'R.', path: 'src/new name.ts', originalPath: 'src/old name.ts' }
+      ])
+    };
+    const controller = new HistoryController(registryWith(repository, 'src/new name.ts'), () => 1_700_086_400_000);
+
+    const model = await controller.getTimeline(join(ROOT, 'src/new name.ts'));
+
+    expect(repository.getFileHistoryEntries).toHaveBeenCalledWith('src/old name.ts');
+    expect(model).toMatchObject({
+      root: ROOT,
+      head: 'f'.repeat(40),
+      sourcePath: join(ROOT, 'src/new name.ts'),
+      relativePath: 'src/new name.ts',
+      mode: 'file'
+    });
+    expect(model?.entries.map(({ kind }) => kind)).toEqual(['working', 'commit', 'commit']);
+    expect(model?.entries.slice(1).map((entry) => entry.kind === 'commit' && entry.commit.hash)).toEqual([
+      newestByName.hash,
+      mine.hash
+    ]);
+    expect(model?.entries[1]).toMatchObject({ kind: 'commit', latest: true, path: 'src/new name.ts' });
+    expect(model?.entries[2]).toMatchObject({ kind: 'commit', latest: false, parentPath: 'src/older name.ts' });
+  });
+
+  it('builds line history from the mapped HEAD coordinate', async () => {
+    const repository = {
+      getFileHistoryEntries: vi.fn(async () => []),
+      getFileHistory: vi.fn(async () => []),
+      getLineHistory: vi.fn(async () => [other, mine]),
+      mapWorkingLineToHead: vi.fn(async () => 7),
+      getWorkingChanges: vi.fn(async () => [{ status: '.M', path: 'src/line.ts' }])
+    };
+    const controller = new HistoryController(registryWith(repository, 'src/line.ts'));
+
+    const model = await controller.getTimeline(join(ROOT, 'src/line.ts'), 4);
+
+    expect(repository.mapWorkingLineToHead).toHaveBeenCalledWith('src/line.ts', 5);
+    expect(repository.getLineHistory).toHaveBeenCalledWith('src/line.ts', 7);
+    expect(model).toMatchObject({ mode: 'line', line: 4, commitLine: 6 });
+    expect(model?.entries.map(({ kind }) => kind)).toEqual(['working', 'commit']);
+  });
+
+  it('pins the source, opens a short reusable diff beside it, and rejects unknown ids', async () => {
+    const repository = {
+      getFileHistoryEntries: vi.fn(async () => [{ commit: mine, path: 'src/time.h', parentPath: 'src/time.h' }]),
+      getFileHistory: vi.fn(async () => []),
+      getLineHistory: vi.fn(async () => []),
+      getWorkingChanges: vi.fn(async () => [])
+    };
+    const controller = new HistoryController(registryWith(repository, 'src/time.h'));
+    const source = join(ROOT, 'src/time.h');
+    const model = await controller.getTimeline(source);
+    const commitEntry = model?.entries.find(({ kind }) => kind === 'commit');
+    if (model === undefined || commitEntry === undefined) throw new Error('timeline model missing');
+    mocks.executeCommand.mockClear();
+
+    await controller.openTimelineEntry(model, 'unknown');
+    expect(mocks.executeCommand).not.toHaveBeenCalled();
+    await controller.openTimelineEntry(model, commitEntry.id);
+
+    expect(mocks.executeCommand).toHaveBeenNthCalledWith(
+      1,
+      'vscode.open',
+      mocks.Uri.file(source),
+      { preview: false, preserveFocus: true, viewColumn: 1 }
+    );
+    expect(mocks.executeCommand).toHaveBeenNthCalledWith(
+      2,
+      'vscode.diff',
+      expectRevision('bbbbbbb22222222^', 'src/time.h'),
+      expectRevision('bbbbbbb22222222', 'src/time.h'),
+      'time.h ' + String.fromCharCode(0xb7) + ' bbbbbbb',
+      { preview: true, preserveFocus: false, viewColumn: -2 }
+    );
+  });
+});
+
 describe('HistoryController', () => {
   it('uses the active file, offers current changes first, and opens a rename-aware commit diff', async () => {
     const repository = {
@@ -176,10 +266,141 @@ describe('HistoryController', () => {
       expectRevision('bbbbbbb22222222^', 'src/old name.ts'),
       expectRevision('bbbbbbb22222222', 'src/new name.ts'),
       'src/old name.ts → src/new name.ts — My change (bbbbbbb)',
-      { preview: true }
+      { preview: false }
+    );
+  });
+  it('previews the highlighted history row without taking focus', async () => {
+    const repository = {
+      getFileHistoryEntries: vi.fn(async () => [{ commit: mine, path: 'src/a.ts', parentPath: 'src/a.ts' }]),
+      getFileHistory: vi.fn(async () => [mine]),
+      getLineHistory: vi.fn(async () => [mine]),
+      getWorkingChanges: vi.fn(async () => []),
+      showFile: vi.fn()
+    };
+    const registry = registryWith(repository, 'src/a.ts');
+    mocks.activeTextEditor.document = {
+      uri: mocks.Uri.file(join(ROOT, 'src/a.ts'))
+    } as unknown as vscode.TextDocument;
+    mocks.showQuickPick.mockImplementationOnce(async (items: unknown, options?: vscode.QuickPickOptions) => {
+      options?.onDidSelectItem?.((items as HistoryQuickPickItem[])[0] as HistoryQuickPickItem);
+      return undefined;
+    });
+    const controller = new HistoryController(registry, () => 1_700_086_400_000);
+
+    await controller.showFileHistory();
+    await Promise.resolve();
+
+    expect(mocks.executeCommand).toHaveBeenCalledWith(
+      'vscode.diff',
+      expectRevision('bbbbbbb22222222^', 'src/a.ts'),
+      expectRevision('bbbbbbb22222222', 'src/a.ts'),
+      'src/a.ts — My change (bbbbbbb)',
+      { preview: true, preserveFocus: true }
     );
   });
 
+  it('returns inline file and line history only when hovering one of my owned lines', async () => {
+    const repository = {
+      getFileHistoryEntries: vi.fn(async () => []),
+      getFileHistory: vi.fn(async () => [other, mine]),
+      getLineHistory: vi.fn(async () => [other, mine]),
+      getWorkingChanges: vi.fn(async () => []),
+      showFile: vi.fn()
+    };
+    const ownedRange: FileRecord['ranges'][number] = {
+      start: 4, endExclusive: 6, commit: mine, uncommitted: false
+    };
+    const controller = new HistoryController(
+      registryWith(repository, 'src/line.ts', [ownedRange], [other, mine])
+    );
+
+    const preview = await controller.getHistoryPreview(join(ROOT, 'src/line.ts'), 4);
+    const outside = await controller.getHistoryPreview(join(ROOT, 'src/line.ts'), 2);
+
+    expect(repository.getLineHistory).toHaveBeenCalledWith('src/line.ts', 5);
+    expect(preview).toEqual({
+      ownedRange,
+      fileHistory: [mine],
+      lineHistory: [mine]
+    });
+    expect(outside).toBeUndefined();
+  });
+
+  it('reuses inline history for repeated hover on the same repository snapshot and line', async () => {
+    const repository = {
+      getFileHistoryEntries: vi.fn(async () => []),
+      getFileHistory: vi.fn(async () => [mine]),
+      getLineHistory: vi.fn(async () => [mine]),
+      getWorkingChanges: vi.fn(async () => []),
+      showFile: vi.fn()
+    };
+    const ownedRange: FileRecord['ranges'][number] = {
+      start: 4, endExclusive: 6, commit: mine, uncommitted: false
+    };
+    const controller = new HistoryController(registryWith(repository, 'src/line.ts', [ownedRange]));
+
+    await controller.getHistoryPreview(join(ROOT, 'src/line.ts'), 4);
+    await controller.getHistoryPreview(join(ROOT, 'src/line.ts'), 4);
+
+    expect(repository.getLineHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops inline history after cancellation while working state is loading', async () => {
+    let resolveWorking: ((value: []) => void) | undefined;
+    const working = new Promise<[]>((resolve) => { resolveWorking = resolve; });
+    const repository = {
+      getFileHistoryEntries: vi.fn(async () => []),
+      getFileHistory: vi.fn(async () => [mine]),
+      getLineHistory: vi.fn(async () => [mine]),
+      getWorkingChanges: vi.fn(() => working),
+      showFile: vi.fn()
+    };
+    const ownedRange: FileRecord['ranges'][number] = {
+      start: 4, endExclusive: 6, commit: mine, uncommitted: false
+    };
+    const cancellation = { isCancellationRequested: false };
+    const controller = new HistoryController(registryWith(repository, 'src/line.ts', [ownedRange]));
+
+    const pending = controller.getHistoryPreview(
+      join(ROOT, 'src/line.ts'),
+      4,
+      cancellation as Pick<vscode.CancellationToken, 'isCancellationRequested'>
+    );
+    await Promise.resolve();
+    cancellation.isCancellationRequested = true;
+    resolveWorking?.([]);
+
+    expect(await pending).toBeUndefined();
+    expect(repository.getLineHistory).not.toHaveBeenCalled();
+  });
+
+  it('does not let a cancelled first hover poison a concurrent active hover for the same line', async () => {
+    let resolveWorking: ((value: []) => void) | undefined;
+    const working = new Promise<[]>((resolve) => { resolveWorking = resolve; });
+    const repository = {
+      getFileHistoryEntries: vi.fn(async () => []),
+      getFileHistory: vi.fn(async () => [mine]),
+      getLineHistory: vi.fn(async () => [mine]),
+      getWorkingChanges: vi.fn(() => working),
+      showFile: vi.fn()
+    };
+    const ownedRange: FileRecord['ranges'][number] = {
+      start: 4, endExclusive: 6, commit: mine, uncommitted: false
+    };
+    const firstCancellation = { isCancellationRequested: false };
+    const activeCancellation = { isCancellationRequested: false };
+    const controller = new HistoryController(registryWith(repository, 'src/line.ts', [ownedRange]));
+
+    const first = controller.getHistoryPreview(join(ROOT, 'src/line.ts'), 4, firstCancellation);
+    await Promise.resolve();
+    const active = controller.getHistoryPreview(join(ROOT, 'src/line.ts'), 4, activeCancellation);
+    firstCancellation.isCancellationRequested = true;
+    resolveWorking?.([]);
+
+    expect(await first).toBeUndefined();
+    expect(await active).toEqual(expect.objectContaining({ lineHistory: [mine] }));
+    expect(repository.getLineHistory).toHaveBeenCalledTimes(1);
+  });
   it('opens deleted and root commit sides as empty-capable revision documents', async () => {
     const controller = new HistoryController(registryWith({ showFile: vi.fn() }));
 
@@ -197,14 +418,14 @@ describe('HistoryController', () => {
       expectRevision('bbbbbbb22222222^', 'deleted [x].ts'),
       expectRevision('bbbbbbb22222222', 'deleted [x].ts'),
       'deleted [x].ts — My change (bbbbbbb)',
-      { preview: true }
+      { preview: false }
     );
     expect(mocks.executeCommand).toHaveBeenNthCalledWith(
       2, 'vscode.diff',
       expectRevision('bbbbbbb22222222^', 'root file.ts'),
       expectRevision('bbbbbbb22222222', 'root file.ts'),
       'root file.ts — Root add (bbbbbbb)',
-      { preview: true }
+      { preview: false }
     );
   });
 
@@ -235,7 +456,7 @@ describe('HistoryController', () => {
     expect(repository.getLineHistory).toHaveBeenCalledWith('src/line.ts', 5);
     expect(mocks.executeCommand).toHaveBeenCalledWith(
       'vscode.diff', expect.anything(), expect.anything(),
-      'src/line.ts:5 — My change (bbbbbbb)', { preview: true }
+      'src/line.ts:5 — My change (bbbbbbb)', { preview: false }
     );
     expect(mocks.activeTextEditor.selection).toEqual({
       start: { line: 4, character: 0 }, end: { line: 4, character: 0 }
@@ -256,7 +477,12 @@ function commit(
   return { hash, authorName, authorEmail, authoredAt, subject };
 }
 
-function registryWith(repository: Record<string, unknown>, relativePath?: string) {
+function registryWith(
+  repository: Record<string, unknown>,
+  relativePath?: string,
+  ranges: FileRecord['ranges'] = [],
+  history: readonly CommitSummary[] = [mine]
+) {
   const entry = {
     root: ROOT,
     state: 'ready' as const,
@@ -268,7 +494,7 @@ function registryWith(repository: Record<string, unknown>, relativePath?: string
         identity,
         files: relativePath === undefined ? [] : [{
           relativePath, kind: 'modified', exists: true, working: true,
-          binary: false, ranges: [], history: [mine]
+          binary: false, ranges, history
         }],
         scanning: false,
         generatedAt: 1

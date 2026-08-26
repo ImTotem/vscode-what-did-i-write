@@ -111,7 +111,7 @@ describe('MyCodeFileActions filesystem integration', () => {
     await actions.delete(fileNode(root, 'link/secret.txt'));
 
     expect(await readFile(join(outside, 'secret.txt'), 'utf8')).toBe('outside');
-    expect(boundary.warnings).toContain('Paths through symbolic links or junctions cannot be changed from My Code.');
+    expect(boundary.warnings).toContain('Paths through symbolic links or junctions cannot be changed from What Did I Write?.');
   });
 });
 

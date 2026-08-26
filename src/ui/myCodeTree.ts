@@ -96,17 +96,23 @@ export class MyCodeTreeProvider implements vscode.TreeDataProvider<MyCodeNode>, 
   public readonly onDidChangeTreeData = this.emitter.event;
 
   public constructor(private readonly registry: RepositoryRegistry) {
-    this.subscription = registry.onDidChange(() => {
-      this.graph = undefined;
-      this.emitter.fire(undefined);
-    });
+    this.subscription = registry.onDidChange(() => this.invalidate());
   }
 
   public getTreeItem(element: MyCodeNode): vscode.TreeItem {
     switch (element.kind) {
       case 'repository':
-      case 'group':
-        return new vscode.TreeItem(element.label, vscode.TreeItemCollapsibleState.Expanded);
+        {
+          const item = new vscode.TreeItem(element.label, vscode.TreeItemCollapsibleState.Expanded);
+          item.resourceUri = vscode.Uri.file(element.root);
+          item.contextValue = 'myCode.repository';
+          return item;
+        }
+      case 'group': {
+        const item = new vscode.TreeItem(element.label, vscode.TreeItemCollapsibleState.Expanded);
+        item.contextValue = 'myCode.syntheticRoot';
+        return item;
+      }
       case 'folder':
         return this.folderTreeItem(element);
       case 'file':
@@ -127,9 +133,22 @@ export class MyCodeTreeProvider implements vscode.TreeDataProvider<MyCodeNode>, 
     return this.currentGraph().expandable;
   }
 
+  public resolveNode(id: string): MyCodeNode | undefined {
+    return this.currentGraph().nodes.get(id);
+  }
+
+  public async refresh(): Promise<void> {
+    this.invalidate();
+  }
+
   public dispose(): void {
     this.subscription.dispose();
     this.emitter.dispose();
+  }
+
+  private invalidate(): void {
+    this.graph = undefined;
+    this.emitter.fire(undefined);
   }
 
   private currentGraph(): CurrentGraph {
@@ -170,10 +189,7 @@ export class PastActivityTreeProvider implements vscode.TreeDataProvider<PastAct
   public readonly onDidChangeTreeData = this.emitter.event;
 
   public constructor(private readonly registry: RepositoryRegistry) {
-    this.subscription = registry.onDidChange(() => {
-      this.graph = undefined;
-      this.emitter.fire(undefined);
-    });
+    this.subscription = registry.onDidChange(() => this.invalidate());
   }
 
   public getTreeItem(element: PastActivityNode): vscode.TreeItem {
@@ -190,9 +206,22 @@ export class PastActivityTreeProvider implements vscode.TreeDataProvider<PastAct
     return element === undefined ? [...this.currentGraph().roots] : [];
   }
 
+
+  public resolveNode(id: string): PastActivityNode | undefined {
+    return this.currentGraph().nodes.get(id);
+  }
+
+  public async refresh(): Promise<void> {
+    this.invalidate();
+  }
   public dispose(): void {
     this.subscription.dispose();
     this.emitter.dispose();
+  }
+
+  private invalidate(): void {
+    this.graph = undefined;
+    this.emitter.fire(undefined);
   }
 
   private currentGraph(): PastGraph {

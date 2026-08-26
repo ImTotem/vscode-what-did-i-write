@@ -31,12 +31,12 @@ export class StatusController {
     if (this.disposed || this.missingGitWarningShown) return;
     this.missingGitWarningShown = true;
     void this.actions.showWarning(
-      'My Code could not run Git. Install Git or make it available on PATH, then open the output for details.',
-      'My Code: Retry',
-      'My Code: Show Output'
+      'What Did I Write? could not run Git. Install Git or make it available on PATH, then open the output for details.',
+      'What Did I Write?: Retry',
+      'What Did I Write?: Show Output'
     ).then((selection) => {
-      if (selection === 'My Code: Retry') void this.actions.retryIdentity();
-      else if (selection === 'My Code: Show Output') this.actions.showOutput();
+      if (selection === 'What Did I Write?: Retry') void this.actions.retryIdentity();
+      else if (selection === 'What Did I Write?: Show Output') this.actions.showOutput();
     });
   }
 
@@ -49,11 +49,11 @@ export class StatusController {
   private render(): void {
     if (this.disposed) return;
     if (this.registry.state === 'discovering' || this.registry.state === 'initializing') {
-      this.status.text = '$(sync~spin) My Code: Scanning';
+      this.status.text = '$(sync~spin) What Did I Write?: Scanning';
       return;
     }
     if (this.registry.state === 'error') {
-      this.status.text = '$(warning) My Code: Error';
+      this.status.text = '$(warning) What Did I Write?: Error';
       return;
     }
     const snapshots = this.registry.repositories
@@ -63,26 +63,26 @@ export class StatusController {
       identity.name.trim().length === 0 && identity.email.trim().length === 0
     );
     if (missingIdentity) {
-      this.status.text = '$(warning) My Code: Git identity';
+      this.status.text = '$(warning) What Did I Write?: Git identity';
       this.warnMissingIdentity();
       return;
     }
     if (snapshots.some(({ scanning }) => scanning)) {
-      this.status.text = '$(sync~spin) My Code: Scanning';
+      this.status.text = '$(sync~spin) What Did I Write?: Scanning';
       return;
     }
     const fileCount = snapshots.reduce((total, snapshot) => total + snapshot.files.length, 0);
-    this.status.text = `$(account) My Code: ${fileCount} files`;
+    this.status.text = `$(account) What Did I Write?: ${fileCount} files`;
   }
 
   private warnMissingIdentity(): void {
     if (this.missingIdentityWarningShown) return;
     this.missingIdentityWarningShown = true;
     void this.actions.showWarning(
-      'My Code could not find a global Git identity. Configure user.name or user.email, then retry.',
-      'My Code: Retry'
+      'What Did I Write? could not find a global Git identity. Configure user.name or user.email, then retry.',
+      'What Did I Write?: Retry'
     ).then((selection) => {
-      if (selection === 'My Code: Retry') void this.actions.retryIdentity();
+      if (selection === 'What Did I Write?: Retry') void this.actions.retryIdentity();
     });
   }
 }

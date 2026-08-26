@@ -19,7 +19,7 @@ interface RevisionRepository {
 
 export class InvalidRevisionUriError extends Error {
   public constructor(message: string) {
-    super(`Invalid My Code revision URI: ${message}`);
+    super(`Invalid What Did I Write? revision URI: ${message}`);
     this.name = 'InvalidRevisionUriError';
   }
 }

@@ -379,20 +379,20 @@ describe('StatusController', () => {
 
     const start = registry.start();
     expect(registry.state).toBe('discovering');
-    expect(status.text).toBe('$(sync~spin) My Code: Scanning');
+    expect(status.text).toBe('$(sync~spin) What Did I Write?: Scanning');
     discovery.resolve(fakeRepository(root));
     await start;
     expect(registry.state).toBe('initializing');
-    expect(status.text).toBe('$(sync~spin) My Code: Scanning');
+    expect(status.text).toBe('$(sync~spin) What Did I Write?: Scanning');
 
     analyzer.publish(snapshot(root, { missingIdentity: true }));
-    expect(status.text).toBe('$(sync~spin) My Code: Scanning');
+    expect(status.text).toBe('$(sync~spin) What Did I Write?: Scanning');
     expect(showWarning).not.toHaveBeenCalled();
 
     initialization.reject(new Error('cache permission denied'));
     await waitUntil(() => registry.state === 'error');
 
-    expect(status.text).toBe('$(warning) My Code: Error');
+    expect(status.text).toBe('$(warning) What Did I Write?: Error');
     expect(showWarning).not.toHaveBeenCalled();
     expect(onError).toHaveBeenCalledWith(
       expect.objectContaining({ message: 'cache permission denied' }),
@@ -417,17 +417,17 @@ describe('StatusController', () => {
     });
 
     analyzer.publish(snapshot(root, { scanning: true }));
-    expect(status.text).toBe('$(sync~spin) My Code: Scanning');
+    expect(status.text).toBe('$(sync~spin) What Did I Write?: Scanning');
     analyzer.publish(snapshot(root, { fileCount: 2 }));
-    expect(status.text).toBe('$(account) My Code: 2 files');
+    expect(status.text).toBe('$(account) What Did I Write?: 2 files');
     analyzer.publish(snapshot(root, { missingIdentity: true }));
     analyzer.publish(snapshot(root, { missingIdentity: true }));
     await Promise.resolve();
-    expect(status.text).toBe('$(warning) My Code: Git identity');
+    expect(status.text).toBe('$(warning) What Did I Write?: Git identity');
     expect(showWarning).toHaveBeenCalledTimes(1);
     expect(showWarning).toHaveBeenCalledWith(
       expect.stringContaining('identity'),
-      'My Code: Retry'
+      'What Did I Write?: Retry'
     );
 
     controller.reportMissingGit(new Error('git unavailable'));
@@ -436,8 +436,8 @@ describe('StatusController', () => {
     expect(showWarning).toHaveBeenCalledTimes(2);
     expect(showWarning).toHaveBeenLastCalledWith(
       expect.stringContaining('Git'),
-      'My Code: Retry',
-      'My Code: Show Output'
+      'What Did I Write?: Retry',
+      'What Did I Write?: Show Output'
     );
     controller.dispose();
   });
@@ -451,7 +451,7 @@ describe('StatusController', () => {
       registry,
       { text: '', show: vi.fn() },
       {
-        showWarning: vi.fn(async () => 'My Code: Retry'),
+        showWarning: vi.fn(async () => 'What Did I Write?: Retry'),
         showOutput: vi.fn(),
         retryIdentity
       }

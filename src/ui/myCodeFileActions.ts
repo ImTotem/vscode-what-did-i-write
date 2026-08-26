@@ -62,6 +62,12 @@ interface ResolvedNode {
   readonly kind: FileActionKind;
 }
 
+
+interface ExternalSource {
+  readonly path: string;
+  readonly canonicalPath: string;
+  readonly kind: FileActionKind;
+}
 interface TransferPlan extends ResolvedNode {
   readonly destination: string;
   readonly destinationIdentity: string;
@@ -172,7 +178,7 @@ export class MyCodeFileActions {
     if (sources === undefined) return;
     if (sources.some(({ kind }) => kind === 'directory')) {
       const confirmed = await this.boundary.confirm({
-        message: 'Cut this folder? It may contain hidden files not shown in My Code.',
+        message: 'Cut this folder? It may contain hidden files not shown in What Did I Write?.',
         detail: 'Pasting will move the entire real directory.',
         confirmLabel: 'Cut Folder'
       });
@@ -217,6 +223,108 @@ export class MyCodeFileActions {
     await this.transfer(sources, resolvedDestination, mode, true);
   }
 
+  public async copyExternal(
+    paths: readonly string[],
+    destination: MyCodeFileActionNode
+  ): Promise<void> {
+    await this.guardTransfer(
+      'external copy',
+      destination,
+      () => this.copyExternalImpl(paths, destination)
+    );
+  }
+
+  private async copyExternalImpl(
+    paths: readonly string[],
+    destinationNode: MyCodeFileActionNode
+  ): Promise<void> {
+    const destination = await this.resolveDestination(destinationNode);
+    if (destination === undefined) return;
+    const sources: ExternalSource[] = [];
+    for (const candidate of [...new Set(paths.map((path) => resolve(path)))]) {
+      if (!isAbsolute(candidate) || await this.hasSymbolicLink(candidate)) {
+        await this.boundary.warn('External drag paths must be absolute and cannot use symbolic links or junctions.');
+        return;
+      }
+      const canonicalPath = await this.boundary.realPath(candidate);
+      const kind = await this.boundary.kind(candidate);
+      if (canonicalPath === undefined || kind === undefined) {
+        await this.boundary.warn('Missing external paths cannot be copied into What Did I Write?.');
+        return;
+      }
+      if (kind === 'directory' && pathContains(canonicalPath, destination.canonicalPath)) {
+        await this.boundary.warn('A folder cannot be copied into itself or one of its descendants.');
+        return;
+      }
+      sources.push({ path: candidate, canonicalPath, kind });
+    }
+    if (sources.length === 0) return;
+    if (sources.some(({ kind }) => kind === 'directory') && !await this.boundary.confirm({
+      message: 'Copy this folder? It may contain hidden files not shown in What Did I Write?.',
+      detail: 'The entire real directory will be copied recursively.',
+      confirmLabel: 'Copy Folder Recursively'
+    })) return;
+
+    const planned = new Set<string>();
+    const plans: Array<{ source: ExternalSource; name: string }> = [];
+    for (const source of sources) {
+      let name = basename(source.path);
+      let target = resolve(destination.path, name);
+      const identity = resolve(destination.canonicalPath, basename(source.canonicalPath));
+      if (samePath(source.canonicalPath, identity)) continue;
+      if (planned.has(pathKey(identity)) || await this.boundary.kind(target) !== undefined) {
+        const replacement = await this.promptAvailableName(
+          destination.path,
+          name,
+          'External Copy Conflict',
+          planned
+        );
+        if (replacement === undefined) return;
+        name = replacement;
+        target = resolve(destination.path, name);
+      }
+      planned.add(pathKey(target));
+      plans.push({ source, name });
+    }
+
+    let changed = false;
+    let unexpectedFailures = 0;
+    for (const plan of plans) {
+      const currentDestination = await this.resolveDestination(destinationNode);
+      if (currentDestination === undefined) continue;
+      if (await this.hasSymbolicLink(plan.source.path)) {
+        await this.boundary.warn('External drag paths cannot use symbolic links or junctions.');
+        continue;
+      }
+      const currentCanonical = await this.boundary.realPath(plan.source.path);
+      const currentKind = await this.boundary.kind(plan.source.path);
+      if (currentCanonical === undefined || currentKind === undefined) {
+        await this.boundary.warn('Missing external paths cannot be copied into What Did I Write?.');
+        continue;
+      }
+      if (currentKind === 'directory' && pathContains(currentCanonical, currentDestination.canonicalPath)) {
+        await this.boundary.warn('A folder cannot be copied into itself or one of its descendants.');
+        continue;
+      }
+      const target = resolve(currentDestination.path, plan.name);
+      const validatedDestination = await this.validateWriteDestination(currentDestination.root, target);
+      if (validatedDestination === undefined || samePath(currentCanonical, validatedDestination.identity)) continue;
+      if (await this.boundary.kind(validatedDestination.path) !== undefined) {
+        await this.boundary.warn('The destination now exists: ' + validatedDestination.path);
+        continue;
+      }
+      try {
+        await this.boundary.copy(plan.source.path, validatedDestination.path);
+        changed = true;
+      } catch (error) {
+        unexpectedFailures += 1;
+        this.options.onError(error, 'external copy', plan.source.path);
+      }
+    }
+    if (changed) await this.refreshAfter('external copy', destination.path);
+    await this.reportBatchFailures('external copy', unexpectedFailures);
+  }
+
   public async rename(clicked: MyCodeFileActionNode): Promise<void> {
     await this.guard('rename', clicked, () => this.renameImpl(clicked));
   }
@@ -230,7 +338,7 @@ export class MyCodeFileActions {
     if (source === undefined) return;
     if (source.kind === 'directory') {
       const confirmed = await this.boundary.confirm({
-        message: 'Rename this folder? It may contain hidden files not shown in My Code.',
+        message: 'Rename this folder? It may contain hidden files not shown in What Did I Write?.',
         detail: 'The entire real directory will be renamed.',
         confirmLabel: 'Rename Folder'
       });
@@ -281,7 +389,7 @@ export class MyCodeFileActions {
         : `Delete ${allPaths.length} selected items?\n${allPaths.join('\n')}`,
       ...(directories.length === 0 ? {} : {
         detail: `Recursively deletes: ${directories.map(({ path }) => path).join(', ')}. `
-          + 'Entire real folders are removed, including hidden files not shown in My Code.'
+          + 'Entire real folders are removed, including hidden files not shown in What Did I Write?.'
       }),
       confirmLabel: directories.length === 0 ? 'Delete' : 'Delete Folder Recursively'
     });
@@ -371,7 +479,7 @@ export class MyCodeFileActions {
       return { completed: [], failed: nodes, cancelled: true };
     }
     if (mode === 'move' && warnForFolderMove && sources.some(({ kind }) => kind === 'directory') && !await this.boundary.confirm({
-      message: 'Move this folder? It may contain hidden files not shown in My Code.',
+      message: 'Move this folder? It may contain hidden files not shown in What Did I Write?.',
       detail: 'The entire real directory will be moved.',
       confirmLabel: 'Move Folder'
     })) return { completed: [], failed: nodes, cancelled: true };
@@ -383,7 +491,7 @@ export class MyCodeFileActions {
       }
     }
     if (mode === 'copy' && sources.some(({ kind }) => kind === 'directory') && !await this.boundary.confirm({
-      message: 'Copy this folder? It may contain hidden files not shown in My Code.',
+      message: 'Copy this folder? It may contain hidden files not shown in What Did I Write?.',
       detail: 'The entire real directory will be copied recursively.',
       confirmLabel: 'Copy Folder Recursively'
     })) return { completed: [], failed: nodes, cancelled: true };
@@ -574,7 +682,7 @@ export class MyCodeFileActions {
     const root = resolve(node.root);
     const path = nodePath(node);
     if (path === undefined) {
-      await this.boundary.warn('Ambiguous empty paths cannot be changed from My Code.');
+      await this.boundary.warn('Ambiguous empty paths cannot be changed from What Did I Write?.');
       return undefined;
     }
     if (!await this.validateOwnership(root, path)) return undefined;
@@ -605,14 +713,14 @@ export class MyCodeFileActions {
   ): Promise<Omit<ResolvedNode, 'node'> | undefined> {
     if (!await this.validateOwnership(root, path)) return undefined;
     if (await this.hasSymbolicLink(path)) {
-      await this.boundary.warn('Paths through symbolic links or junctions cannot be changed from My Code.');
+      await this.boundary.warn('Paths through symbolic links or junctions cannot be changed from What Did I Write?.');
       return undefined;
     }
     const canonicalRoot = await this.boundary.realPath(root);
     const canonicalPath = await this.boundary.realPath(path);
     const kind = await this.boundary.kind(path);
     if (canonicalRoot === undefined || canonicalPath === undefined || kind === undefined) {
-      await this.boundary.warn('Missing paths cannot be changed from My Code.');
+      await this.boundary.warn('Missing paths cannot be changed from What Did I Write?.');
       return undefined;
     }
     if (!pathContains(canonicalRoot, canonicalPath)) {
@@ -677,12 +785,12 @@ export class MyCodeFileActions {
 
   private async reportSingleFailure(error: unknown, operation: string, path: string): Promise<void> {
     this.options.onError(error, operation, path);
-    await this.boundary.showError(`Could not ${operation} ${path}. See My Code output for details.`);
+    await this.boundary.showError(`Could not ${operation} ${path}. See What Did I Write? output for details.`);
   }
 
   private async reportBatchFailures(operation: string, count: number): Promise<void> {
     if (count === 0) return;
-    await this.boundary.showError(`Could not ${operation} ${count} ${count === 1 ? 'item' : 'items'}. See My Code output for details.`);
+    await this.boundary.showError(`Could not ${operation} ${count} ${count === 1 ? 'item' : 'items'}. See What Did I Write? output for details.`);
   }
 }
 
@@ -795,7 +903,7 @@ function isImmutable(node: MyCodeFileActionNode): boolean {
 
 function immutableMessage(node: MyCodeFileActionNode): string {
   return node.kind === 'file' && !node.file.exists
-    ? 'Missing paths cannot be changed from My Code.'
+    ? 'Missing paths cannot be changed from What Did I Write?.'
     : 'Past activity is read-only.';
 }
 

@@ -93,9 +93,9 @@ describe('extension manifest', () => {
   it('exposes the core actions in the MY CODE view title bar', () => {
     expect(manifest.contributes?.menus?.['view/title']).toEqual(expect.arrayContaining([
       expect.objectContaining({ command: 'myCode.refresh', when: 'view == myCode.explorer' }),
-      expect.objectContaining({ command: 'myCode.showFileHistory', when: 'view == myCode.explorer' }),
-      expect.objectContaining({ command: 'myCode.showLineHistory', when: 'view == myCode.explorer' }),
-      expect.objectContaining({ command: 'myCode.toggleLineBackground', when: 'view == myCode.explorer' })
+      expect.objectContaining({ command: 'myCode.expandAll', when: 'view == myCode.explorer && !myCode.treeAllExpanded' }),
+      expect.objectContaining({ command: 'myCode.collapseAll', when: 'view == myCode.explorer && myCode.treeAllExpanded' }),
+      expect.objectContaining({ command: 'myCode.hideDecorations', when: 'view == myCode.explorer && myCode.visualsEnabled' })
     ]));
     const commands = manifest.contributes?.commands ?? [];
     expect(commands.filter(({ command }) => command.startsWith('myCode.')).every(({ icon }) => icon !== undefined)).toBe(true);
@@ -104,7 +104,38 @@ describe('extension manifest', () => {
   it('routes file history from current and past MY CODE tree items', () => {
     expect(manifest.contributes?.menus?.['view/item']).toEqual(expect.arrayContaining([
       { command: 'myCode.showFileHistory', when: 'view == myCode.explorer && viewItem == myCode.file' },
-      { command: 'myCode.showFileHistory', when: 'view == myCode.explorer && viewItem == myCode.pastFile' }
+      { command: 'myCode.showFileHistory', when: 'view == myCode.pastActivity && viewItem == myCode.pastFile' }
     ]));
   });
+
+  it('contributes every approved Explorer action with What Did I Write? palette branding and an icon', () => {
+    const commands = manifest.contributes?.commands ?? [];
+    const required = ['expandAll', 'collapseAll', 'hideDecorations', 'showDecorations', 'openToSide', 'revealInExplorer', 'revealInOs', 'copyPath', 'copyRelativePath', 'copyHistoricalPath', 'copyHistoricalRelativePath', 'cut', 'copy', 'paste', 'newFile', 'newFolder', 'rename', 'delete'].map((id) => `myCode.${id}`);
+    expect(commands.map(({ command }) => command)).toEqual(expect.arrayContaining(required));
+    for (const command of commands.filter(({ command }) => command.startsWith('myCode.'))) {
+      expect(command.title).toMatch(/^What Did I Write\?: /);
+      expect(command.icon).toBeTruthy();
+    }
+  });
+
+  it('uses conditional title slots and exposes mutations only on current non-synthetic rows', () => {
+    const title = manifest.contributes?.menus?.['view/title'] ?? [];
+    expect(title).toEqual(expect.arrayContaining([
+      { command: 'myCode.expandAll', when: 'view == myCode.explorer && !myCode.treeAllExpanded', group: 'navigation@2' },
+      { command: 'myCode.collapseAll', when: 'view == myCode.explorer && myCode.treeAllExpanded', group: 'navigation@2' },
+      { command: 'myCode.hideDecorations', when: 'view == myCode.explorer && myCode.visualsEnabled', group: 'navigation@3' },
+      { command: 'myCode.showDecorations', when: 'view == myCode.explorer && !myCode.visualsEnabled', group: 'navigation@3' }
+    ]));
+    const items = manifest.contributes?.menus?.['view/item'] ?? [];
+    const commandsFor = (contextValue: string) => items.filter(({ when }) => when.includes('viewItem == ' + contextValue)).map(({ command }) => command);
+    expect(commandsFor('myCode.file')).toEqual(expect.arrayContaining(['myCode.openFile', 'myCode.openToSide', 'myCode.showFileHistory', 'myCode.revealInExplorer', 'myCode.revealInOs', 'myCode.copyPath', 'myCode.copyRelativePath', 'myCode.cut', 'myCode.copy', 'myCode.paste', 'myCode.rename', 'myCode.delete']));
+    expect(commandsFor('myCode.folder')).toEqual(expect.arrayContaining(['myCode.revealInExplorer', 'myCode.revealInOs', 'myCode.copyPath', 'myCode.copyRelativePath', 'myCode.newFile', 'myCode.newFolder', 'myCode.cut', 'myCode.copy', 'myCode.paste', 'myCode.rename', 'myCode.delete']));
+    expect(commandsFor('myCode.repository')).toEqual(expect.arrayContaining(['myCode.revealInExplorer', 'myCode.revealInOs', 'myCode.copyPath', 'myCode.copyRelativePath', 'myCode.newFile', 'myCode.newFolder', 'myCode.cut', 'myCode.copy', 'myCode.paste']));
+    expect(commandsFor('myCode.repository')).not.toEqual(expect.arrayContaining(['myCode.rename', 'myCode.delete']));
+    expect(items.filter(({ when }) => when.includes('viewItem == myCode.pastFile'))).toEqual([
+      { command: 'myCode.showFileHistory', when: 'view == myCode.pastActivity && viewItem == myCode.pastFile' },
+      { command: 'myCode.copyHistoricalPath', when: 'view == myCode.pastActivity && viewItem == myCode.pastFile' },
+      { command: 'myCode.copyHistoricalRelativePath', when: 'view == myCode.pastActivity && viewItem == myCode.pastFile' }
+    ]);
+});
 });

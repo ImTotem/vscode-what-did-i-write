@@ -29,48 +29,140 @@
     "commands": [
       {
         "command": "myCode.refresh",
-        "title": "My Code: Refresh",
+        "title": "What Did I Write?: Refresh",
         "icon": "$(refresh)"
       },
       {
         "command": "myCode.showOutput",
-        "title": "My Code: Show Output",
+        "title": "What Did I Write?: Show Output",
         "icon": "$(output)"
       },
       {
         "command": "myCode.retryIdentity",
-        "title": "My Code: Retry",
+        "title": "What Did I Write?: Retry",
         "icon": "$(debug-restart)"
       },
       {
         "command": "myCode.openFile",
-        "title": "My Code: Open File",
+        "title": "What Did I Write?: Open",
         "icon": "$(go-to-file)"
       },
       {
         "command": "myCode.focusFileHistory",
-        "title": "My Code: Focus File History",
+        "title": "What Did I Write?: Focus File History",
         "icon": "$(history)"
       },
       {
         "command": "myCode.focusLineHistory",
-        "title": "My Code: Focus Line History",
+        "title": "What Did I Write?: Focus Line History",
         "icon": "$(list-tree)"
       },
       {
         "command": "myCode.showFileHistory",
-        "title": "My Code: Show File History",
+        "title": "What Did I Write?: Show File History",
         "icon": "$(history)"
       },
       {
         "command": "myCode.showLineHistory",
-        "title": "My Code: Show Line History",
+        "title": "What Did I Write?: Show Line History",
         "icon": "$(list-tree)"
       },
       {
         "command": "myCode.toggleLineBackground",
-        "title": "My Code: Toggle Line Background",
+        "title": "What Did I Write?: Toggle Line Background",
         "icon": "$(color-mode)"
+      },
+      {
+        "command": "myCode.expandAll",
+        "title": "What Did I Write?: Expand All",
+        "icon": "$(expand-all)"
+      },
+      {
+        "command": "myCode.collapseAll",
+        "title": "What Did I Write?: Collapse All",
+        "icon": "$(collapse-all)"
+      },
+      {
+        "command": "myCode.hideDecorations",
+        "title": "What Did I Write?: Hide My Code Decorations",
+        "icon": "$(eye-closed)",
+        "enablement": "myCode.visualsEnabled"
+      },
+      {
+        "command": "myCode.showDecorations",
+        "title": "What Did I Write?: Show My Code Decorations",
+        "icon": "$(eye)",
+        "enablement": "!myCode.visualsEnabled"
+      },
+      {
+        "command": "myCode.openToSide",
+        "title": "What Did I Write?: Open to the Side",
+        "icon": "$(split-horizontal)"
+      },
+      {
+        "command": "myCode.revealInExplorer",
+        "title": "What Did I Write?: Reveal in Explorer",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "myCode.revealInOs",
+        "title": "What Did I Write?: Reveal in File Manager",
+        "icon": "$(folder-library)"
+      },
+      {
+        "command": "myCode.copyPath",
+        "title": "What Did I Write?: Copy Path",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "myCode.copyRelativePath",
+        "title": "What Did I Write?: Copy Relative Path",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "myCode.copyHistoricalPath",
+        "title": "What Did I Write?: Copy Historical Path",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "myCode.copyHistoricalRelativePath",
+        "title": "What Did I Write?: Copy Historical Relative Path",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "myCode.cut",
+        "title": "What Did I Write?: Cut",
+        "icon": "$(cut)"
+      },
+      {
+        "command": "myCode.copy",
+        "title": "What Did I Write?: Copy",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "myCode.paste",
+        "title": "What Did I Write?: Paste",
+        "icon": "$(clippy)"
+      },
+      {
+        "command": "myCode.newFile",
+        "title": "What Did I Write?: New File",
+        "icon": "$(new-file)"
+      },
+      {
+        "command": "myCode.newFolder",
+        "title": "What Did I Write?: New Folder",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "myCode.rename",
+        "title": "What Did I Write?: Rename",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "myCode.delete",
+        "title": "What Did I Write?: Delete",
+        "icon": "$(trash)"
       }
     ],
     "configuration": {
@@ -84,7 +176,7 @@
         "myCode.visuals.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Show ownership colors and markers in the editor."
+          "description": "Show What Did I Write? ownership colors and markers in Explorer and the editor."
         }
       }
     },
@@ -140,7 +232,7 @@
     "viewsWelcome": [
       {
         "view": "myCode.explorer",
-        "contents": "Your changed files appear here.\n[Refresh My Code](command:myCode.refresh)\nOpen a changed file and hover one of your marked lines to see file and line history."
+        "contents": "Your changed files appear here.\n[Refresh What Did I Write?](command:myCode.refresh)\nOpen a changed file and hover one of your marked lines to see file and line history."
       }
     ],
     "menus": {
@@ -151,29 +243,166 @@
           "group": "navigation@1"
         },
         {
-          "command": "myCode.showFileHistory",
-          "when": "view == myCode.explorer",
+          "command": "myCode.expandAll",
+          "when": "view == myCode.explorer && !myCode.treeAllExpanded",
           "group": "navigation@2"
         },
         {
-          "command": "myCode.showLineHistory",
-          "when": "view == myCode.explorer",
+          "command": "myCode.collapseAll",
+          "when": "view == myCode.explorer && myCode.treeAllExpanded",
+          "group": "navigation@2"
+        },
+        {
+          "command": "myCode.hideDecorations",
+          "when": "view == myCode.explorer && myCode.visualsEnabled",
           "group": "navigation@3"
         },
         {
-          "command": "myCode.toggleLineBackground",
-          "when": "view == myCode.explorer",
-          "group": "navigation@4"
+          "command": "myCode.showDecorations",
+          "when": "view == myCode.explorer && !myCode.visualsEnabled",
+          "group": "navigation@3"
         }
       ],
       "view/item": [
+        {
+          "command": "myCode.openFile",
+          "when": "view == myCode.explorer && viewItem == myCode.file"
+        },
+        {
+          "command": "myCode.openToSide",
+          "when": "view == myCode.explorer && viewItem == myCode.file"
+        },
         {
           "command": "myCode.showFileHistory",
           "when": "view == myCode.explorer && viewItem == myCode.file"
         },
         {
+          "command": "myCode.revealInExplorer",
+          "when": "view == myCode.explorer && viewItem == myCode.file"
+        },
+        {
+          "command": "myCode.revealInOs",
+          "when": "view == myCode.explorer && viewItem == myCode.file"
+        },
+        {
+          "command": "myCode.copyPath",
+          "when": "view == myCode.explorer && viewItem == myCode.file"
+        },
+        {
+          "command": "myCode.copyRelativePath",
+          "when": "view == myCode.explorer && viewItem == myCode.file"
+        },
+        {
+          "command": "myCode.cut",
+          "when": "view == myCode.explorer && viewItem == myCode.file"
+        },
+        {
+          "command": "myCode.copy",
+          "when": "view == myCode.explorer && viewItem == myCode.file"
+        },
+        {
+          "command": "myCode.paste",
+          "when": "view == myCode.explorer && viewItem == myCode.file"
+        },
+        {
+          "command": "myCode.rename",
+          "when": "view == myCode.explorer && viewItem == myCode.file"
+        },
+        {
+          "command": "myCode.delete",
+          "when": "view == myCode.explorer && viewItem == myCode.file"
+        },
+        {
+          "command": "myCode.revealInExplorer",
+          "when": "view == myCode.explorer && viewItem == myCode.folder"
+        },
+        {
+          "command": "myCode.revealInOs",
+          "when": "view == myCode.explorer && viewItem == myCode.folder"
+        },
+        {
+          "command": "myCode.copyPath",
+          "when": "view == myCode.explorer && viewItem == myCode.folder"
+        },
+        {
+          "command": "myCode.copyRelativePath",
+          "when": "view == myCode.explorer && viewItem == myCode.folder"
+        },
+        {
+          "command": "myCode.newFile",
+          "when": "view == myCode.explorer && viewItem == myCode.folder"
+        },
+        {
+          "command": "myCode.newFolder",
+          "when": "view == myCode.explorer && viewItem == myCode.folder"
+        },
+        {
+          "command": "myCode.cut",
+          "when": "view == myCode.explorer && viewItem == myCode.folder"
+        },
+        {
+          "command": "myCode.copy",
+          "when": "view == myCode.explorer && viewItem == myCode.folder"
+        },
+        {
+          "command": "myCode.paste",
+          "when": "view == myCode.explorer && viewItem == myCode.folder"
+        },
+        {
+          "command": "myCode.rename",
+          "when": "view == myCode.explorer && viewItem == myCode.folder"
+        },
+        {
+          "command": "myCode.delete",
+          "when": "view == myCode.explorer && viewItem == myCode.folder"
+        },
+        {
+          "command": "myCode.revealInExplorer",
+          "when": "view == myCode.explorer && viewItem == myCode.repository"
+        },
+        {
+          "command": "myCode.revealInOs",
+          "when": "view == myCode.explorer && viewItem == myCode.repository"
+        },
+        {
+          "command": "myCode.copyPath",
+          "when": "view == myCode.explorer && viewItem == myCode.repository"
+        },
+        {
+          "command": "myCode.copyRelativePath",
+          "when": "view == myCode.explorer && viewItem == myCode.repository"
+        },
+        {
+          "command": "myCode.newFile",
+          "when": "view == myCode.explorer && viewItem == myCode.repository"
+        },
+        {
+          "command": "myCode.newFolder",
+          "when": "view == myCode.explorer && viewItem == myCode.repository"
+        },
+        {
+          "command": "myCode.cut",
+          "when": "view == myCode.explorer && viewItem == myCode.repository"
+        },
+        {
+          "command": "myCode.copy",
+          "when": "view == myCode.explorer && viewItem == myCode.repository"
+        },
+        {
+          "command": "myCode.paste",
+          "when": "view == myCode.explorer && viewItem == myCode.repository"
+        },
+        {
           "command": "myCode.showFileHistory",
-          "when": "view == myCode.explorer && viewItem == myCode.pastFile"
+          "when": "view == myCode.pastActivity && viewItem == myCode.pastFile"
+        },
+        {
+          "command": "myCode.copyHistoricalPath",
+          "when": "view == myCode.pastActivity && viewItem == myCode.pastFile"
+        },
+        {
+          "command": "myCode.copyHistoricalRelativePath",
+          "when": "view == myCode.pastActivity && viewItem == myCode.pastFile"
         }
       ],
       "editor/title": [

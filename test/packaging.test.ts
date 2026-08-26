@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
+import { listFiles } from '@vscode/vsce';
 
 const read = (path: string): string => readFileSync(path, 'utf8');
 const manifest = JSON.parse(read('package.json')) as { readonly scripts?: { readonly package?: string } };
@@ -26,7 +27,9 @@ describe('release package contract', () => {
     expect(readme).toContain('`A`');
     expect(readme).toContain('`M`');
     expect(readme).toContain('`◷`');
-    expect(readme).toContain('My Code: Refresh');
+    expect(readme).toContain('What Did I Write?: Refresh');
+    expect(readme).toContain('Expand All');
+    expect(readme).toContain('Hide My Code Decorations');
     expect(readme).toContain('Extension Development Host');
   });
 
@@ -43,5 +46,11 @@ describe('release package contract', () => {
     expect(ignored).toContain('**/*.map');
     expect(ignored).toContain('PROJECT_GOAL.md');
     expect(ignored).toContain('vitest.config.mts');
+  });
+
+  it('includes the Activity Bar and both gutter SVG assets in the actual VSIX file list', async () => {
+    const files = await listFiles({ cwd: process.cwd() });
+
+    expect(files).toEqual(expect.arrayContaining(['media/my-code.svg', 'media/owned-committed.svg', 'media/owned-working.svg']));
   });
 });
