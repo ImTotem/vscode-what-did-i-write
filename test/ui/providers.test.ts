@@ -65,24 +65,30 @@ vi.mock('vscode', () => ({
 const ROOT = join(process.cwd(), 'repo');
 
 import { MyCodeDecorationProvider } from '../../src/ui/fileDecorations.js';
-import { MyCodeTreeProvider, type MyCodeNode } from '../../src/ui/myCodeTree.js';
+import { MyCodeTreeProvider, PastActivityTreeProvider, type MyCodeNode } from '../../src/ui/myCodeTree.js';
 import type { FileRecord, RepositorySnapshot } from '../../src/core/model.js';
 import type { RepositoryRegistry } from '../../src/extension/repositoryRegistry.js';
 
 describe('MyCodeDecorationProvider', () => {
-  it('decorates current files and propagates their A/M state without decorating a repository root', () => {
+  it('decorates files and collapsed parent folders directly from the snapshot', () => {
     const registry = fakeRegistry(snapshot(ROOT, [
-      file('added.ts', 'added'),
-      file('modified.ts', 'modified')
+      file('src/added.ts', 'added'),
+      file('src/nested/modified.ts', 'modified'),
+      file('only-added/new.ts', 'added')
     ]));
     const provider = new MyCodeDecorationProvider(registry);
 
-    const added = provider.provideFileDecoration(uri(join(ROOT, 'added.ts')));
-    const modified = provider.provideFileDecoration(uri(join(ROOT, 'modified.ts')));
+    const root = provider.provideFileDecoration(uri(ROOT));
+    const src = provider.provideFileDecoration(uri(join(ROOT, 'src')));
+    const onlyAdded = provider.provideFileDecoration(uri(join(ROOT, 'only-added')));
+    const added = provider.provideFileDecoration(uri(join(ROOT, 'src', 'added.ts')));
+    const modified = provider.provideFileDecoration(uri(join(ROOT, 'src', 'nested', 'modified.ts')));
 
+    expect(root).toMatchObject({ badge: undefined, color: { id: 'gitDecoration.modifiedResourceForeground' }, propagate: true });
+    expect(src).toMatchObject({ badge: undefined, color: { id: 'gitDecoration.modifiedResourceForeground' }, propagate: true });
+    expect(onlyAdded).toMatchObject({ badge: undefined, color: { id: 'gitDecoration.addedResourceForeground' }, propagate: true });
     expect(added).toMatchObject({ badge: 'A', tooltip: 'Added by you', color: { id: 'gitDecoration.addedResourceForeground' }, propagate: true });
     expect(modified).toMatchObject({ badge: 'M', tooltip: 'Modified by you', color: { id: 'gitDecoration.modifiedResourceForeground' }, propagate: true });
-    expect(provider.provideFileDecoration(uri(ROOT))).toBeUndefined();
     provider.dispose();
   });
 
@@ -153,43 +159,47 @@ describe('MyCodeDecorationProvider', () => {
 });
 
 describe('MyCodeTreeProvider', () => {
-  it('renders file, deleted-past, and history item commands, context values, URIs, and tooltips', () => {
-    const commit = { hash: 'abcdef123456', authorName: 'Me', authorEmail: 'me@example.com', authoredAt: 1, subject: 'Add auth' };
-    const registry = fakeRegistry(snapshot(ROOT, [
-      file('current.ts', 'modified'),
-      { ...file('deleted.ts', 'past', false), history: [commit] }
-    ]));
+  it('caches the current graph by snapshot generation and returns parents and expandable nodes', () => {
+    const registry = fakeRegistry(snapshot(ROOT, [file('src/nested/current.ts', 'modified')]));
     const provider = new MyCodeTreeProvider(registry);
-    const roots = provider.getChildren();
-    const current = roots[0]?.children[0] as MyCodeNode;
-    const past = roots[1]?.children[0] as MyCodeNode;
+    const firstRoots = provider.getChildren();
+    const secondRoots = provider.getChildren();
+    const src = firstRoots[0] as MyCodeNode;
+    const nested = src.children[0] as MyCodeNode;
+    const current = nested.children[0] as MyCodeNode;
 
-    const currentItem = provider.getTreeItem(current);
-    expect(currentItem).toMatchObject({
+    expect(secondRoots[0]).toBe(src);
+    expect(provider.getParent(src)).toBeUndefined();
+    expect(provider.getParent(nested)).toBe(src);
+    expect(provider.getParent(current)).toBe(nested);
+    expect(provider.expandableNodes()).toEqual([src, nested]);
+
+    (registry.entry.analyzer as { getSnapshot: () => RepositorySnapshot }).getSnapshot = () => snapshot(ROOT, [file('src/nested/current.ts', 'modified')], 2);
+    expect(provider.getChildren()[0]).not.toBe(src);
+    provider.dispose();
+  });
+
+  it('renders current files as Explorer resources', () => {
+    const provider = new MyCodeTreeProvider(fakeRegistry(snapshot(ROOT, [file('current.ts', 'modified')])));
+    const current = provider.getChildren()[0] as MyCodeNode;
+    expect(provider.getTreeItem(current)).toMatchObject({
+      collapsibleState: 0,
       resourceUri: { fsPath: join(ROOT, 'current.ts') },
       command: { command: 'myCode.openFile' },
       contextValue: 'myCode.file',
       description: 'M'
     });
-    const pastItem = provider.getTreeItem(past);
-    expect(pastItem).toMatchObject({
-      command: undefined,
-      resourceUri: undefined,
-      contextValue: 'myCode.pastFile',
-      description: '◷',
-      iconPath: { id: 'history' }
-    });
-    const history = provider.getChildren(past)[0] as MyCodeNode;
-    const historyItem = provider.getTreeItem(history);
-    expect(historyItem).toMatchObject({ command: { command: 'myCode.openCommitDiff' }, contextValue: 'myCode.history' });
-    expect(historyItem.tooltip).toContain('abcdef123456');
-    expect(historyItem.tooltip).toContain('Me <me@example.com>');
-    expect(historyItem.tooltip).toContain('Add auth');
+    provider.dispose();
+  });
+  it('returns no roots when no repository is ready', () => {
+    const provider = new MyCodeTreeProvider(fakeRegistry(snapshot(ROOT, []), undefined, 'initializing'));
+
+    expect(provider.getChildren()).toEqual([]);
     provider.dispose();
   });
 
-  it('returns no roots when no repository is ready', () => {
-    const provider = new MyCodeTreeProvider(fakeRegistry(snapshot(ROOT, []), undefined, 'initializing'));
+  it('returns no roots for an empty ready repository so the welcome content remains visible', () => {
+    const provider = new MyCodeTreeProvider(fakeRegistry(snapshot(ROOT, [])));
 
     expect(provider.getChildren()).toEqual([]);
     provider.dispose();
@@ -236,8 +246,8 @@ function fakeRegistry(
   } as unknown as RepositoryRegistry & { readonly entry: typeof entry };
 }
 
-function snapshot(root: string, files: readonly FileRecord[]): RepositorySnapshot {
-  return { root, head: 'head', identity: { name: 'Me', email: 'me@example.com' }, files, scanning: false, generatedAt: 1 };
+function snapshot(root: string, files: readonly FileRecord[], generatedAt = 1): RepositorySnapshot {
+  return { root, head: 'head', identity: { name: 'Me', email: 'me@example.com' }, files, scanning: false, generatedAt };
 }
 
 function file(relativePath: string, kind: FileRecord['kind'], exists = true): FileRecord {
@@ -253,3 +263,24 @@ function deferred<T>() {
   });
   return { promise, resolve: (value: T) => resolvePromise?.(value), reject: (reason: unknown) => rejectPromise?.(reason) };
 }
+
+describe('PastActivityTreeProvider', () => {
+  it('renders flat past activity rows as history-only nodes with parent path and latest time', () => {
+    const provider = new PastActivityTreeProvider(fakeRegistry(snapshot(ROOT, [
+      { ...file('src/deleted.ts', 'past', false), history: [{ hash: 'abcdef123456', authorName: 'Me', authorEmail: 'me@example.com', authoredAt: 7, subject: 'Add auth' }] }
+    ])));
+    const past = provider.getChildren()[0];
+    if (past === undefined) throw new Error('expected a past activity row');
+
+    expect(provider.getTreeItem(past)).toMatchObject({
+      collapsibleState: 0,
+      command: { command: 'myCode.focusFileHistory', arguments: [join(ROOT, 'src', 'deleted.ts')] },
+      resourceUri: undefined,
+      contextValue: 'myCode.pastFile',
+      iconPath: { id: 'history' }
+    });
+    expect(provider.getTreeItem(past).description).toContain('src');
+    expect(provider.getChildren(past)).toEqual([]);
+    provider.dispose();
+  });
+});
