@@ -90,13 +90,16 @@ export class MyCodeFileActions {
   public targets(clicked: MyCodeFileActionNode): readonly MyCodeFileActionNode[] {
     const selected = this.options.selection();
     const candidates = selected.some(({ id }) => id === clicked.id) ? selected : [clicked];
-    const unique = [...new Map(candidates.map((node) =>
-      [nodePath(node) === undefined ? `id:${node.id}` : `path:${pathKey(nodePath(node) ?? '')}`, node])).values()];
+    const semanticCandidates = isImmutable(clicked)
+      ? candidates.filter(isImmutable)
+      : candidates;
+    const unique = [...new Map(semanticCandidates.map((node) => [node.id, node])).values()];
     return unique.filter((candidate) => {
       const candidatePath = nodePath(candidate);
       if (candidatePath === undefined) return true;
       return !unique.some((possibleAncestor) => {
         if (possibleAncestor.id === candidate.id) return false;
+        if (isImmutable(possibleAncestor) !== isImmutable(candidate)) return false;
         const ancestorPath = nodePath(possibleAncestor);
         return ancestorPath !== undefined
           && !samePath(ancestorPath, candidatePath)
@@ -211,7 +214,7 @@ export class MyCodeFileActions {
   ): Promise<void> {
     const resolvedDestination = await this.resolveDestination(destination);
     if (resolvedDestination === undefined) return;
-    await this.transfer(this.normalizeExplicitSources(sources), resolvedDestination, mode, true);
+    await this.transfer(sources, resolvedDestination, mode, true);
   }
 
   public async rename(clicked: MyCodeFileActionNode): Promise<void> {
@@ -310,18 +313,6 @@ export class MyCodeFileActions {
     await this.guard('create folder', clicked, () => this.createChild(clicked, 'directory'));
   }
 
-  private normalizeExplicitSources(nodes: readonly MyCodeFileActionNode[]): readonly MyCodeFileActionNode[] {
-    const unique = [...new Map(nodes.map((node) =>
-      [nodePath(node) === undefined ? `id:${node.id}` : `path:${pathKey(nodePath(node) ?? '')}`, node])).values()];
-    return unique.filter((candidate) => {
-      const candidatePath = nodePath(candidate);
-      return candidatePath === undefined || !unique.some((ancestor) => {
-        const ancestorPath = nodePath(ancestor);
-        return ancestor.id !== candidate.id && ancestorPath !== undefined
-          && !samePath(ancestorPath, candidatePath) && pathContains(ancestorPath, candidatePath);
-      });
-    });
-  }
 
   private async runCommand(
     operation: string,

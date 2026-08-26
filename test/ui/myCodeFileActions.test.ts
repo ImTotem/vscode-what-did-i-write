@@ -39,6 +39,24 @@ describe('MyCodeFileActions target normalization', () => {
 
     expect(actions.targets(nested).map(({ id }) => id)).toEqual([sibling.id, src.id]);
   });
+
+  it.each([
+    ['past before current', true],
+    ['current before past', false]
+  ] as const)('does not expand a clicked past row into its mutable alias when selected %s', async (_order, pastFirst) => {
+    const past = pastNode('shared.ts');
+    const current = fileNode('shared.ts');
+    const boundary = fakeBoundary([[join(ROOT, 'shared.ts'), 'file']]);
+    const selection = pastFirst ? [past, current] : [current, past];
+    const { actions } = actionHarness({ selection, boundary });
+
+    expect(actions.targets(past)).toEqual([past]);
+
+    await actions.delete(past);
+
+    expect(boundary.deletedFiles).toEqual([]);
+    expect(boundary.warnings).toEqual(['Past activity is read-only.']);
+  });
 });
 
 describe('MyCodeFileActions validation', () => {
@@ -195,6 +213,26 @@ describe('MyCodeFileActions validation', () => {
 
     expect(boundary.deletedFiles).toEqual([join(ROOT, 'src', 'owned.ts')]);
     expect(boundary.warnings).toEqual([]);
+  });
+
+  it.each([
+    ['past before current', true],
+    ['current before past', false]
+  ] as const)('rejects explicit copy sources containing immutable and current aliases when ordered %s', async (_order, pastFirst) => {
+    const past = pastNode('shared.ts');
+    const current = fileNode('shared.ts');
+    const destination = folderNode('destination');
+    const boundary = fakeBoundary([
+      [join(ROOT, 'shared.ts'), 'file'],
+      [join(ROOT, 'destination'), 'directory']
+    ]);
+    const sources = pastFirst ? [past, current] : [current, past];
+    const { actions } = actionHarness({ boundary });
+
+    await actions.copyOrMove(sources, destination, 'copy');
+
+    expect(boundary.copies).toEqual([]);
+    expect(boundary.warnings).toEqual(['Past activity is read-only.']);
   });
 });
 
