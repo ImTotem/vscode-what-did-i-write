@@ -61,11 +61,9 @@ export class GitRepository {
 
   public async getUserIndex(identity: GitIdentity): Promise<UserIndex> {
     const result = await this.runner.run(this.root, [
-      'log', 'HEAD', LOG_FORMAT, '--name-status', '-z', '--no-renames', '--diff-merges=first-parent'
+      'log', 'HEAD', LOG_FORMAT, '--name-status', '-z', '--find-renames', '--diff-merges=first-parent'
     ]);
-    const entries = parseLogIndex(result.stdout).filter(({ commit }) =>
-      matchesIdentity(identity, commit.authorName, commit.authorEmail)
-    );
+    const entries = projectMatchingEntriesToHead(parseLogIndex(result.stdout), identity);
     return { entries, commits: entries.map(({ commit }) => commit) };
   }
 
@@ -176,6 +174,36 @@ export class GitRepository {
 
 function decodeLine(bytes: Buffer): string {
   return bytes.toString('utf8').replace(/[\r\n]+$/, '');
+}
+
+function projectMatchingEntriesToHead(
+  entries: readonly LogIndexEntry[],
+  identity: GitIdentity
+): LogIndexEntry[] {
+  const currentPathByHistoricalPath = new Map<string, string>();
+  const matchingEntries: LogIndexEntry[] = [];
+  for (const entry of entries) {
+    const changes = entry.changes.map((change) => ({
+      ...change,
+      path: currentPathByHistoricalPath.get(change.path) ?? change.path
+    }));
+    for (let index = 0; index < entry.changes.length; index += 1) {
+      const historicalChange = entry.changes[index];
+      const projectedChange = changes[index];
+      if (
+        historicalChange !== undefined
+        && projectedChange !== undefined
+        && /^R\d*$/.test(historicalChange.status)
+        && historicalChange.originalPath !== undefined
+      ) {
+        currentPathByHistoricalPath.set(historicalChange.originalPath, projectedChange.path);
+      }
+    }
+    if (matchesIdentity(identity, entry.commit.authorName, entry.commit.authorEmail)) {
+      matchingEntries.push({ commit: entry.commit, changes });
+    }
+  }
+  return matchingEntries;
 }
 
 export function mapWorkingLineThroughDiff(diff: string, workingLine: number): number | undefined {

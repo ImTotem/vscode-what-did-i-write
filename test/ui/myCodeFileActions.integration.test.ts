@@ -15,7 +15,12 @@ import {
   type ConfirmationPrompt
 } from '../../src/ui/myCodeFileActions.js';
 import type { FileRecord } from '../../src/core/model.js';
-import type { FileTreeNode, FolderTreeNode, RepositoryTreeNode } from '../../src/ui/myCodeTree.js';
+import {
+  myCodeNodeId,
+  type FileTreeNode,
+  type FolderTreeNode,
+  type RepositoryTreeNode
+} from '../../src/ui/myCodeTree.js';
 
 const temporaryRoots: string[] = [];
 
@@ -210,12 +215,12 @@ async function pathKind(path: string): Promise<FileActionKind | undefined> {
 }
 
 function repositoryNode(root: string): RepositoryTreeNode {
-  return { id: `repository|${root}`, kind: 'repository', root, label: 'repo', children: [] };
+  return { id: myCodeNodeId('repository', root), kind: 'repository', root, label: 'repo', children: [] };
 }
 
 function folderNode(root: string, relativePath: string): FolderTreeNode {
   return {
-    id: `folder|${root}|${relativePath}`,
+    id: myCodeNodeId('folder', root, relativePath),
     kind: 'folder',
     root,
     relativePath,
@@ -226,7 +231,7 @@ function folderNode(root: string, relativePath: string): FolderTreeNode {
 
 function fileNode(root: string, relativePath: string): FileTreeNode {
   return {
-    id: `file|${root}|${relativePath}`,
+    id: myCodeNodeId('file', root, relativePath),
     kind: 'file',
     root,
     file: fileRecord(relativePath),

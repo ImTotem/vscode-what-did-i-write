@@ -2,7 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Run My Code",
+      "name": "Run What Did I Write?",
       "type": "extensionHost",
       "request": "launch",
       "args": [

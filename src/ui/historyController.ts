@@ -162,11 +162,18 @@ export class HistoryController {
     this.previewCache.set(cacheKey, preview);
     return preview;
   }
-  public async getTimeline(input?: unknown, zeroBasedLine?: number): Promise<HistoryTimelineModel | undefined> {
+  public async getTimeline(
+    input?: unknown,
+    zeroBasedLine?: number,
+    cancellation?: Pick<vscode.CancellationToken, 'isCancellationRequested'>
+  ): Promise<HistoryTimelineModel | undefined> {
+    const cancelled = (): boolean => cancellation?.isCancellationRequested === true;
+    if (cancelled()) return undefined;
     const target = this.resolveTarget(input);
-    if (target === undefined) return undefined;
+    if (target === undefined || cancelled()) return undefined;
     const repository = historyRepository(target.entry);
     const working = await currentChangeItem(repository, target.root, target.path);
+    if (cancelled()) return undefined;
     const historyPath = working?.headPath ?? target.path;
     let commitLine: number | undefined;
     let history: readonly (CommitSummary | FileHistoryEntry)[];
@@ -180,11 +187,13 @@ export class HistoryController {
       const headLine = working !== undefined && repository.mapWorkingLineToHead !== undefined
         ? await repository.mapWorkingLineToHead(working.workingPath, zeroBasedLine + 1)
         : zeroBasedLine + 1;
+      if (cancelled()) return undefined;
       commitLine = (headLine ?? zeroBasedLine + 1) - 1;
       history = working?.headExists === false || headLine === undefined
         ? []
         : await repository.getLineHistory(historyPath, headLine);
     }
+    if (cancelled()) return undefined;
 
     const commits = commitQuickPickItems(history, target.identity, historyPath, this.now())
       .map((item, index): CommitTimelineEntry => ({

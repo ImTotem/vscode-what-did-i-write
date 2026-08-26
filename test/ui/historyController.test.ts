@@ -201,6 +201,28 @@ describe('history timeline model', () => {
     expect(model?.entries.map(({ kind }) => kind)).toEqual(['working', 'commit']);
   });
 
+  it('stops a cancelled timeline before starting the history Git stage', async () => {
+    let releaseWorking: (() => void) | undefined;
+    const working = new Promise<[]>(resolve => {
+      releaseWorking = () => resolve([]);
+    });
+    const repository = {
+      getFileHistoryEntries: vi.fn(async () => []),
+      getFileHistory: vi.fn(async () => []),
+      getLineHistory: vi.fn(async () => []),
+      getWorkingChanges: vi.fn(() => working)
+    };
+    const controller = new HistoryController(registryWith(repository, 'src/time.h'));
+    const cancellation = { isCancellationRequested: false };
+
+    const timeline = controller.getTimeline(join(ROOT, 'src/time.h'), undefined, cancellation);
+    cancellation.isCancellationRequested = true;
+    releaseWorking?.();
+
+    await expect(timeline).resolves.toBeUndefined();
+    expect(repository.getFileHistoryEntries).not.toHaveBeenCalled();
+  });
+
   it('pins the source, opens a short reusable diff beside it, and rejects unknown ids', async () => {
     const repository = {
       getFileHistoryEntries: vi.fn(async () => [{ commit: mine, path: 'src/time.h', parentPath: 'src/time.h' }]),

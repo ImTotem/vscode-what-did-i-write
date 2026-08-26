@@ -132,6 +132,45 @@ describe('RepositoryAnalyzer', () => {
     ]);
   });
 
+  it('keeps an author candidate on its current path after another author renames it', async () => {
+    const fixture = await createGitFixture();
+    fixtures.push(fixture);
+    const originalPath = 'src/original # [한글].ts';
+    const renamedPath = 'src/renamed # [한글].ts';
+    await fixture.setLocalIdentity(fixture.globalIdentity);
+    await fixture.writeText(originalPath, 'export const owned = true;\n');
+    await fixture.commit('author writes file');
+    await fixture.setLocalIdentity(alice);
+    await fixture.run(['mv', '--', originalPath, renamedPath]);
+    await fixture.commit('other author renames file');
+    const repository = await GitRepository.discover(fixture.root, fixture.runner);
+
+    const index = await repository.getUserIndex(fixture.globalIdentity);
+
+    expect(index.commits.map(({ subject }) => subject)).toEqual(['author writes file']);
+    expect(index.entries[0]?.changes).toEqual([{ status: 'A', path: renamedPath }]);
+
+    const analyzer = new RepositoryAnalyzer(
+      repository,
+      new CacheStore(await createTemporaryDirectory())
+    );
+    await analyzer.initialize();
+    const current = await analyzer.ensureFile(renamedPath, 'active-editor');
+
+    expect(analyzer.getFile(originalPath)).toBeUndefined();
+    expect(current).toMatchObject({
+      relativePath: renamedPath,
+      kind: 'added',
+      exists: true
+    });
+    expect(current?.ranges).toEqual([
+      expect.objectContaining({
+        commit: expect.objectContaining({ authorEmail: fixture.globalIdentity.email }),
+        uncommitted: false
+      })
+    ]);
+  });
+
   it('reuses the metadata index by normalized identity and invalidates only what changed', async () => {
     const fixture = await createCacheScenario();
     const storagePath = await createTemporaryDirectory();

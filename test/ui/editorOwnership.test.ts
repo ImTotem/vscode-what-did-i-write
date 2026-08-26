@@ -66,12 +66,19 @@ vi.mock('vscode', () => ({
   Range: mocks.Range,
   MarkdownString: mocks.MarkdownString,
   ThemeColor: mocks.ThemeColor,
+  ConfigurationTarget: { Global: 1, Workspace: 2 },
   OverviewRulerLane: { Left: 1, Full: 7 },
   window: mocks.window,
   workspace: {
     getConfiguration: () => ({
       get: <T>(_key: string, fallback: T) => (mocks.configuration.lineBackground as unknown as T) ?? fallback,
-      update: (...args: unknown[]) => { mocks.configuration.updates.push(args); return Promise.resolve(); }
+      update: (...args: unknown[]) => {
+        mocks.configuration.updates.push(args);
+        if (args[0] === 'editor.lineBackground' && args[2] === 2) {
+          mocks.configuration.lineBackground = args[1] as boolean;
+        }
+        return Promise.resolve();
+      }
     }),
     onDidChangeTextDocument: (listener: (event: { document: vscode.TextDocument }) => void) => {
       mocks.documentListeners.add(listener);
@@ -211,6 +218,91 @@ describe('EditorOwnershipController', () => {
     expect(decorations[1]?.options).toMatchObject({
       backgroundColor: { id: 'myCode.editor.workingLineBackground' }
     });
+  });
+
+  it('rebuilds decoration types and repaints visible editors after an external background setting change', async () => {
+    mocks.decorations.splice(0);
+    mocks.configuration.lineBackground = false;
+    const current = record([{ start: 0, endExclusive: 1, commit: committed, uncommitted: false }]);
+    const registry = fakeRegistry(current, Promise.resolve(current));
+    const editor = editorFor(documentFor('/repo/current.ts', 2));
+    setVisibleEditors([editor]);
+    const controller = new EditorOwnershipController(registry);
+    await controller.refreshVisibleEditors();
+    const original = mocks.decorations.slice(-2);
+    const repaintCalls = editor.setDecorations.mock.calls.length;
+
+    mocks.configuration.lineBackground = true;
+    await controller.acceptLineBackgroundConfigurationChange();
+
+    const rebuilt = mocks.decorations.slice(-2);
+    expect(original.map(({ dispose }) => dispose.mock.calls.length)).toEqual([1, 1]);
+    expect(rebuilt[0]?.options).toMatchObject({
+      backgroundColor: { id: 'myCode.editor.committedLineBackground' }
+    });
+    expect(rebuilt[1]?.options).toMatchObject({
+      backgroundColor: { id: 'myCode.editor.workingLineBackground' }
+    });
+    expect(editor.setDecorations.mock.calls.length).toBeGreaterThan(repaintCalls);
+    expect(editor.setDecorations.mock.calls.slice(-2).map(([decoration]) => decoration))
+      .toEqual(rebuilt);
+    mocks.configuration.lineBackground = false;
+    controller.dispose();
+  });
+
+  it('toggles the effective background at Workspace scope and repaints with the new types', async () => {
+    mocks.decorations.splice(0);
+    mocks.configuration.updates.splice(0);
+    mocks.configuration.lineBackground = false;
+    const current = record([{ start: 0, endExclusive: 1, commit: committed, uncommitted: false }]);
+    const registry = fakeRegistry(current, Promise.resolve(current));
+    const editor = editorFor(documentFor('/repo/current.ts', 2));
+    setVisibleEditors([editor]);
+    const controller = new EditorOwnershipController(registry);
+
+    await controller.toggleLineBackground();
+
+    const rebuilt = mocks.decorations.slice(-2);
+    expect(mocks.configuration.updates).toEqual([
+      ['editor.lineBackground', true, 2]
+    ]);
+    expect(rebuilt[0]?.options).toHaveProperty('backgroundColor');
+    expect(rebuilt[1]?.options).toHaveProperty('backgroundColor');
+    expect(editor.setDecorations.mock.calls.slice(-2).map(([decoration]) => decoration))
+      .toEqual(rebuilt);
+    mocks.configuration.lineBackground = false;
+    controller.dispose();
+  });
+
+  it('adopts external background changes while visuals are off without repainting until re-enabled', async () => {
+    mocks.decorations.splice(0);
+    mocks.configuration.lineBackground = false;
+    const current = record([{ start: 0, endExclusive: 1, commit: committed, uncommitted: false }]);
+    const registry = fakeRegistry(current, Promise.resolve(current));
+    const editor = editorFor(documentFor('/repo/current.ts', 2));
+    setVisibleEditors([editor]);
+    const controller = new EditorOwnershipController(registry);
+    await controller.refreshVisibleEditors();
+    await controller.setEnabled(false);
+    const callsWhileOff = editor.setDecorations.mock.calls.length;
+    const resolvesWhileOff = registry.entry.analyzer.ensureFile.mock.calls.length;
+
+    mocks.configuration.lineBackground = true;
+    await controller.acceptLineBackgroundConfigurationChange();
+
+    const rebuilt = mocks.decorations.slice(-2);
+    expect(rebuilt[0]?.options).toHaveProperty('backgroundColor');
+    expect(rebuilt[1]?.options).toHaveProperty('backgroundColor');
+    expect(editor.setDecorations).toHaveBeenCalledTimes(callsWhileOff);
+    expect(registry.entry.analyzer.ensureFile).toHaveBeenCalledTimes(resolvesWhileOff);
+
+    await controller.setEnabled(true);
+
+    expect(registry.entry.analyzer.ensureFile.mock.calls.length).toBeGreaterThan(resolvesWhileOff);
+    expect(editor.setDecorations.mock.calls.slice(-2).map(([decoration]) => decoration))
+      .toEqual(rebuilt);
+    mocks.configuration.lineBackground = false;
+    controller.dispose();
   });
 
   it('decorates only source documents, asks the analyzer at active-editor priority, and clears stale results', async () => {

@@ -110,12 +110,14 @@ export class EditorOwnershipController implements vscode.Disposable {
   private scheduled = false;
   private disposed = false;
   private enabled = true;
+  private lineBackgroundEnabled: boolean;
   private decorationRevision = 0;
 
   public constructor(
     private readonly registry: RepositoryRegistry,
     private readonly options: EditorOwnershipOptions = {}
   ) {
+    this.lineBackgroundEnabled = this.readLineBackground();
     this.committedDecoration = this.createDecoration('gitDecoration.addedResourceForeground');
     this.workingDecoration = this.createDecoration('gitDecoration.modifiedResourceForeground');
     this.subscriptions = [
@@ -163,14 +165,25 @@ export class EditorOwnershipController implements vscode.Disposable {
   public async toggleLineBackground(): Promise<void> {
     const configuration = vscode.workspace.getConfiguration('myCode');
     const enabled = configuration.get<boolean>('editor.lineBackground', false);
-    await configuration.update('editor.lineBackground', !enabled, vscode.ConfigurationTarget.Global);
-    if (this.disposed) return;
+    await configuration.update('editor.lineBackground', !enabled, vscode.ConfigurationTarget.Workspace);
+    await this.applyLineBackground(
+      configuration.get<boolean>('editor.lineBackground', !enabled)
+    );
+  }
+
+  public async acceptLineBackgroundConfigurationChange(): Promise<void> {
+    await this.applyLineBackground(this.readLineBackground());
+  }
+
+  private async applyLineBackground(enabled: boolean): Promise<void> {
+    if (this.disposed || enabled === this.lineBackgroundEnabled) return;
+    this.lineBackgroundEnabled = enabled;
     this.decorationRevision += 1;
     this.committedDecoration.dispose();
     this.workingDecoration.dispose();
     this.committedDecoration = this.createDecoration('gitDecoration.addedResourceForeground');
     this.workingDecoration = this.createDecoration('gitDecoration.modifiedResourceForeground');
-    await this.refreshVisibleEditors();
+    if (this.enabled) await this.refreshVisibleEditors();
   }
 
   public dispose(): void {
@@ -351,7 +364,6 @@ export class EditorOwnershipController implements vscode.Disposable {
 
   private createDecoration(colorId: 'gitDecoration.addedResourceForeground' | 'gitDecoration.modifiedResourceForeground'):
   vscode.TextEditorDecorationType {
-    const background = vscode.workspace.getConfiguration('myCode').get<boolean>('editor.lineBackground', false);
     const committed = colorId === 'gitDecoration.addedResourceForeground';
     const icon = committed ? 'owned-committed.svg' : 'owned-working.svg';
     const backgroundColor = committed
@@ -363,8 +375,13 @@ export class EditorOwnershipController implements vscode.Disposable {
       gutterIconSize: 'contain',
       overviewRulerColor: new vscode.ThemeColor(colorId),
       overviewRulerLane: vscode.OverviewRulerLane.Full,
-      ...(background ? { backgroundColor: new vscode.ThemeColor(backgroundColor) } : {})
+      ...(this.lineBackgroundEnabled ? { backgroundColor: new vscode.ThemeColor(backgroundColor) } : {})
     });
+  }
+
+  private readLineBackground(): boolean {
+    return vscode.workspace.getConfiguration('myCode')
+      .get<boolean>('editor.lineBackground', false);
   }
 }
 

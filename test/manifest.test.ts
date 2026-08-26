@@ -81,6 +81,17 @@ describe('extension manifest', () => {
     }));
   });
 
+  it('keeps line-background setting, command, and theme color compatibility IDs', () => {
+    expect(manifest.contributes?.configuration?.properties)
+      .toHaveProperty('myCode.editor.lineBackground');
+    expect(manifest.contributes?.commands?.map(({ command }) => command))
+      .toContain('myCode.toggleLineBackground');
+    expect(manifest.contributes?.colors?.map(({ id }) => id)).toEqual(expect.arrayContaining([
+      'myCode.editor.committedLineBackground',
+      'myCode.editor.workingLineBackground'
+    ]));
+  });
+
   it('explains the file-first workflow when the MY CODE view is empty', () => {
     expect(manifest.contributes?.viewsWelcome).toEqual(expect.arrayContaining([
       expect.objectContaining({

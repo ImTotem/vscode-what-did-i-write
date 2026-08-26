@@ -122,18 +122,15 @@ export function activate(context: vscode.ExtensionContext): void {
       await action(target);
       return;
     }
-    if (id.startsWith('past|')) {
-      const resolved = pastActivityProvider.resolveNode(id);
-      if (resolved !== undefined) {
-        await action(join(resolved.root, resolved.relativePath));
-        return;
-      }
-    } else {
-      const resolved = treeProvider.resolveNode(id);
-      if (resolved !== undefined) {
-        await action(resolved);
-        return;
-      }
+    const historical = pastActivityProvider.resolveNode(id);
+    if (historical !== undefined) {
+      await action(join(historical.root, historical.relativePath));
+      return;
+    }
+    const current = treeProvider.resolveNode(id);
+    if (current !== undefined) {
+      await action(current);
+      return;
     }
     await vscode.window.showWarningMessage('That history item is no longer available. Refresh and try again.');
   };
@@ -159,7 +156,7 @@ export function activate(context: vscode.ExtensionContext): void {
     historyTimeline,
     myChangesView,
     viewController,
-    registry.onDidChange(() => { void historyTimeline.refresh(); }),
+    registry.onDidChange(() => historyTimeline.scheduleRegistryRefresh()),
     vscode.window.registerFileDecorationProvider(decorationProvider),
     vscode.window.registerTreeDataProvider('myCode.pastActivity', pastActivityProvider),
     vscode.window.registerWebviewViewProvider('myCode.history', historyTimeline, {
@@ -246,6 +243,12 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration('myCode.visuals.enabled')) {
         void runUiCommand('update visual settings', () => visualModeController.acceptConfigurationChange());
+      }
+      if (event.affectsConfiguration('myCode.editor.lineBackground')) {
+        void runUiCommand(
+          'update line background',
+          () => editorOwnership.acceptLineBackgroundConfigurationChange()
+        );
       }
     }),
     vscode.window.onDidChangeWindowState(({ focused }) => refreshController.setFocused(focused)),

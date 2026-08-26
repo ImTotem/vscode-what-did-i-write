@@ -13,6 +13,24 @@ export type HistoryTimelineViewState =
 
 type TimelineHistoryAccess = Pick<HistoryController, 'getTimeline' | 'openTimelineEntry'>;
 
+export interface HistoryTimelineRefreshScheduler {
+  schedule(callback: () => void): vscode.Disposable;
+}
+
+const microtaskRefreshScheduler: HistoryTimelineRefreshScheduler = {
+  schedule(callback) {
+    let active = true;
+    queueMicrotask(() => {
+      if (active) callback();
+    });
+    return {
+      dispose: () => {
+        active = false;
+      }
+    };
+  }
+};
+
 export class HistoryTimelineViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private readonly viewSubscriptions: vscode.Disposable[] = [];
   private view: vscode.WebviewView | undefined;
@@ -20,11 +38,15 @@ export class HistoryTimelineViewProvider implements vscode.WebviewViewProvider, 
   private line: number | undefined;
   private model: HistoryTimelineModel | undefined;
   private generation = 0;
+  private registryRefreshDirty = false;
+  private registryRefreshInFlight = false;
+  private scheduledRegistryRefresh: vscode.Disposable | undefined;
   private disposed = false;
 
   public constructor(
     private readonly history: TimelineHistoryAccess,
-    private readonly onError?: (error: unknown, operation: string, path: string) => void
+    private readonly onError?: (error: unknown, operation: string, path: string) => void,
+    private readonly refreshScheduler: HistoryTimelineRefreshScheduler = microtaskRefreshScheduler
   ) {}
 
   public resolveWebviewView(view: vscode.WebviewView): void {
@@ -38,8 +60,13 @@ export class HistoryTimelineViewProvider implements vscode.WebviewViewProvider, 
     const disposeSubscription = view.onDidDispose(() => {
       this.detachView(view);
     });
-    this.viewSubscriptions.push(messageSubscription, disposeSubscription);
+    const visibilitySubscription = view.onDidChangeVisibility(() => {
+      if (view.visible) this.scheduleVisibleRegistryRefresh();
+      else this.cancelScheduledRegistryRefresh();
+    });
+    this.viewSubscriptions.push(messageSubscription, disposeSubscription, visibilitySubscription);
     this.render(this.model === undefined ? { kind: 'idle' } : { kind: 'ready', model: this.model });
+    this.scheduleVisibleRegistryRefresh();
   }
 
   public async focus(input: unknown, line?: number): Promise<void> {
@@ -55,20 +82,40 @@ export class HistoryTimelineViewProvider implements vscode.WebviewViewProvider, 
     this.target = editor.document.uri.fsPath;
     this.line = undefined;
     this.model = undefined;
-    void this.refresh();
+    this.scheduleRegistryRefresh();
   }
 
   public async refresh(): Promise<void> {
+    this.registryRefreshDirty = false;
+    this.cancelScheduledRegistryRefresh();
+    await this.refreshNow();
+  }
+
+  public scheduleRegistryRefresh(): void {
+    if (this.disposed) return;
+    this.registryRefreshDirty = true;
+    this.scheduleVisibleRegistryRefresh();
+  }
+
+  private async refreshNow(): Promise<void> {
     if (this.disposed || this.target === undefined) return;
     const generation = this.generation + 1;
     this.generation = generation;
+    const target = this.target;
+    const line = this.line;
+    const cancellation = {
+      get isCancellationRequested(): boolean {
+        return !provider.isCurrent(generation);
+      }
+    };
+    const provider = this;
     try {
       if (this.model === undefined) this.render({ kind: 'loading' });
-      const model = await this.history.getTimeline(this.target, this.line);
+      const model = await this.history.getTimeline(target, line, cancellation);
       if (!this.isCurrent(generation)) return;
       this.model = model;
       if (model === undefined) {
-        this.render({ kind: 'empty', path: targetLabel(this.target) });
+        this.render({ kind: 'empty', path: targetLabel(target) });
       } else if (model.entries.length === 0) {
         this.render({ kind: 'empty', path: model.relativePath });
       } else {
@@ -76,7 +123,7 @@ export class HistoryTimelineViewProvider implements vscode.WebviewViewProvider, 
       }
     } catch (error) {
       if (!this.isCurrent(generation)) return;
-      const path = targetLabel(this.target);
+      const path = targetLabel(target);
       this.onError?.(error, 'history-timeline', path);
       this.render({ kind: 'error', message: errorMessage(error) });
     }
@@ -86,6 +133,8 @@ export class HistoryTimelineViewProvider implements vscode.WebviewViewProvider, 
     if (this.disposed) return;
     this.disposed = true;
     this.generation += 1;
+    this.registryRefreshDirty = false;
+    this.cancelScheduledRegistryRefresh();
     this.detachView();
     this.model = undefined;
   }
@@ -107,7 +156,48 @@ export class HistoryTimelineViewProvider implements vscode.WebviewViewProvider, 
   private detachView(expected?: vscode.WebviewView): void {
     if (expected !== undefined && this.view !== expected) return;
     this.view = undefined;
+    this.cancelScheduledRegistryRefresh();
     for (const subscription of this.viewSubscriptions.splice(0)) subscription.dispose();
+  }
+
+  private scheduleVisibleRegistryRefresh(): void {
+    if (
+      this.disposed
+      || !this.registryRefreshDirty
+      || this.registryRefreshInFlight
+      || this.scheduledRegistryRefresh !== undefined
+      || this.target === undefined
+      || this.view?.visible !== true
+    ) return;
+    let scheduled: vscode.Disposable;
+    scheduled = this.refreshScheduler.schedule(() => {
+      if (this.scheduledRegistryRefresh !== scheduled) return;
+      this.scheduledRegistryRefresh = undefined;
+      void this.runRegistryRefresh();
+    });
+    this.scheduledRegistryRefresh = scheduled;
+  }
+
+  private async runRegistryRefresh(): Promise<void> {
+    if (
+      this.disposed
+      || !this.registryRefreshDirty
+      || this.target === undefined
+      || this.view?.visible !== true
+    ) return;
+    this.registryRefreshDirty = false;
+    this.registryRefreshInFlight = true;
+    try {
+      await this.refreshNow();
+    } finally {
+      this.registryRefreshInFlight = false;
+      this.scheduleVisibleRegistryRefresh();
+    }
+  }
+
+  private cancelScheduledRegistryRefresh(): void {
+    this.scheduledRegistryRefresh?.dispose();
+    this.scheduledRegistryRefresh = undefined;
   }
 
   private isCurrent(generation: number): boolean {

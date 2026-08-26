@@ -61,6 +61,14 @@ export interface PastActivityNode {
   readonly children: readonly [];
 }
 
+export function myCodeNodeId(
+  kind: 'repository' | 'group' | 'folder' | 'file' | 'past',
+  root: string,
+  path = ''
+): string {
+  return JSON.stringify([kind, root, path]);
+}
+
 export function projectCurrentTree(snapshots: readonly RepositorySnapshot[]): readonly MyCodeNode[] {
   const repositories = [...snapshots]
     .sort((left, right) => left.root.localeCompare(right.root))
@@ -282,7 +290,7 @@ function snapshotSignature(snapshots: readonly RepositorySnapshot[]): string {
 
 function currentRepository(snapshot: RepositorySnapshot): RepositoryTreeNode {
   return {
-    id: `repository|${snapshot.root}`,
+    id: myCodeNodeId('repository', snapshot.root),
     kind: 'repository',
     root: snapshot.root,
     label: basename(snapshot.root),
@@ -295,14 +303,20 @@ function legacyRepository(snapshot: RepositorySnapshot): RepositoryTreeNode {
   const past = snapshot.files.filter(({ kind }) => kind === 'past');
   const children: GroupTreeNode[] = [];
   if (current.length > 0) children.push({
-    id: `group|${snapshot.root}|current`, kind: 'group', group: 'current', root: snapshot.root,
+    id: myCodeNodeId('group', snapshot.root, 'current'), kind: 'group', group: 'current', root: snapshot.root,
     label: 'CURRENT', children: folderTree(snapshot.root, current, 'current')
   });
   if (past.length > 0) children.push({
-    id: `group|${snapshot.root}|past`, kind: 'group', group: 'past', root: snapshot.root,
+    id: myCodeNodeId('group', snapshot.root, 'past'), kind: 'group', group: 'past', root: snapshot.root,
     label: 'PAST ACTIVITY', children: folderTree(snapshot.root, past, 'past')
   });
-  return { id: `repository|${snapshot.root}`, kind: 'repository', root: snapshot.root, label: basename(snapshot.root), children };
+  return {
+    id: myCodeNodeId('repository', snapshot.root),
+    kind: 'repository',
+    root: snapshot.root,
+    label: basename(snapshot.root),
+    children
+  };
 }
 
 function isCurrent(file: FileRecord): boolean {
@@ -341,7 +355,7 @@ function folderChildren(root: string, folder: MutableFolder, group?: 'current' |
   const folders: FolderTreeNode[] = [...folder.folders.values()]
     .sort((left, right) => left.name.localeCompare(right.name))
     .map((child) => ({
-      id: `folder|${root}|${child.relativePath}`,
+      id: myCodeNodeId('folder', root, child.relativePath),
       kind: 'folder',
       ...(group === undefined ? {} : { group }),
       root,
@@ -354,7 +368,7 @@ function folderChildren(root: string, folder: MutableFolder, group?: 'current' |
 
 function fileNode(root: string, file: FileRecord): FileTreeNode {
   return {
-    id: `file|${root}|${file.relativePath}`,
+    id: myCodeNodeId('file', root, file.relativePath),
     kind: 'file',
     root,
     file,
@@ -368,7 +382,7 @@ function pastNode(root: string, file: FileRecord): PastActivityNode {
   const latestCommit = file.history.reduce<CommitSummary | undefined>((latest, commit) =>
     latest === undefined || commit.authoredAt > latest.authoredAt ? commit : latest, undefined);
   return {
-    id: `past|${root}|${file.relativePath}`,
+    id: myCodeNodeId('past', root, file.relativePath),
     kind: 'past',
     root,
     relativePath: file.relativePath,

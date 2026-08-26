@@ -13,7 +13,13 @@ import {
   type ConfirmationPrompt
 } from '../../src/ui/myCodeFileActions.js';
 import type { FileRecord } from '../../src/core/model.js';
-import type { FileTreeNode, FolderTreeNode, PastActivityNode, RepositoryTreeNode } from '../../src/ui/myCodeTree.js';
+import {
+  myCodeNodeId,
+  type FileTreeNode,
+  type FolderTreeNode,
+  type PastActivityNode,
+  type RepositoryTreeNode
+} from '../../src/ui/myCodeTree.js';
 
 const ROOT = resolve('workspace');
 const OTHER_ROOT = resolve('other-workspace');
@@ -779,12 +785,12 @@ function actionHarness(options: {
 }
 
 function repositoryNode(root = ROOT): RepositoryTreeNode {
-  return { id: `repository|${root}`, kind: 'repository', root, label: 'repo', children: [] };
+  return { id: myCodeNodeId('repository', root), kind: 'repository', root, label: 'repo', children: [] };
 }
 
 function folderNode(relativePath: string, root = ROOT): FolderTreeNode {
   return {
-    id: `folder|${root}|${relativePath}`,
+    id: myCodeNodeId('folder', root, relativePath),
     kind: 'folder',
     root,
     relativePath,
@@ -795,7 +801,7 @@ function folderNode(relativePath: string, root = ROOT): FolderTreeNode {
 
 function fileNode(relativePath: string, exists = true, root = ROOT): FileTreeNode {
   return {
-    id: `file|${root}|${relativePath}`,
+    id: myCodeNodeId('file', root, relativePath),
     kind: 'file',
     root,
     file: fileRecord(relativePath, exists),
@@ -806,7 +812,7 @@ function fileNode(relativePath: string, exists = true, root = ROOT): FileTreeNod
 
 function pastNode(relativePath: string): PastActivityNode {
   return {
-    id: `past|${ROOT}|${relativePath}`,
+    id: myCodeNodeId('past', ROOT, relativePath),
     kind: 'past',
     root: ROOT,
     relativePath,

@@ -40,6 +40,165 @@ describe('renderTimelineHtml', () => {
 });
 
 describe('HistoryTimelineViewProvider', () => {
+  it('coalesces a burst of registry publications into one visible refresh', async () => {
+    const history = {
+      getTimeline: vi.fn(async () => timelineModel()),
+      openTimelineEntry: vi.fn(async () => undefined)
+    };
+    const scheduler = new FakeTimelineScheduler();
+    const provider = new HistoryTimelineViewProvider(history, undefined, scheduler);
+    const view = fakeView();
+    provider.resolveWebviewView(view.value);
+    await provider.focus('C:/repo/src/time.h');
+    history.getTimeline.mockClear();
+
+    provider.scheduleRegistryRefresh();
+    provider.scheduleRegistryRefresh();
+    provider.scheduleRegistryRefresh();
+
+    expect(scheduler.pending).toBe(1);
+    scheduler.runNext();
+    await flush();
+    expect(history.getTimeline).toHaveBeenCalledTimes(1);
+    provider.dispose();
+  });
+
+  it('keeps registry refresh dirty while hidden and runs it when the view becomes visible', async () => {
+    const history = {
+      getTimeline: vi.fn(async () => timelineModel()),
+      openTimelineEntry: vi.fn(async () => undefined)
+    };
+    const scheduler = new FakeTimelineScheduler();
+    const provider = new HistoryTimelineViewProvider(history, undefined, scheduler);
+    const view = fakeView();
+    provider.resolveWebviewView(view.value);
+    await provider.focus('C:/repo/src/time.h');
+    history.getTimeline.mockClear();
+    view.setVisible(false);
+
+    provider.scheduleRegistryRefresh();
+
+    expect(scheduler.pending).toBe(0);
+    expect(history.getTimeline).not.toHaveBeenCalled();
+    view.setVisible(true);
+    expect(scheduler.pending).toBe(1);
+    scheduler.runNext();
+    await flush();
+    expect(history.getTimeline).toHaveBeenCalledTimes(1);
+    provider.dispose();
+  });
+
+  it('runs at most one in-flight registry refresh and one trailing refresh', async () => {
+    const inFlight = deferred<HistoryTimelineModel | undefined>();
+    let active = 0;
+    let maximumActive = 0;
+    const history = {
+      getTimeline: vi.fn(async () => {
+        const call = history.getTimeline.mock.calls.length;
+        active += 1;
+        maximumActive = Math.max(maximumActive, active);
+        try {
+          return call === 2 ? await inFlight.promise : timelineModel();
+        } finally {
+          active -= 1;
+        }
+      }),
+      openTimelineEntry: vi.fn(async () => undefined)
+    };
+    const scheduler = new FakeTimelineScheduler();
+    const provider = new HistoryTimelineViewProvider(history, undefined, scheduler);
+    const view = fakeView();
+    provider.resolveWebviewView(view.value);
+    await provider.focus('C:/repo/src/time.h');
+
+    provider.scheduleRegistryRefresh();
+    scheduler.runNext();
+    await flush();
+    provider.scheduleRegistryRefresh();
+    provider.scheduleRegistryRefresh();
+    expect(history.getTimeline).toHaveBeenCalledTimes(2);
+    expect(scheduler.pending).toBe(0);
+
+    inFlight.resolve(timelineModel());
+    await flush();
+    expect(scheduler.pending).toBe(1);
+    scheduler.runNext();
+    await flush();
+
+    expect(history.getTimeline).toHaveBeenCalledTimes(3);
+    expect(maximumActive).toBe(1);
+    provider.dispose();
+  });
+
+  it('cancels scheduled registry work and suppresses trailing work when disposed', async () => {
+    const history = {
+      getTimeline: vi.fn(async () => timelineModel()),
+      openTimelineEntry: vi.fn(async () => undefined)
+    };
+    const scheduler = new FakeTimelineScheduler();
+    const provider = new HistoryTimelineViewProvider(history, undefined, scheduler);
+    const view = fakeView();
+    provider.resolveWebviewView(view.value);
+    await provider.focus('C:/repo/src/time.h');
+    history.getTimeline.mockClear();
+    provider.scheduleRegistryRefresh();
+
+    provider.dispose();
+    provider.scheduleRegistryRefresh();
+    scheduler.runAll();
+    await flush();
+
+    expect(history.getTimeline).not.toHaveBeenCalled();
+  });
+
+  it('loads an explicitly focused target before resolve and while the resolved view is hidden', async () => {
+    const beforeResolve = { ...timelineModel(), relativePath: 'src/before.ts' };
+    const whileHidden = { ...timelineModel(), relativePath: 'src/hidden.ts' };
+    const history = {
+      getTimeline: vi.fn()
+        .mockResolvedValueOnce(beforeResolve)
+        .mockResolvedValueOnce(whileHidden),
+      openTimelineEntry: vi.fn(async () => undefined)
+    };
+    const scheduler = new FakeTimelineScheduler();
+    const provider = new HistoryTimelineViewProvider(history, undefined, scheduler);
+
+    await provider.focus('C:/repo/src/before.ts');
+    const view = fakeView(false);
+    provider.resolveWebviewView(view.value);
+    await provider.focus('C:/repo/src/hidden.ts');
+
+    expect(history.getTimeline).toHaveBeenNthCalledWith(1, 'C:/repo/src/before.ts', undefined, expect.anything());
+    expect(history.getTimeline).toHaveBeenNthCalledWith(2, 'C:/repo/src/hidden.ts', undefined, expect.anything());
+    expect(scheduler.pending).toBe(0);
+    provider.dispose();
+  });
+
+  it('runs a dirty refresh after the hidden view is disposed and re-resolved visibly', async () => {
+    const history = {
+      getTimeline: vi.fn(async () => timelineModel()),
+      openTimelineEntry: vi.fn(async () => undefined)
+    };
+    const scheduler = new FakeTimelineScheduler();
+    const provider = new HistoryTimelineViewProvider(history, undefined, scheduler);
+    const first = fakeView();
+    provider.resolveWebviewView(first.value);
+    await provider.focus('C:/repo/src/time.h');
+    history.getTimeline.mockClear();
+    first.setVisible(false);
+    provider.scheduleRegistryRefresh();
+    first.dispose();
+
+    const second = fakeView();
+    provider.resolveWebviewView(second.value);
+    expect(scheduler.pending).toBe(1);
+    scheduler.runNext();
+    await flush();
+
+    expect(history.getTimeline).toHaveBeenCalledTimes(1);
+    provider.dispose();
+  });
+
   it('focuses file or line history, ignores generated diffs, and validates selection ids', async () => {
     const model = timelineModel();
     const history = {
@@ -51,7 +210,11 @@ describe('HistoryTimelineViewProvider', () => {
     provider.resolveWebviewView(view.value);
 
     await provider.focus('C:/repo/src/time.h', 4);
-    expect(history.getTimeline).toHaveBeenCalledWith('C:/repo/src/time.h', 4);
+    expect(history.getTimeline).toHaveBeenCalledWith(
+      'C:/repo/src/time.h',
+      4,
+      expect.anything()
+    );
     expect(view.webview.html).toContain('LINE 5');
 
     const callsBeforeDiff = history.getTimeline.mock.calls.length;
@@ -61,7 +224,11 @@ describe('HistoryTimelineViewProvider', () => {
 
     provider.followEditor(editor('file', 'C:/repo/src/other.h'));
     await flush();
-    expect(history.getTimeline).toHaveBeenLastCalledWith('C:/repo/src/other.h', undefined);
+    expect(history.getTimeline).toHaveBeenLastCalledWith(
+      'C:/repo/src/other.h',
+      undefined,
+      expect.anything()
+    );
 
     view.receive({ type: 'select', id: 'unknown' });
     await flush();
@@ -164,6 +331,7 @@ describe('HistoryTimelineViewProvider', () => {
 
     const second = fakeView();
     provider.resolveWebviewView(second.value);
+    await flush();
     expect(second.webview.html).toContain('src/newer.h');
     first.receive({ type: 'select', id: 'commit:newest' });
     await flush();
@@ -210,10 +378,12 @@ function timelineModel(): HistoryTimelineModel {
   };
 }
 
-function fakeView() {
+function fakeView(initiallyVisible = true) {
   let listener: ((message: unknown) => unknown) | undefined;
   let disposeListener: (() => unknown) | undefined;
+  let visibilityListener: (() => unknown) | undefined;
   let disposed = false;
+  let visible = initiallyVisible;
   let html = '';
   const webview = {
     get html() { return html; },
@@ -232,12 +402,21 @@ function fakeView() {
     webview,
     value: {
       webview,
+      get visible() { return visible; },
       onDidDispose: (next: () => unknown) => {
         disposeListener = next;
         return { dispose: () => { disposeListener = undefined; } };
+      },
+      onDidChangeVisibility: (next: () => unknown) => {
+        visibilityListener = next;
+        return { dispose: () => { visibilityListener = undefined; } };
       }
     } as unknown as vscode.WebviewView,
     receive: (message: unknown) => listener?.(message),
+    setVisible: (next: boolean) => {
+      visible = next;
+      visibilityListener?.();
+    },
     dispose: () => {
       disposed = true;
       disposeListener?.();
@@ -258,4 +437,33 @@ function deferred<T>() {
 async function flush(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
+}
+
+class FakeTimelineScheduler {
+  private readonly tasks: Array<{ active: boolean; callback: () => void }> = [];
+
+  public get pending(): number {
+    return this.tasks.filter(({ active }) => active).length;
+  }
+
+  public schedule(callback: () => void): vscode.Disposable {
+    const task = { active: true, callback };
+    this.tasks.push(task);
+    return {
+      dispose: () => {
+        task.active = false;
+      }
+    };
+  }
+
+  public runNext(): void {
+    const task = this.tasks.find(({ active }) => active);
+    if (task === undefined) return;
+    task.active = false;
+    task.callback();
+  }
+
+  public runAll(): void {
+    while (this.pending > 0) this.runNext();
+  }
 }

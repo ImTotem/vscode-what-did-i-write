@@ -132,6 +132,7 @@ vi.mock('vscode', () => ({
 
 import { activate } from '../../src/extension.js';
 import { RefreshController } from '../../src/ui/refreshController.js';
+import { EditorOwnershipController } from '../../src/ui/editorOwnership.js';
 import { HistoryTimelineViewProvider } from '../../src/ui/historyTimeline.js';
 import { MyCodeFileActions } from '../../src/ui/myCodeFileActions.js';
 import { MyCodeTreeProvider, PastActivityTreeProvider } from '../../src/ui/myCodeTree.js';
@@ -143,6 +144,10 @@ describe('extension activation', () => {
     const context = { subscriptions, storageUri: undefined } as unknown as vscode.ExtensionContext;
     const refreshAll = vi.spyOn(RefreshController.prototype, 'refreshAll').mockResolvedValue(undefined);
     const refreshHistory = vi.spyOn(HistoryTimelineViewProvider.prototype, 'refresh').mockResolvedValue(undefined);
+    const scheduleHistoryRefresh = vi.spyOn(
+      HistoryTimelineViewProvider.prototype,
+      'scheduleRegistryRefresh'
+    );
     const refreshCurrent = vi.spyOn(MyCodeTreeProvider.prototype, 'refresh').mockResolvedValue(undefined);
     const refreshPast = vi.spyOn(PastActivityTreeProvider.prototype, 'refresh').mockResolvedValue(undefined);
     const resolveNode = vi.spyOn(MyCodeTreeProvider.prototype, 'resolveNode');
@@ -153,6 +158,10 @@ describe('extension activation', () => {
     const collapseAll = vi.spyOn(MyCodeViewController.prototype, 'collapseAll').mockResolvedValue(undefined);
     const toggleVisuals = vi.spyOn(VisualModeController.prototype, 'toggle').mockResolvedValue(undefined);
     const acceptVisualConfiguration = vi.spyOn(VisualModeController.prototype, 'acceptConfigurationChange').mockResolvedValue(undefined);
+    const acceptBackgroundConfiguration = vi.spyOn(
+      EditorOwnershipController.prototype,
+      'acceptLineBackgroundConfigurationChange'
+    ).mockResolvedValue(undefined);
 
     expect(activate(context)).toBeUndefined();
 
@@ -213,7 +222,7 @@ describe('extension activation', () => {
     expect(mocks.executeCommand).toHaveBeenCalledWith('myCode.history.focus');
 
     focusHistory.mockClear();
-    const stalePast = { id: 'past|/repo|deleted/stale.ts', kind: 'past', root: '/stale', relativePath: 'stale.ts' };
+    const stalePast = { id: '["past","/repo","deleted/stale.ts"]', kind: 'past', root: '/stale', relativePath: 'stale.ts' };
     const freshPast = { ...stalePast, root: '/repo', relativePath: 'deleted/fresh.ts' };
     resolvePastNode.mockReturnValue(freshPast as never);
     await Promise.resolve(mocks.commandHandlers.get('myCode.showFileHistory')?.(stalePast));
@@ -221,7 +230,8 @@ describe('extension activation', () => {
     expect(focusHistory).toHaveBeenCalledWith(join('/repo', 'deleted/fresh.ts'), undefined);
 
     focusHistory.mockClear();
-    const staleHistoryFile = { id: 'file|/repo|stale-history.ts', kind: 'file' };
+    resolvePastNode.mockReturnValue(undefined);
+    const staleHistoryFile = { id: '["file","/repo","stale-history.ts"]', kind: 'file' };
     const freshHistoryFile = {
       id: staleHistoryFile.id,
       kind: 'file',
@@ -245,15 +255,22 @@ describe('extension activation', () => {
       affectsConfiguration: (section) => section === 'myCode.visuals.enabled'
     }));
     expect(acceptVisualConfiguration).toHaveBeenCalledTimes(1);
+    await Promise.resolve(mocks.configurationListeners[0]?.({
+      affectsConfiguration: (section) => section === 'myCode.editor.lineBackground'
+    }));
+    expect(acceptBackgroundConfiguration).toHaveBeenCalledTimes(1);
 
-    const stale = { id: 'file|repo|stale.ts' };
+    const stale = { id: '["file","repo","stale.ts"]' };
     const fresh = { id: stale.id, kind: 'file', root: '/repo', file: { relativePath: 'fresh.ts' } };
     resolveNode.mockReturnValue(fresh as never);
     await Promise.resolve(mocks.commandHandlers.get('myCode.rename')?.(stale));
     expect(rename).toHaveBeenCalledWith(fresh);
 
     await flushActivation();
+    expect(scheduleHistoryRefresh).toHaveBeenCalled();
+    expect(refreshHistory).not.toHaveBeenCalled();
     refreshAll.mockClear();
+    scheduleHistoryRefresh.mockClear();
     refreshHistory.mockClear();
     refreshCurrent.mockClear();
     refreshPast.mockClear();
@@ -267,6 +284,7 @@ describe('extension activation', () => {
       refreshHistory.mock.invocationCallOrder[0] as number
     );
     refreshAll.mockRestore();
+    scheduleHistoryRefresh.mockRestore();
     refreshHistory.mockRestore();
 
     const commitDiffHandler = mocks.commandHandlers.get('myCode.openCommitDiff');
@@ -285,6 +303,7 @@ describe('extension activation', () => {
     collapseAll.mockRestore();
     toggleVisuals.mockRestore();
     acceptVisualConfiguration.mockRestore();
+    acceptBackgroundConfiguration.mockRestore();
   });
 });
 

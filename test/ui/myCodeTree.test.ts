@@ -1,8 +1,22 @@
 import { describe, expect, it, vi } from 'vitest';
 
-vi.mock('vscode', () => ({}));
+const mocks = vi.hoisted(() => {
+  class EventEmitter<T> {
+    public readonly event = () => ({ dispose: () => undefined });
+    public fire(_value: T): void {}
+    public dispose(): void {}
+  }
+  return { EventEmitter };
+});
 
-import { projectCurrentTree, projectPastActivity, projectTree } from '../../src/ui/myCodeTree.js';
+vi.mock('vscode', () => ({ EventEmitter: mocks.EventEmitter }));
+
+import {
+  MyCodeTreeProvider,
+  projectCurrentTree,
+  projectPastActivity,
+  projectTree
+} from '../../src/ui/myCodeTree.js';
 import type { CommitSummary, RepositorySnapshot } from '../../src/core/model.js';
 
 describe('projectTree', () => {
@@ -108,8 +122,8 @@ describe('current and past projections', () => {
     ])]);
 
     expect(roots.map(({ id, kind, label, badge }) => ({ id, kind, label, badge }))).toEqual([
-      { id: 'file|/workspace|a-added.ts', kind: 'file', label: 'a-added.ts', badge: 'A' },
-      { id: 'file|/workspace|z-last.ts', kind: 'file', label: 'z-last.ts', badge: 'M' }
+      { id: '["file","/workspace","a-added.ts"]', kind: 'file', label: 'a-added.ts', badge: 'A' },
+      { id: '["file","/workspace","z-last.ts"]', kind: 'file', label: 'z-last.ts', badge: 'M' }
     ]);
   });
 
@@ -120,9 +134,37 @@ describe('current and past projections', () => {
     ]);
 
     expect(roots.map(({ id, kind, label }) => ({ id, kind, label }))).toEqual([
-      { id: 'repository|/workspace/api', kind: 'repository', label: 'api' },
-      { id: 'repository|/workspace/web', kind: 'repository', label: 'web' }
+      { id: '["repository","/workspace/api",""]', kind: 'repository', label: 'api' },
+      { id: '["repository","/workspace/web",""]', kind: 'repository', label: 'web' }
     ]);
+  });
+
+  it('keeps delimiter-shaped multi-root file IDs and resolve targets distinct', () => {
+    const firstSnapshot = snapshot('/w/a', [file('b|c.ts', 'modified')]);
+    const secondSnapshot = snapshot('/w/a|b', [file('c.ts', 'modified')]);
+    const registry = {
+      repositories: [
+        { root: firstSnapshot.root, state: 'ready', analyzer: { getSnapshot: () => firstSnapshot } },
+        { root: secondSnapshot.root, state: 'ready', analyzer: { getSnapshot: () => secondSnapshot } }
+      ],
+      onDidChange: () => ({ dispose: () => undefined })
+    };
+    const provider = new MyCodeTreeProvider(registry as never);
+    const roots = provider.getChildren();
+    const first = roots.find((node) => node.kind === 'repository' && node.root === '/w/a')?.children[0];
+    const second = roots.find((node) => node.kind === 'repository' && node.root === '/w/a|b')?.children[0];
+    if (first?.kind !== 'file' || second?.kind !== 'file') throw new Error('file nodes missing');
+
+    expect(first.id).not.toBe(second.id);
+    expect(provider.resolveNode(first.id)).toMatchObject({
+      root: '/w/a',
+      file: { relativePath: 'b|c.ts' }
+    });
+    expect(provider.resolveNode(second.id)).toMatchObject({
+      root: '/w/a|b',
+      file: { relativePath: 'c.ts' }
+    });
+    provider.dispose();
   });
 
   it('returns flat newest-first past rows with parent paths and stable IDs', () => {
@@ -132,8 +174,8 @@ describe('current and past projections', () => {
     ])]);
 
     expect(rows.map(({ id, label, parentPath, latestCommit }) => ({ id, label, parentPath, timestamp: latestCommit?.authoredAt }))).toEqual([
-      { id: 'past|/workspace|src/old.ts', label: 'old.ts', parentPath: 'src', timestamp: 30 },
-      { id: 'past|/workspace|middle.ts', label: 'middle.ts', parentPath: '.', timestamp: 20 }
+      { id: '["past","/workspace","src/old.ts"]', label: 'old.ts', parentPath: 'src', timestamp: 30 },
+      { id: '["past","/workspace","middle.ts"]', label: 'middle.ts', parentPath: '.', timestamp: 20 }
     ]);
   });
 });
