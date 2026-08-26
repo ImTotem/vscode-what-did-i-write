@@ -1,4 +1,4 @@
-import { cp, mkdtemp, mkdir, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdtemp, mkdir, readFile, realpath, rename, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -77,19 +77,58 @@ describe('MyCodeFileActions filesystem integration', () => {
     expect(boundary.confirmations[0]).toMatchObject({ confirmLabel: 'Delete Folder Recursively' });
     expect(boundary.confirmations[0]?.message).toContain(join(root, 'visible'));
   });
+
+  it('recursively copies real hidden content after an explicit folder warning', async () => {
+    const root = await temporaryRepository();
+    await mkdir(join(root, 'source', 'nested'), { recursive: true });
+    await mkdir(join(root, 'destination'));
+    await writeFile(join(root, 'source', 'visible.ts'), 'shown');
+    await writeFile(join(root, 'source', 'nested', 'filtered.bin'), 'hidden');
+    const boundary = diskBoundary();
+    const { actions } = harness(root, boundary);
+
+    await actions.copy(folderNode(root, 'source'));
+    await actions.paste(folderNode(root, 'destination'));
+
+    expect(await readFile(join(root, 'destination', 'source', 'nested', 'filtered.bin'), 'utf8')).toBe('hidden');
+    expect(boundary.confirmations[0]?.message).toContain('hidden files');
+  });
+
+  it('rejects a mutable path that traverses a symlink or junction', async () => {
+    const root = await temporaryRepository();
+    const outside = await temporaryRepository();
+    await writeFile(join(outside, 'secret.txt'), 'outside');
+    try {
+      await symlink(outside, join(root, 'link'), process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'EPERM' || code === 'EACCES' || code === 'ENOTSUP') return;
+      throw error;
+    }
+    const boundary = diskBoundary();
+    const { actions } = harness(root, boundary);
+
+    await actions.delete(fileNode(root, 'link/secret.txt'));
+
+    expect(await readFile(join(outside, 'secret.txt'), 'utf8')).toBe('outside');
+    expect(boundary.warnings).toContain('Paths through symbolic links or junctions cannot be changed from My Code.');
+  });
 });
 
 interface DiskBoundary extends MyCodeFileActionBoundary {
   readonly names: Array<string | undefined>;
   readonly confirmations: ConfirmationPrompt[];
+  readonly warnings: string[];
 }
 
 function diskBoundary(): DiskBoundary {
   const names: Array<string | undefined> = [];
   const confirmations: ConfirmationPrompt[] = [];
+  const warnings: string[] = [];
   return {
     names,
     confirmations,
+    warnings,
     async executeCommand() {},
     async writeClipboard() {},
     async promptName(prompt: NamePrompt) {
@@ -100,9 +139,27 @@ function diskBoundary(): DiskBoundary {
       confirmations.push(prompt);
       return true;
     },
-    async warn() {},
+    async warn(message) {
+      warnings.push(message);
+    },
     async showError() {},
     kind: pathKind,
+    async realPath(path) {
+      try {
+        return await realpath(path);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+        throw error;
+      }
+    },
+    async isSymbolicLink(path) {
+      try {
+        return (await lstat(path)).isSymbolicLink();
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+        throw error;
+      }
+    },
     async createFile(path) {
       await writeFile(path, '', { flag: 'wx' });
     },

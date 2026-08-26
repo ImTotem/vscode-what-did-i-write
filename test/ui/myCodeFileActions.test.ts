@@ -83,6 +83,8 @@ describe('MyCodeFileActions validation', () => {
   it('resolves paste destinations from folders, repository roots, and file parents', async () => {
     const source = fileNode('source.ts');
     const boundary = fakeBoundary([
+      [ROOT, 'directory'],
+      [join(ROOT, 'src'), 'directory'],
       [join(ROOT, 'source.ts'), 'file'],
       [join(ROOT, 'folder'), 'directory'],
       [join(ROOT, 'src', 'target.ts'), 'file']
@@ -148,6 +150,148 @@ describe('MyCodeFileActions validation', () => {
     expect(boundary.renames).toEqual([]);
     expect(boundary.copies).toEqual([[join(ROOT, 'source.ts'), join(OTHER_ROOT, 'source.ts')]]);
     expect(boundary.warnings).toEqual(['Cut items cannot be moved to another repository. Use Copy instead.']);
+  });
+
+  it('rejects blank roots and outer-root aliases owned by a nested registered root', async () => {
+    const nestedRoot = join(ROOT, 'nested');
+    const boundary = fakeBoundary([
+      [join(nestedRoot, 'owned.ts'), 'file']
+    ]);
+    const { actions } = actionHarness({ boundary, roots: [ROOT, nestedRoot] });
+
+    await actions.delete(fileNode('owned.ts', true, ''));
+    await actions.delete(fileNode('nested/owned.ts', true, ROOT));
+
+    expect(boundary.deletedFiles).toEqual([]);
+    expect(boundary.confirmations).toEqual([]);
+    expect(boundary.warnings).toEqual([
+      'Repository roots cannot be empty.',
+      'The selected path belongs to a more specific registered repository.'
+    ]);
+  });
+
+  it('revalidates repository ownership after a prompt and before creating a child', async () => {
+    let roots: readonly string[] = [ROOT];
+    const boundary = fakeBoundary([[ROOT, 'directory']]);
+    boundary.promptName = async () => {
+      roots = [];
+      return 'child';
+    };
+    const { actions } = actionHarness({ boundary, rootProvider: () => roots });
+
+    await actions.newFolder(repositoryNode());
+
+    expect(boundary.createdDirectories).toEqual([]);
+    expect(boundary.warnings).toEqual(['The selected path is outside a registered repository.']);
+  });
+
+  it('deduplicates normalized path aliases before deleting', async () => {
+    const direct = fileNode('src/owned.ts');
+    const alias = fileNode('src/../src/owned.ts');
+    const boundary = fakeBoundary([[join(ROOT, 'src', 'owned.ts'), 'file']]);
+    const { actions } = actionHarness({ selection: [direct, alias], boundary });
+
+    await actions.delete(direct);
+
+    expect(boundary.deletedFiles).toEqual([join(ROOT, 'src', 'owned.ts')]);
+    expect(boundary.warnings).toEqual([]);
+  });
+});
+
+describe('MyCodeFileActions confirmations and operation errors', () => {
+  it('names every mixed delete target, emphasizes recursive folders, and cancels the whole set', async () => {
+    const folder = folderNode('folder');
+    const file = fileNode('file.ts');
+    const boundary = fakeBoundary([
+      [join(ROOT, 'folder'), 'directory'],
+      [join(ROOT, 'file.ts'), 'file']
+    ]);
+    boundary.confirmResults.push(false);
+    const { actions } = actionHarness({ selection: [folder, file], boundary });
+
+    await actions.delete(folder);
+
+    expect(boundary.confirmations[0]?.message).toContain(join(ROOT, 'folder'));
+    expect(boundary.confirmations[0]?.message).toContain(join(ROOT, 'file.ts'));
+    expect(boundary.confirmations[0]?.detail).toContain(`Recursively deletes: ${join(ROOT, 'folder')}`);
+    expect(boundary.deletedDirectories).toEqual([]);
+    expect(boundary.deletedFiles).toEqual([]);
+  });
+
+  it('deletes the complete mixed set after confirmation', async () => {
+    const folder = folderNode('folder');
+    const file = fileNode('file.ts');
+    const boundary = fakeBoundary([
+      [join(ROOT, 'folder'), 'directory'],
+      [join(ROOT, 'file.ts'), 'file']
+    ]);
+    const { actions } = actionHarness({ selection: [folder, file], boundary });
+
+    await actions.delete(folder);
+
+    expect(boundary.deletedDirectories).toEqual([join(ROOT, 'folder')]);
+    expect(boundary.deletedFiles).toEqual([join(ROOT, 'file.ts')]);
+  });
+
+  it('confirms hidden recursive content for clipboard paste and explicit folder copy', async () => {
+    const source = folderNode('source');
+    const destination = folderNode('destination');
+    const boundary = fakeBoundary([
+      [join(ROOT, 'source'), 'directory'],
+      [join(ROOT, 'destination'), 'directory']
+    ]);
+    boundary.confirmResults.push(false, true);
+    const { actions } = actionHarness({ boundary });
+
+    await actions.copy(source);
+    await actions.paste(destination);
+    await actions.copyOrMove([source], destination, 'copy');
+
+    expect(boundary.confirmations).toHaveLength(2);
+    expect(boundary.confirmations[0]?.message).toContain('hidden files');
+    expect(boundary.confirmations[1]?.message).toContain('hidden files');
+    expect(boundary.copies).toEqual([[join(ROOT, 'source'), join(ROOT, 'destination', 'source')]]);
+  });
+
+  it('reports throwing stat, collision, name prompt, and confirmation boundaries exactly once per operation', async () => {
+    const source = fileNode('source.ts');
+
+    const statBoundary = fakeBoundary();
+    statBoundary.kind = async () => { throw new Error('stat failed'); };
+    const statHarness = actionHarness({ boundary: statBoundary });
+    await expect(statHarness.actions.copy(source)).resolves.toBeUndefined();
+    expect(statHarness.onError).toHaveBeenCalledTimes(1);
+    expect(statBoundary.errors).toHaveLength(1);
+
+    const collisionBoundary = fakeBoundary([
+      [join(ROOT, 'source.ts'), 'file'],
+      [join(ROOT, 'destination'), 'directory']
+    ]);
+    const normalKind = collisionBoundary.kind.bind(collisionBoundary);
+    collisionBoundary.kind = async (path) => {
+      if (resolve(path) === join(ROOT, 'destination', 'source.ts')) throw new Error('collision stat failed');
+      return normalKind(path);
+    };
+    const collisionHarness = actionHarness({ boundary: collisionBoundary });
+    await collisionHarness.actions.copy(source);
+    await expect(collisionHarness.actions.paste(folderNode('destination'))).resolves.toBeUndefined();
+    expect(collisionHarness.onError).toHaveBeenCalledTimes(1);
+    expect(collisionBoundary.errors).toHaveLength(1);
+
+
+    const promptBoundary = fakeBoundary([[ROOT, 'directory']]);
+    promptBoundary.promptName = async () => { throw new Error('prompt failed'); };
+    const promptHarness = actionHarness({ boundary: promptBoundary });
+    await expect(promptHarness.actions.newFile(repositoryNode())).resolves.toBeUndefined();
+    expect(promptHarness.onError).toHaveBeenCalledTimes(1);
+    expect(promptBoundary.errors).toHaveLength(1);
+
+    const confirmBoundary = fakeBoundary([[join(ROOT, 'source.ts'), 'file']]);
+    confirmBoundary.confirm = async () => { throw new Error('confirm failed'); };
+    const confirmHarness = actionHarness({ boundary: confirmBoundary });
+    await expect(confirmHarness.actions.delete(source)).resolves.toBeUndefined();
+    expect(confirmHarness.onError).toHaveBeenCalledTimes(1);
+    expect(confirmBoundary.errors).toHaveLength(1);
   });
 });
 
@@ -250,7 +394,7 @@ describe('MyCodeFileActions commands and prompts', () => {
 
   it('warns before folder rename and validates the new name before applying it', async () => {
     const folder = folderNode('src');
-    const boundary = fakeBoundary([[join(ROOT, 'src'), 'directory']]);
+    const boundary = fakeBoundary([[ROOT, 'directory'], [join(ROOT, 'src'), 'directory']]);
     boundary.confirmResults.push(true);
     boundary.names.push('renamed');
     const { actions } = actionHarness({ boundary });
@@ -293,6 +437,8 @@ interface FakeBoundary extends MyCodeFileActionBoundary {
   readonly deletedFiles: string[];
   readonly deletedDirectories: string[];
   readonly failRenameOnce: Set<string>;
+  realPath(path: string): Promise<string | undefined>;
+  isSymbolicLink(path: string): Promise<boolean>;
 }
 
 function fakeBoundary(initial: ReadonlyArray<readonly [string, FileActionKind]> = []): FakeBoundary {
@@ -351,6 +497,12 @@ function fakeBoundary(initial: ReadonlyArray<readonly [string, FileActionKind]> 
     async kind(path) {
       return entries.get(resolve(path));
     },
+    async realPath(path) {
+      return resolve(path);
+    },
+    async isSymbolicLink() {
+      return false;
+    },
     async createFile(path) {
       const normalized = resolve(path);
       createdFiles.push(normalized);
@@ -394,13 +546,14 @@ function actionHarness(options: {
   selection?: readonly MyCodeFileActionNode[];
   boundary?: FakeBoundary;
   roots?: readonly string[];
+  rootProvider?: () => readonly string[];
 } = {}) {
   const boundary = options.boundary ?? fakeBoundary();
   const onError = vi.fn();
   const refresh = vi.fn();
   const actions = new MyCodeFileActions({
     selection: () => options.selection ?? [],
-    roots: () => options.roots ?? [ROOT],
+    roots: options.rootProvider ?? (() => options.roots ?? [ROOT]),
     refresh,
     onError,
     boundary

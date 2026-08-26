@@ -1,4 +1,5 @@
-import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { lstat, realpath } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, parse, relative, resolve, sep } from 'node:path';
 
 import * as vscode from 'vscode';
 
@@ -34,6 +35,8 @@ export interface MyCodeFileActionBoundary {
   warn(message: string): Promise<void>;
   showError(message: string): Promise<void>;
   kind(path: string): Promise<FileActionKind | undefined>;
+  realPath(path: string): Promise<string | undefined>;
+  isSymbolicLink(path: string): Promise<boolean>;
   createFile(path: string): Promise<void>;
   rename(source: string, destination: string): Promise<void>;
   deleteFile(path: string): Promise<void>;
@@ -54,11 +57,14 @@ interface ResolvedNode {
   readonly node: MyCodeFileActionNode;
   readonly path: string;
   readonly root: string;
+  readonly canonicalPath: string;
+  readonly canonicalRoot: string;
   readonly kind: FileActionKind;
 }
 
 interface TransferPlan extends ResolvedNode {
   readonly destination: string;
+  readonly destinationIdentity: string;
   readonly noOp: boolean;
 }
 
@@ -84,7 +90,8 @@ export class MyCodeFileActions {
   public targets(clicked: MyCodeFileActionNode): readonly MyCodeFileActionNode[] {
     const selected = this.options.selection();
     const candidates = selected.some(({ id }) => id === clicked.id) ? selected : [clicked];
-    const unique = [...new Map(candidates.map((node) => [node.id, node])).values()];
+    const unique = [...new Map(candidates.map((node) =>
+      [nodePath(node) === undefined ? `id:${node.id}` : `path:${pathKey(nodePath(node) ?? '')}`, node])).values()];
     return unique.filter((candidate) => {
       const candidatePath = nodePath(candidate);
       if (candidatePath === undefined) return true;
@@ -99,22 +106,26 @@ export class MyCodeFileActions {
   }
 
   public async open(clicked: MyCodeFileActionNode): Promise<void> {
-    await this.runCommand('open', clicked, true, 'vscode.open');
+    await this.guard('open', clicked, () => this.runCommand('open', clicked, true, 'vscode.open'));
   }
 
   public async openToSide(clicked: MyCodeFileActionNode): Promise<void> {
-    await this.runCommand('open to side', clicked, true, 'vscode.open', 'beside');
+    await this.guard('open to side', clicked, () => this.runCommand('open to side', clicked, true, 'vscode.open', 'beside'));
   }
 
   public async revealInExplorer(clicked: MyCodeFileActionNode): Promise<void> {
-    await this.runCommand('reveal in Explorer', clicked, false, 'revealInExplorer');
+    await this.guard('reveal in Explorer', clicked, () => this.runCommand('reveal in Explorer', clicked, false, 'revealInExplorer'));
   }
 
   public async revealInOs(clicked: MyCodeFileActionNode): Promise<void> {
-    await this.runCommand('reveal in operating system', clicked, false, 'revealFileInOS');
+    await this.guard('reveal in operating system', clicked, () => this.runCommand('reveal in operating system', clicked, false, 'revealFileInOS'));
   }
 
   public async copyPath(clicked: MyCodeFileActionNode): Promise<void> {
+    await this.guard('copy path', clicked, () => this.copyPathImpl(clicked));
+  }
+
+  private async copyPathImpl(clicked: MyCodeFileActionNode): Promise<void> {
     const target = await this.resolveReadable(clicked, true);
     if (target === undefined) return;
     try {
@@ -125,6 +136,10 @@ export class MyCodeFileActions {
   }
 
   public async copyRelativePath(clicked: MyCodeFileActionNode): Promise<void> {
+    await this.guard('copy relative path', clicked, () => this.copyRelativePathImpl(clicked));
+  }
+
+  private async copyRelativePathImpl(clicked: MyCodeFileActionNode): Promise<void> {
     const target = await this.resolveReadable(clicked, true);
     if (target === undefined) return;
     try {
@@ -135,12 +150,20 @@ export class MyCodeFileActions {
   }
 
   public async copy(clicked: MyCodeFileActionNode): Promise<void> {
+    await this.guard('copy', clicked, () => this.copyImpl(clicked));
+  }
+
+  private async copyImpl(clicked: MyCodeFileActionNode): Promise<void> {
     const nodes = this.targets(clicked);
     if (await this.resolveSources(nodes, 'copy') === undefined) return;
     this.clipboard = { mode: 'copy', nodes };
   }
 
   public async cut(clicked: MyCodeFileActionNode): Promise<void> {
+    await this.guard('cut', clicked, () => this.cutImpl(clicked));
+  }
+
+  private async cutImpl(clicked: MyCodeFileActionNode): Promise<void> {
     const nodes = this.targets(clicked);
     const sources = await this.resolveSources(nodes, 'cut');
     if (sources === undefined) return;
@@ -156,6 +179,10 @@ export class MyCodeFileActions {
   }
 
   public async paste(clicked: MyCodeFileActionNode): Promise<void> {
+    await this.guardTransfer('paste', clicked, () => this.pasteImpl(clicked));
+  }
+
+  private async pasteImpl(clicked: MyCodeFileActionNode): Promise<void> {
     const clipboard = this.clipboard;
     if (clipboard === undefined || clipboard.nodes.length === 0) return;
     const destination = await this.resolveDestination(clicked);
@@ -174,12 +201,24 @@ export class MyCodeFileActions {
     destination: MyCodeFileActionNode,
     mode: TransferMode
   ): Promise<void> {
+    await this.guardTransfer(mode, destination, () => this.copyOrMoveImpl(sources, destination, mode));
+  }
+
+  private async copyOrMoveImpl(
+    sources: readonly MyCodeFileActionNode[],
+    destination: MyCodeFileActionNode,
+    mode: TransferMode
+  ): Promise<void> {
     const resolvedDestination = await this.resolveDestination(destination);
     if (resolvedDestination === undefined) return;
     await this.transfer(this.normalizeExplicitSources(sources), resolvedDestination, mode, true);
   }
 
   public async rename(clicked: MyCodeFileActionNode): Promise<void> {
+    await this.guard('rename', clicked, () => this.renameImpl(clicked));
+  }
+
+  private async renameImpl(clicked: MyCodeFileActionNode): Promise<void> {
     if (!isFileOrFolder(clicked)) {
       await this.boundary.warn('Repository and group roots cannot be renamed.');
       return;
@@ -196,12 +235,18 @@ export class MyCodeFileActions {
     }
     const name = await this.promptAvailableName(dirname(source.path), basename(source.path), 'Rename');
     if (name === undefined) return;
-    const destination = resolve(dirname(source.path), name);
-    if (samePath(source.path, destination)) return;
     const current = await this.resolveCurrent(clicked, 'rename');
     if (current === undefined) return;
+    const destination = resolve(dirname(current.path), name);
+    if (samePath(current.path, destination)) return;
+    const validatedDestination = await this.validateWriteDestination(current.root, destination);
+    if (validatedDestination === undefined) return;
+    if (await this.boundary.kind(validatedDestination.path) !== undefined) {
+      await this.boundary.warn('That name already exists.');
+      return;
+    }
     try {
-      await this.boundary.rename(current.path, destination);
+      await this.boundary.rename(current.path, validatedDestination.path);
       await this.refreshAfter('rename', current.path);
     } catch (error) {
       await this.reportSingleFailure(error, 'rename', current.path);
@@ -209,6 +254,10 @@ export class MyCodeFileActions {
   }
 
   public async delete(clicked: MyCodeFileActionNode): Promise<void> {
+    await this.guard('delete', clicked, () => this.deleteImpl(clicked));
+  }
+
+  private async deleteImpl(clicked: MyCodeFileActionNode): Promise<void> {
     const nodes = this.targets(clicked);
     const immutable = nodes.find(isImmutable);
     if (immutable !== undefined) {
@@ -222,16 +271,17 @@ export class MyCodeFileActions {
     const resolved = await this.resolveSources(nodes, 'delete');
     if (resolved === undefined) return;
     const directories = resolved.filter(({ kind }) => kind === 'directory');
-    const confirmed = directories.length > 0
-      ? await this.boundary.confirm({
-        message: `Recursively delete ${displayPaths(directories.map(({ path }) => path))}?`,
-        detail: 'This deletes each entire real folder, including hidden files not shown in My Code.',
-        confirmLabel: 'Delete Folder Recursively'
-      })
-      : await this.boundary.confirm({
-        message: `Delete ${displayPaths(resolved.map(({ path }) => path))}?`,
-        confirmLabel: 'Delete'
-      });
+    const allPaths = resolved.map(({ path }) => path);
+    const confirmed = await this.boundary.confirm({
+      message: allPaths.length === 1
+        ? `Delete ${allPaths[0] ?? ''}?`
+        : `Delete ${allPaths.length} selected items?\n${allPaths.join('\n')}`,
+      ...(directories.length === 0 ? {} : {
+        detail: `Recursively deletes: ${directories.map(({ path }) => path).join(', ')}. `
+          + 'Entire real folders are removed, including hidden files not shown in My Code.'
+      }),
+      confirmLabel: directories.length === 0 ? 'Delete' : 'Delete Folder Recursively'
+    });
     if (!confirmed) return;
 
     let successes = 0;
@@ -253,15 +303,16 @@ export class MyCodeFileActions {
   }
 
   public async newFile(clicked: MyCodeFileActionNode): Promise<void> {
-    await this.createChild(clicked, 'file');
+    await this.guard('create file', clicked, () => this.createChild(clicked, 'file'));
   }
 
   public async newFolder(clicked: MyCodeFileActionNode): Promise<void> {
-    await this.createChild(clicked, 'directory');
+    await this.guard('create folder', clicked, () => this.createChild(clicked, 'directory'));
   }
 
   private normalizeExplicitSources(nodes: readonly MyCodeFileActionNode[]): readonly MyCodeFileActionNode[] {
-    const unique = [...new Map(nodes.map((node) => [node.id, node])).values()];
+    const unique = [...new Map(nodes.map((node) =>
+      [nodePath(node) === undefined ? `id:${node.id}` : `path:${pathKey(nodePath(node) ?? '')}`, node])).values()];
     return unique.filter((candidate) => {
       const candidatePath = nodePath(candidate);
       return candidatePath === undefined || !unique.some((ancestor) => {
@@ -298,13 +349,21 @@ export class MyCodeFileActions {
     const title = kind === 'file' ? 'New File' : 'New Folder';
     const name = await this.promptAvailableName(destination.path, undefined, title);
     if (name === undefined) return;
-    const path = resolve(destination.path, name);
+    const currentDestination = await this.resolveDestination(clicked);
+    if (currentDestination === undefined) return;
+    const path = resolve(currentDestination.path, name);
+    const validatedDestination = await this.validateWriteDestination(currentDestination.root, path);
+    if (validatedDestination === undefined) return;
+    if (await this.boundary.kind(validatedDestination.path) !== undefined) {
+      await this.boundary.warn('That name already exists.');
+      return;
+    }
     try {
-      if (kind === 'file') await this.boundary.createFile(path);
-      else await this.boundary.createDirectory(path);
-      await this.refreshAfter(kind === 'file' ? 'create file' : 'create folder', path);
+      if (kind === 'file') await this.boundary.createFile(validatedDestination.path);
+      else await this.boundary.createDirectory(validatedDestination.path);
+      await this.refreshAfter(kind === 'file' ? 'create file' : 'create folder', validatedDestination.path);
     } catch (error) {
-      await this.reportSingleFailure(error, kind === 'file' ? 'create file' : 'create folder', path);
+      await this.reportSingleFailure(error, kind === 'file' ? 'create file' : 'create folder', validatedDestination.path);
     }
   }
 
@@ -327,39 +386,68 @@ export class MyCodeFileActions {
     })) return { completed: [], failed: nodes, cancelled: true };
 
     for (const source of sources) {
-      if (source.kind === 'directory' && pathContains(source.path, destination.path)) {
+      if (source.kind === 'directory' && pathContains(source.canonicalPath, destination.canonicalPath)) {
         await this.boundary.warn(`A folder cannot be ${mode === 'copy' ? 'copied' : 'moved'} into itself or one of its descendants.`);
         return { completed: [], failed: nodes, cancelled: true };
       }
     }
+    if (mode === 'copy' && sources.some(({ kind }) => kind === 'directory') && !await this.boundary.confirm({
+      message: 'Copy this folder? It may contain hidden files not shown in My Code.',
+      detail: 'The entire real directory will be copied recursively.',
+      confirmLabel: 'Copy Folder Recursively'
+    })) return { completed: [], failed: nodes, cancelled: true };
 
     const plans = await this.planTransfers(sources, destination, mode);
     if (plans === undefined) return { completed: [], failed: nodes, cancelled: true };
     const completed: MyCodeFileActionNode[] = [];
     const failed: MyCodeFileActionNode[] = [];
     let changed = false;
+    let unexpectedFailures = 0;
     for (const plan of plans) {
-      if (plan.noOp) {
+      const current = await this.resolveCurrent(plan.node, mode);
+      const currentDestination = await this.resolveDestination(destination.node);
+      if (current === undefined || currentDestination === undefined) {
+        failed.push(plan.node);
+        continue;
+      }
+      if (mode === 'move' && !samePath(current.root, currentDestination.root)) {
+        await this.boundary.warn('Cut items cannot be moved to another repository. Use Copy instead.');
+        failed.push(plan.node);
+        continue;
+      }
+      if (current.kind === 'directory' && pathContains(current.canonicalPath, currentDestination.canonicalPath)) {
+        await this.boundary.warn(`A folder cannot be ${mode === 'copy' ? 'copied' : 'moved'} into itself or one of its descendants.`);
+        failed.push(plan.node);
+        continue;
+      }
+      const target = resolve(currentDestination.path, basename(plan.destination));
+      const validatedDestination = await this.validateWriteDestination(currentDestination.root, target);
+      if (validatedDestination === undefined) {
+        failed.push(plan.node);
+        continue;
+      }
+      if (mode === 'move' && samePath(current.canonicalPath, validatedDestination.identity)) {
         completed.push(plan.node);
         continue;
       }
-      const current = await this.resolveCurrent(plan.node, mode);
-      if (current === undefined) {
+      if (await this.boundary.kind(validatedDestination.path) !== undefined) {
+        await this.boundary.warn(`The destination now exists: ${validatedDestination.path}`);
         failed.push(plan.node);
         continue;
       }
       try {
-        if (mode === 'copy') await this.boundary.copy(current.path, plan.destination);
-        else await this.boundary.rename(current.path, plan.destination);
+        if (mode === 'copy') await this.boundary.copy(current.path, validatedDestination.path);
+        else await this.boundary.rename(current.path, validatedDestination.path);
         completed.push(plan.node);
         changed = true;
       } catch (error) {
         failed.push(plan.node);
+        unexpectedFailures += 1;
         this.options.onError(error, mode, current.path);
       }
     }
     if (changed) await this.refreshAfter(mode, destination.path);
-    await this.reportBatchFailures(mode, failed.length);
+    await this.reportBatchFailures(mode, unexpectedFailures);
     return { completed, failed, cancelled: false };
   }
 
@@ -372,18 +460,20 @@ export class MyCodeFileActions {
     const plans: TransferPlan[] = [];
     for (const source of sources) {
       let target = resolve(destination.path, basename(source.path));
-      if (mode === 'move' && samePath(source.path, target)) {
-        plans.push({ ...source, destination: target, noOp: true });
-        planned.add(pathKey(target));
+      let targetIdentity = resolve(destination.canonicalPath, basename(source.canonicalPath));
+      if (mode === 'move' && samePath(source.canonicalPath, targetIdentity)) {
+        plans.push({ ...source, destination: target, destinationIdentity: targetIdentity, noOp: true });
+        planned.add(pathKey(targetIdentity));
         continue;
       }
-      if (planned.has(pathKey(target)) || await this.boundary.kind(target) !== undefined) {
+      if (planned.has(pathKey(targetIdentity)) || await this.boundary.kind(target) !== undefined) {
         const name = await this.promptAvailableName(destination.path, basename(source.path), `${mode === 'copy' ? 'Copy' : 'Move'} Conflict`, planned);
         if (name === undefined) return undefined;
         target = resolve(destination.path, name);
+        targetIdentity = resolve(destination.canonicalPath, name);
       }
-      planned.add(pathKey(target));
-      plans.push({ ...source, destination: target, noOp: false });
+      planned.add(pathKey(targetIdentity));
+      plans.push({ ...source, destination: target, destinationIdentity: targetIdentity, noOp: false });
     }
     return plans;
   }
@@ -427,14 +517,24 @@ export class MyCodeFileActions {
       if (source === undefined) return undefined;
       resolved.push(source);
     }
-    return resolved;
+    const unique = [...new Map(resolved.map((source) => [pathKey(source.canonicalPath), source])).values()];
+    return unique.filter((candidate) => !unique.some((ancestor) =>
+      !samePath(ancestor.canonicalPath, candidate.canonicalPath)
+      && pathContains(ancestor.canonicalPath, candidate.canonicalPath)));
   }
 
   private async resolveDestination(node: MyCodeFileActionNode): Promise<ResolvedNode | undefined> {
     const current = await this.resolveCurrent(node, 'paste destination');
     if (current === undefined) return undefined;
     if (node.kind === 'file') {
-      return { node, root: current.root, path: dirname(current.path), kind: 'directory' };
+      return {
+        node,
+        root: current.root,
+        path: dirname(current.path),
+        canonicalPath: dirname(current.canonicalPath),
+        canonicalRoot: current.canonicalRoot,
+        kind: 'directory'
+      };
     }
     if (current.kind !== 'directory') {
       await this.boundary.warn('Choose a folder, repository root, or file parent as the destination.');
@@ -444,13 +544,19 @@ export class MyCodeFileActions {
   }
 
   private async resolveReadable(node: MyCodeFileActionNode, allowPast: boolean): Promise<ResolvedNode | undefined> {
-    const canonical = this.canonical(node);
-    if (canonical === undefined) return undefined;
     if (!allowPast && isImmutable(node)) {
       await this.boundary.warn(immutableMessage(node));
       return undefined;
     }
-    return { node, ...canonical, kind: node.kind === 'folder' || node.kind === 'repository' || node.kind === 'group' ? 'directory' : 'file' };
+    const lexical = await this.lexicalNode(node);
+    if (lexical === undefined) return undefined;
+    return {
+      node,
+      ...lexical,
+      canonicalPath: lexical.path,
+      canonicalRoot: lexical.root,
+      kind: node.kind === 'folder' || node.kind === 'repository' || node.kind === 'group' ? 'directory' : 'file'
+    };
   }
 
   private async resolveCurrent(node: MyCodeFileActionNode, operation: string): Promise<ResolvedNode | undefined> {
@@ -458,30 +564,116 @@ export class MyCodeFileActions {
       await this.boundary.warn(immutableMessage(node));
       return undefined;
     }
-    const canonical = this.canonical(node);
-    if (canonical === undefined) return undefined;
+    const lexical = await this.lexicalNode(node);
+    if (lexical === undefined) return undefined;
     try {
-      const kind = await this.boundary.kind(canonical.path);
-      if (kind === undefined) {
-        await this.boundary.warn('Missing paths cannot be changed from My Code.');
-        return undefined;
-      }
-      return { node, ...canonical, kind };
+      const existing = await this.resolveExistingPath(lexical.root, lexical.path);
+      return existing === undefined ? undefined : { node, ...existing };
     } catch (error) {
-      await this.reportSingleFailure(error, operation, canonical.path);
+      await this.reportSingleFailure(error, operation, lexical.path);
       return undefined;
     }
   }
 
-  private canonical(node: MyCodeFileActionNode): { path: string; root: string } | undefined {
-    const registeredRoots = this.options.roots().map((root) => resolve(root));
-    const root = resolve(node.root);
-    const path = nodePath(node);
-    if (path === undefined || !registeredRoots.some((registered) => samePath(registered, root)) || !pathContains(root, path)) {
-      void this.boundary.warn('The selected path is outside a registered repository.');
+  private async lexicalNode(node: MyCodeFileActionNode): Promise<{ path: string; root: string } | undefined> {
+    if (node.root.trim() === '') {
+      await this.boundary.warn('Repository roots cannot be empty.');
       return undefined;
     }
+    const root = resolve(node.root);
+    const path = nodePath(node);
+    if (path === undefined) {
+      await this.boundary.warn('Ambiguous empty paths cannot be changed from My Code.');
+      return undefined;
+    }
+    if (!await this.validateOwnership(root, path)) return undefined;
     return { root, path: resolve(path) };
+  }
+
+  private async validateOwnership(root: string, path: string): Promise<boolean> {
+    const registeredRoots = this.options.roots()
+      .filter((registered) => registered.trim() !== '')
+      .map((registered) => resolve(registered));
+    if (!registeredRoots.some((registered) => samePath(registered, root)) || !pathContains(root, path)) {
+      await this.boundary.warn('The selected path is outside a registered repository.');
+      return false;
+    }
+    const owner = registeredRoots
+      .filter((registered) => pathContains(registered, path))
+      .sort((left, right) => right.length - left.length)[0];
+    if (owner === undefined || !samePath(owner, root)) {
+      await this.boundary.warn('The selected path belongs to a more specific registered repository.');
+      return false;
+    }
+    return true;
+  }
+
+  private async resolveExistingPath(
+    root: string,
+    path: string
+  ): Promise<Omit<ResolvedNode, 'node'> | undefined> {
+    if (!await this.validateOwnership(root, path)) return undefined;
+    if (await this.hasSymbolicLink(path)) {
+      await this.boundary.warn('Paths through symbolic links or junctions cannot be changed from My Code.');
+      return undefined;
+    }
+    const canonicalRoot = await this.boundary.realPath(root);
+    const canonicalPath = await this.boundary.realPath(path);
+    const kind = await this.boundary.kind(path);
+    if (canonicalRoot === undefined || canonicalPath === undefined || kind === undefined) {
+      await this.boundary.warn('Missing paths cannot be changed from My Code.');
+      return undefined;
+    }
+    if (!pathContains(canonicalRoot, canonicalPath)) {
+      await this.boundary.warn('The selected path is outside a registered repository.');
+      return undefined;
+    }
+    return { root, path, canonicalRoot, canonicalPath, kind };
+  }
+
+  private async validateWriteDestination(
+    root: string,
+    destination: string
+  ): Promise<{ path: string; identity: string } | undefined> {
+    if (!await this.validateOwnership(root, destination)) return undefined;
+    const parent = dirname(destination);
+    const existingParent = await this.resolveExistingPath(root, parent);
+    if (existingParent === undefined) return undefined;
+    if (existingParent.kind !== 'directory') {
+      await this.boundary.warn('The destination parent is not a directory.');
+      return undefined;
+    }
+    return {
+      path: resolve(destination),
+      identity: resolve(existingParent.canonicalPath, basename(destination))
+    };
+  }
+
+  private async hasSymbolicLink(path: string): Promise<boolean> {
+    for (const prefix of pathPrefixes(path)) {
+      if (await this.boundary.isSymbolicLink(prefix)) return true;
+    }
+    return false;
+  }
+
+  private async guard(operation: string, node: MyCodeFileActionNode, action: () => Promise<void>): Promise<void> {
+    try {
+      await action();
+    } catch (error) {
+      await this.reportSingleFailure(error, operation, diagnosticPath(node));
+    }
+  }
+
+  private async guardTransfer(
+    operation: string,
+    destination: MyCodeFileActionNode,
+    action: () => Promise<void>
+  ): Promise<void> {
+    try {
+      await action();
+    } catch (error) {
+      await this.reportSingleFailure(error, operation, diagnosticPath(destination));
+    }
   }
 
   private async refreshAfter(operation: string, path: string): Promise<void> {
@@ -540,6 +732,22 @@ function createVsCodeBoundary(): MyCodeFileActionBoundary {
         throw error;
       }
     },
+    async realPath(path) {
+      try {
+        return await realpath(path);
+      } catch (error) {
+        if (isFileNotFound(error)) return undefined;
+        throw error;
+      }
+    },
+    async isSymbolicLink(path) {
+      try {
+        return (await lstat(path)).isSymbolicLink();
+      } catch (error) {
+        if (isFileNotFound(error)) return false;
+        throw error;
+      }
+    },
     async createFile(path) {
       const edit = new vscode.WorkspaceEdit();
       edit.createFile(vscode.Uri.file(path), { ignoreIfExists: false, overwrite: false });
@@ -568,6 +776,7 @@ function createVsCodeBoundary(): MyCodeFileActionBoundary {
 }
 
 function nodePath(node: MyCodeFileActionNode): string | undefined {
+  if (node.root.trim() === '') return undefined;
   switch (node.kind) {
     case 'repository':
     case 'group':
@@ -625,8 +834,22 @@ function pathKey(path: string): string {
   return process.platform === 'win32' ? normalized.toLocaleLowerCase() : normalized;
 }
 
-function displayPaths(paths: readonly string[]): string {
-  return paths.length === 1 ? paths[0] ?? '' : `${paths.length} selected items`;
+function diagnosticPath(node: MyCodeFileActionNode): string {
+  if (node.root.trim() === '') return '<empty repository root>';
+  return nodePath(node) ?? resolve(node.root);
+}
+
+function pathPrefixes(path: string): readonly string[] {
+  const normalized = resolve(path);
+  const root = parse(normalized).root;
+  const prefixes: string[] = [];
+  let current = root;
+  prefixes.push(root);
+  for (const segment of relative(root, normalized).split(sep).filter((part) => part !== '')) {
+    current = resolve(current, segment);
+    prefixes.push(current);
+  }
+  return prefixes;
 }
 
 function isFileNotFound(error: unknown): boolean {
