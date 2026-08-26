@@ -1,7 +1,9 @@
-import { readFile, stat } from 'node:fs/promises';
+import { open, stat } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 
-import { matchesIdentity, normalizeEmail, normalizeIdentityPart } from '../core/identity.js';
+import {
+  hasConfiguredIdentity, matchesIdentity, normalizeEmail, normalizeIdentityPart
+} from '../core/identity.js';
 import type {
   CommitSummary,
   FileKind,
@@ -63,6 +65,10 @@ interface MutableCandidate {
   resolvedGeneration?: number;
 }
 
+export type AnalysisErrorReporter = (
+  error: unknown, operation: 'blame', path: string
+) => void;
+
 interface AnalysisJob {
   readonly generation: number;
   readonly key: string;
@@ -75,13 +81,38 @@ interface AnalysisJob {
   active: boolean;
 }
 
+export interface AnalyzerFileHandle {
+  read(
+    buffer: Buffer, offset: number, length: number, position: number | null
+  ): Promise<{ readonly bytesRead: number }>;
+  close(): Promise<void>;
+}
+
+export interface AnalyzerFileSystem {
+  stat(path: string): Promise<{ isFile(): boolean }>;
+  open(path: string): Promise<AnalyzerFileHandle>;
+}
+
+const nodeFileSystem: AnalyzerFileSystem = {
+  stat: async (path) => stat(path),
+  open: async (path) => {
+    const handle = await open(path, 'r');
+    return {
+      read: async (buffer, offset, length, position) => handle.read(buffer, offset, length, position),
+      close: async () => handle.close()
+    };
+  }
+};
+
 export class RepositoryAnalyzer {
+  public readonly reportsErrors = true;
   private readonly listeners = new Set<(snapshot: RepositorySnapshot) => void>();
   private readonly inFlight = new Map<string, AnalysisJob>();
   private readonly queuedJobs: AnalysisJob[] = [];
   private readonly retargetedJobs: AnalysisJob[] = [];
   private readonly pendingJobs = new Map<number, number>();
   private readonly indexLoads = new Map<string, Promise<Map<string, MutableCandidate>>>();
+  private indexLoadTail: Promise<void> = Promise.resolve();
   private indexedCandidates = new Map<string, MutableCandidate>();
   private indexCacheKey: string | undefined;
   private candidates = new Map<string, Candidate>();
@@ -95,7 +126,9 @@ export class RepositoryAnalyzer {
 
   public constructor(
     private readonly repository: RepositoryAccess,
-    private readonly cacheStore: CacheStore
+    private readonly cacheStore: CacheStore,
+    private readonly onError?: AnalysisErrorReporter,
+    private readonly fileSystem: AnalyzerFileSystem = nodeFileSystem
   ) {
     this.snapshot = this.createSnapshot(false);
   }
@@ -131,8 +164,20 @@ export class RepositoryAnalyzer {
     generation: number,
     paths: readonly string[] | undefined
   ): Promise<void> {
-    const [identity, head, workingChanges] = await Promise.all([
-      this.repository.getGlobalIdentity(),
+    const identity = await this.repository.getGlobalIdentity();
+    if (generation !== this.generation) return;
+    if (!hasConfiguredIdentity(identity)) {
+      this.indexedCandidates = new Map();
+      this.indexCacheKey = undefined;
+      this.identity = identity;
+      this.head = '';
+      this.candidates = new Map();
+      this.settleRetargetedJobs();
+      this.publish(false);
+      return;
+    }
+
+    const [head, workingChanges] = await Promise.all([
       this.repository.getHead(),
       this.repository.getWorkingChanges()
     ]);
@@ -155,23 +200,26 @@ export class RepositoryAnalyzer {
 
     const candidates = cloneCandidates(indexedCandidates);
     overlayWorkingChanges(candidates, workingChanges);
-    await Promise.all([...candidates.values()].map(async (candidate) => {
-      candidate.exists = await pathExists(this.absolutePath(candidate.relativePath));
-    }));
+    await forEachConcurrent([...candidates.values()], 16, async (candidate) => {
+      candidate.exists = await pathExists(this.absolutePath(candidate.relativePath), this.fileSystem);
+    });
     if (generation !== this.generation) return;
 
-    if (cacheKeyText !== undefined && cacheKeyText === this.indexCacheKey && paths !== undefined) {
-      const invalidatedPaths = new Set(paths.map(normalizeRelativePath));
+    if (cacheKeyText !== undefined && cacheKeyText === this.indexCacheKey) {
+      const invalidatedPaths = paths === undefined
+        ? undefined
+        : new Set(paths.map(normalizeRelativePath));
       for (const [path, candidate] of candidates) {
-        if (invalidatedPaths.has(path)) continue;
         const previous = this.candidates.get(path);
+        if (previous?.resolvedGeneration === undefined) continue;
+        candidate.binary = previous.binary;
+        candidate.ranges = previous.ranges;
         if (
-          previous?.resolvedGeneration !== undefined
+          invalidatedPaths !== undefined
+          && !invalidatedPaths.has(path)
           && previous.exists === candidate.exists
           && previous.working === candidate.working
         ) {
-          candidate.binary = previous.binary;
-          candidate.ranges = previous.ranges;
           candidate.resolvedGeneration = generation;
         }
       }
@@ -201,7 +249,11 @@ export class RepositoryAnalyzer {
     const existing = this.indexLoads.get(key);
     if (existing !== undefined) return existing;
 
-    const load = this.readIndexedCandidates(cacheKey, identity);
+    const load = this.indexLoadTail.then(() => this.disposed
+      ? new Map<string, MutableCandidate>()
+      : this.readIndexedCandidates(cacheKey, identity)
+    );
+    this.indexLoadTail = load.then(() => undefined, () => undefined);
     this.indexLoads.set(key, load);
     const clear = (): void => {
       if (this.indexLoads.get(key) === load) this.indexLoads.delete(key);
@@ -281,7 +333,10 @@ export class RepositoryAnalyzer {
       job.active = true;
       this.activeJobs += 1;
       void this.analyzeCandidate(job.candidate, job.generation)
-        .then(job.resolve, job.reject)
+        .then(job.resolve, (error: unknown) => {
+          this.onError?.(error, 'blame', job.candidate.relativePath);
+          job.reject(error);
+        })
         .finally(() => {
           if (this.inFlight.get(job.key) === job) this.inFlight.delete(job.key);
           this.activeJobs -= 1;
@@ -426,9 +481,9 @@ export class RepositoryAnalyzer {
     generation: number
   ): Promise<FileRecord | undefined> {
     if (generation !== this.generation) return this.getFile(candidate.relativePath);
-    let contents: Buffer;
+    let inspection: FileInspection;
     try {
-      contents = await readFile(this.absolutePath(candidate.relativePath));
+      inspection = await inspectFile(this.absolutePath(candidate.relativePath), candidate.untracked, this.fileSystem);
     } catch (error) {
       if (!isMissingFileError(error)) throw error;
       if (generation !== this.generation) return this.getFile(candidate.relativePath);
@@ -442,8 +497,7 @@ export class RepositoryAnalyzer {
 
     if (generation !== this.generation) return this.getFile(candidate.relativePath);
 
-    const binary = contents.subarray(0, 8192).includes(0);
-    if (binary) {
+    if (inspection.binary) {
       if (generation !== this.generation) return this.getFile(candidate.relativePath);
       candidate.binary = true;
       candidate.ranges = [];
@@ -455,8 +509,7 @@ export class RepositoryAnalyzer {
     let ranges: readonly OwnedRange[];
     let blameReportedBinary = false;
     if (candidate.untracked) {
-      const lineCount = contents.toString('utf8').split(/\r?\n/).length;
-      ranges = [{ start: 0, endExclusive: lineCount, uncommitted: true }];
+      ranges = [{ start: 0, endExclusive: inspection.lineCount ?? 1, uncommitted: true }];
     } else {
       try {
         const lines = await this.repository.blame(candidate.relativePath);
@@ -667,20 +720,84 @@ function priorityRank(priority: AnalysisPriority): number {
 }
 
 function normalizeRelativePath(path: string): string {
-  return path.replaceAll('\\', '/').replace(/^\.\//, '');
+  const normalized = process.platform === 'win32' ? path.replaceAll('\\', '/') : path;
+  return normalized.replace(/^\.\//, '');
 }
 
 function isParentTraversal(path: string): boolean {
   return path === '..' || path.startsWith(`..${sep}`);
 }
 
-async function pathExists(path: string): Promise<boolean> {
+async function pathExists(path: string, fileSystem: AnalyzerFileSystem): Promise<boolean> {
   try {
-    return (await stat(path)).isFile();
+    return (await fileSystem.stat(path)).isFile();
   } catch (error) {
     if (isMissingFileError(error)) return false;
     throw error;
   }
+}
+
+interface FileInspection {
+  readonly binary: boolean;
+  readonly lineCount?: number;
+}
+
+const FILE_HEADER_BYTES = 8 * 1024;
+const FILE_STREAM_BYTES = 64 * 1024;
+
+async function inspectFile(
+  path: string, countLines: boolean, fileSystem: AnalyzerFileSystem
+): Promise<FileInspection> {
+  const handle = await fileSystem.open(path);
+  try {
+    const header = Buffer.allocUnsafe(FILE_HEADER_BYTES);
+    let headerLength = 0;
+    let lineCount = 1;
+    while (headerLength < header.length) {
+      const { bytesRead } = await handle.read(
+        header, headerLength, header.length - headerLength, null
+      );
+      if (bytesRead === 0) break;
+      if (countLines) lineCount += countLineFeeds(header, headerLength, headerLength + bytesRead);
+      headerLength += bytesRead;
+    }
+    if (header.subarray(0, headerLength).includes(0)) return { binary: true };
+    if (!countLines || headerLength < header.length) {
+      return countLines ? { binary: false, lineCount } : { binary: false };
+    }
+
+    const chunk = Buffer.allocUnsafe(FILE_STREAM_BYTES);
+    while (true) {
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
+      if (bytesRead === 0) break;
+      lineCount += countLineFeeds(chunk, 0, bytesRead);
+    }
+    return { binary: false, lineCount };
+  } finally {
+    await handle.close();
+  }
+}
+
+function countLineFeeds(buffer: Buffer, start: number, end: number): number {
+  let count = 0;
+  for (let index = start; index < end; index += 1) {
+    if (buffer[index] === 0x0a) count += 1;
+  }
+  return count;
+}
+
+async function forEachConcurrent<T>(
+  values: readonly T[], limit: number, operation: (value: T) => Promise<void>
+): Promise<void> {
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < values.length) {
+      const index = next;
+      next += 1;
+      await operation(values[index] as T);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, values.length) }, worker));
 }
 
 function isMissingFileError(error: unknown): boolean {

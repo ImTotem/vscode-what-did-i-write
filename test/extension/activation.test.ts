@@ -79,6 +79,7 @@ vi.mock('vscode', () => ({
       return mocks.disposable();
     },
     onDidChangeTextDocument: () => registerEvent('document-change'),
+    onDidCloseTextDocument: () => registerEvent('close'),
     onDidChangeWorkspaceFolders: () => registerEvent('workspace-folders'),
     onDidSaveTextDocument: () => registerEvent('save'),
     onDidCreateFiles: () => registerEvent('create'),
@@ -115,6 +116,7 @@ describe('extension activation', () => {
       'visible-editors',
       'document-change',
       'save',
+      'close',
       'workspace-folders',
       'save',
       'create',

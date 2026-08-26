@@ -74,7 +74,87 @@ describe('GitRepository', () => {
     const changed = await repository.getFingerprint();
     expect(changed.head).toBe(clean.head);
     expect(changed.status).not.toBe(clean.status);
+
+    await fixture.writeText(
+      'tracked.txt',
+      'alice one\nme survives\nalice three\nalice overwrote\nexternal\n'
+    );
+    const sameStatusReplacement = await repository.getFingerprint();
+
+    expect((await repository.getWorkingChanges()).find(({ path }) => path === 'tracked.txt')?.status)
+      .toBe('.M');
+    expect(sameStatusReplacement.head).toBe(changed.head);
+    expect(sameStatusReplacement.status).not.toBe(changed.status);
   });
+
+  it('indexes a matching-author merge conflict resolution against its first parent', async () => {
+    const fixture = await createGitFixture();
+    fixtures.push(fixture);
+    await fixture.setLocalIdentity(alice);
+    await fixture.writeText('conflict.txt', 'base\n');
+    await fixture.commit('base');
+    await fixture.run(['switch', '-c', 'feature']);
+    await fixture.writeText('conflict.txt', 'feature side\n');
+    await fixture.commit('feature work');
+    await fixture.run(['switch', 'main']);
+    await fixture.writeText('conflict.txt', 'main side\n');
+    await fixture.commit('main work');
+    await fixture.setLocalIdentity(fixture.globalIdentity);
+    const merge = await fixture.run(['merge', 'feature']).catch((error: unknown) => error);
+    expect(merge).toMatchObject({ exitCode: 1 });
+    await fixture.writeText('conflict.txt', 'resolved only by me\n');
+    await fixture.commit('resolve conflict');
+    const repository = await GitRepository.discover(fixture.root, fixture.runner);
+
+    const index = await repository.getUserIndex(fixture.globalIdentity);
+
+    expect(index.entries).toEqual([
+      expect.objectContaining({
+        commit: expect.objectContaining({ subject: 'resolve conflict' }),
+        changes: [expect.objectContaining({ status: 'M', path: 'conflict.txt' })]
+      })
+    ]);
+  });
+
+  it('integrates control-byte and empty commit subjects through NUL-framed index and history', async () => {
+    const fixture = await createGitFixture();
+    fixtures.push(fixture);
+    await fixture.setLocalIdentity(fixture.globalIdentity);
+    const controlSubject = `control ${String.fromCharCode(0x1e)} ${String.fromCharCode(0x1f)}`;
+    await fixture.writeText('control-subject.ts', 'control\n');
+    await fixture.commit(controlSubject);
+    await fixture.writeText('empty-subject.ts', 'empty\n');
+    await fixture.run(['add', '--all']);
+    await fixture.run(['commit', '--allow-empty-message', '-m', '']);
+    const repository = await GitRepository.discover(fixture.root, fixture.runner);
+
+    const index = await repository.getUserIndex(fixture.globalIdentity);
+
+    expect(index.entries.map(({ commit }) => commit.subject)).toEqual(['', controlSubject]);
+    expect((await repository.getFileHistory('control-subject.ts'))[0]?.subject).toBe(controlSubject);
+    expect((await repository.getFileHistory('empty-subject.ts'))[0]?.subject).toBe('');
+  });
+
+  it.runIf(process.platform !== 'win32')(
+    'preserves a literal POSIX backslash path through index, status, and blame',
+    async () => {
+      const fixture = await createGitFixture();
+      fixtures.push(fixture);
+      await fixture.setLocalIdentity(fixture.globalIdentity);
+      const path = 'src/literal\\backslash.ts';
+      await fixture.writeText(path, 'owned\n');
+      await fixture.commit('literal backslash');
+      const repository = await GitRepository.discover(fixture.root, fixture.runner);
+
+      const index = await repository.getUserIndex(fixture.globalIdentity);
+
+      expect(index.entries[0]?.changes).toContainEqual({ status: 'A', path });
+      expect((await repository.blame(path))[0]?.commit?.authorEmail)
+        .toBe(fixture.globalIdentity.email);
+      await fixture.writeText(path, 'owned externally\n');
+      expect(await repository.getWorkingChanges()).toContainEqual({ status: '.M', path });
+    }
+  );
 
   it('rejects show failures whose exit code is not the expected absence code', async () => {
     const fixture = await createScenario();

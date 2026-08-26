@@ -28,64 +28,51 @@ export class GitParseError extends Error {
   }
 }
 
-const RECORD_SEPARATOR = 0x1e;
-const FIELD_SEPARATOR = 0x1f;
 const NUL = 0;
 
 export function parseLogIndex(input: Buffer): LogIndexEntry[] {
   const entries: LogIndexEntry[] = [];
-  let recordOffset = input.indexOf(RECORD_SEPARATOR);
+  const fields = splitNulFields(input, 'parseLogIndex');
+  if (fields.length === 0) return entries;
+  requireLeadingSeparator(fields, 'parseLogIndex');
+  let cursor = 1;
 
-  while (recordOffset !== -1) {
-    const metadataEnd = input.indexOf(NUL, recordOffset + 1);
-    if (metadataEnd === -1) {
-      throw parseError('parseLogIndex', recordOffset, 'missing NUL after commit metadata');
-    }
-
-    const commit = parseCommit(input.subarray(recordOffset + 1, metadataEnd), 'parseLogIndex', recordOffset);
-    const nextRecord = input.indexOf(RECORD_SEPARATOR, metadataEnd + 1);
-    const recordEnd = nextRecord === -1 ? input.length : nextRecord;
+  while (cursor < fields.length && !isTerminalEmpty(fields, cursor)) {
+    const parsed = parseCommitFields(fields, cursor, 'parseLogIndex');
+    const commit = parsed.commit;
+    cursor = parsed.next;
+    requireEmptyField(fields, cursor, 'parseLogIndex', 'missing separator after commit metadata');
+    cursor += 1;
     const changes: Array<LogIndexEntry['changes'][number]> = [];
-    let cursor = metadataEnd + 1;
-    while (cursor < recordEnd && (input[cursor] === NUL || input[cursor] === 0x0a || input[cursor] === 0x0d)) {
-      cursor += 1;
-    }
-
-    while (cursor < recordEnd) {
-      const statusEnd = input.indexOf(NUL, cursor);
-      if (statusEnd === -1 || statusEnd >= recordEnd) {
-        throw parseError('parseLogIndex', cursor, 'missing NUL after change status');
+    while (cursor < fields.length && fields[cursor]?.bytes.length !== 0) {
+      const statusField = fields[cursor];
+      const pathField = fields[cursor + 1];
+      if (statusField === undefined || pathField === undefined) {
+        throw parseError('parseLogIndex', input.length, 'missing change status or path');
       }
-      const pathStart = statusEnd + 1;
-      const pathEnd = input.indexOf(NUL, pathStart);
-      if (pathEnd === -1 || pathEnd > recordEnd) {
-        throw parseError('parseLogIndex', pathStart, 'missing NUL after change path');
-      }
-      const status = input.subarray(cursor, statusEnd).toString('utf8');
-      const path = input.subarray(pathStart, pathEnd).toString('utf8');
+      const status = statusField.bytes.toString('utf8').replace(/^[\r\n]+/, '');
+      const path = pathField.bytes.toString('utf8');
       if (status.length === 0 || path.length === 0) {
-        throw parseError('parseLogIndex', cursor, 'empty change status or path');
+        throw parseError('parseLogIndex', statusField.offset, 'empty change status or path');
       }
+      cursor += 2;
       if (/^[RC]\d*$/.test(status)) {
-        const renamedPathStart = pathEnd + 1;
-        const renamedPathEnd = input.indexOf(NUL, renamedPathStart);
-        if (renamedPathEnd === -1 || renamedPathEnd > recordEnd) {
-          throw parseError('parseLogIndex', renamedPathStart, 'missing NUL after renamed path');
-        }
-        const renamedPath = input.subarray(renamedPathStart, renamedPathEnd).toString('utf8');
+        const renamedPathField = fields[cursor];
+        const renamedPath = renamedPathField?.bytes.toString('utf8') ?? '';
         if (renamedPath.length === 0) {
-          throw parseError('parseLogIndex', renamedPathStart, 'empty renamed path');
+          throw parseError('parseLogIndex', renamedPathField?.offset ?? input.length, 'empty renamed path');
         }
         changes.push({ status, path: renamedPath, originalPath: path });
-        cursor = renamedPathEnd + 1;
+        cursor += 1;
       } else {
         changes.push({ status, path });
-        cursor = pathEnd + 1;
       }
     }
 
     entries.push({ commit, changes });
-    recordOffset = nextRecord;
+    while (cursor < fields.length && fields[cursor]?.bytes.length === 0) {
+      cursor += 1;
+    }
   }
 
   return entries;
@@ -93,15 +80,18 @@ export function parseLogIndex(input: Buffer): LogIndexEntry[] {
 
 export function parseHistoryRecords(input: Buffer): CommitSummary[] {
   const commits: CommitSummary[] = [];
-  let recordOffset = input.indexOf(RECORD_SEPARATOR);
-
-  while (recordOffset !== -1) {
-    const metadataEnd = input.indexOf(NUL, recordOffset + 1);
-    if (metadataEnd === -1) {
-      throw parseError('parseHistoryRecords', recordOffset, 'missing NUL after commit metadata');
+  const fields = splitNulFields(input, 'parseHistoryRecords');
+  if (fields.length === 0) return commits;
+  requireLeadingSeparator(fields, 'parseHistoryRecords');
+  let cursor = 1;
+  while (cursor < fields.length && !isTerminalEmpty(fields, cursor)) {
+    const parsed = parseCommitFields(fields, cursor, 'parseHistoryRecords');
+    commits.push(parsed.commit);
+    cursor = parsed.next;
+    requireEmptyField(fields, cursor, 'parseHistoryRecords', 'missing separator after commit metadata');
+    while (cursor < fields.length && fields[cursor]?.bytes.length === 0) {
+      cursor += 1;
     }
-    commits.push(parseCommit(input.subarray(recordOffset + 1, metadataEnd), 'parseHistoryRecords', recordOffset));
-    recordOffset = input.indexOf(RECORD_SEPARATOR, metadataEnd + 1);
   }
 
   return commits;
@@ -188,15 +178,74 @@ export function parseLinePorcelainBlame(input: string): BlameLine[] {
   return result;
 }
 
-function parseCommit(bytes: Buffer, parser: string, offset: number): CommitSummary {
-  const fields = bytes.toString('utf8').split(String.fromCharCode(FIELD_SEPARATOR));
-  if (fields.length !== 5) throw parseError(parser, offset, 'expected five commit fields');
-  const [hash, authorName, authorEmail, authoredAtText, subject] = fields;
-  const authoredAt = Number(authoredAtText);
-  if (!hash || !authorName || !authorEmail || !authoredAtText || !subject || !Number.isSafeInteger(authoredAt)) {
-    throw parseError(parser, offset, 'invalid mandatory commit field');
+interface NulField {
+  readonly bytes: Buffer;
+  readonly offset: number;
+}
+
+function splitNulFields(input: Buffer, parser: string): NulField[] {
+  if (input.length === 0) return [];
+  if (input[0] !== NUL) throw parseError(parser, 0, 'missing leading NUL record separator');
+  if (input[input.length - 1] !== NUL) {
+    throw parseError(parser, input.length, 'missing NUL field terminator');
   }
-  return { hash, authorName, authorEmail, authoredAt, subject };
+  const fields: NulField[] = [];
+  let start = 0;
+  while (start < input.length) {
+    const end = input.indexOf(NUL, start);
+    if (end === -1) throw parseError(parser, start, 'missing NUL field terminator');
+    fields.push({ bytes: input.subarray(start, end), offset: start });
+    start = end + 1;
+  }
+  fields.push({ bytes: Buffer.alloc(0), offset: input.length });
+  return fields;
+}
+
+function requireLeadingSeparator(fields: readonly NulField[], parser: string): void {
+  if (fields[0]?.bytes.length !== 0) {
+    throw parseError(parser, fields[0]?.offset ?? 0, 'missing leading NUL record separator');
+  }
+}
+
+function requireEmptyField(
+  fields: readonly NulField[],
+  cursor: number,
+  parser: string,
+  message: string
+): void {
+  const field = fields[cursor];
+  if (field === undefined || field.bytes.length !== 0) {
+    throw parseError(parser, field?.offset ?? fields.at(-1)?.offset ?? 0, message);
+  }
+}
+
+function isTerminalEmpty(fields: readonly NulField[], cursor: number): boolean {
+  return cursor === fields.length - 1 && fields[cursor]?.bytes.length === 0;
+}
+
+function parseCommitFields(
+  fields: readonly NulField[],
+  cursor: number,
+  parser: string
+): { readonly commit: CommitSummary; readonly next: number } {
+  const values = fields.slice(cursor, cursor + 5);
+  if (values.length !== 5) {
+    throw parseError(parser, fields[cursor]?.offset ?? 0, 'expected five commit fields');
+  }
+  const [hashField, authorNameField, authorEmailField, authoredAtField, subjectField] = values;
+  const hash = hashField?.bytes.toString('utf8') ?? '';
+  const authorName = authorNameField?.bytes.toString('utf8') ?? '';
+  const authorEmail = authorEmailField?.bytes.toString('utf8') ?? '';
+  const authoredAtText = authoredAtField?.bytes.toString('utf8') ?? '';
+  const subject = subjectField?.bytes.toString('utf8') ?? '';
+  const authoredAt = Number(authoredAtText);
+  if (!hash || !authorName || !authorEmail || !authoredAtText || !Number.isSafeInteger(authoredAt)) {
+    throw parseError(parser, Math.max(0, (hashField?.offset ?? 1) - 1), 'invalid mandatory commit field');
+  }
+  return {
+    commit: { hash, authorName, authorEmail, authoredAt, subject },
+    next: cursor + 5
+  };
 }
 
 function blameCommit(hash: string, fields: Map<string, string>, input: string, index: number): CommitSummary {
@@ -205,7 +254,7 @@ function blameCommit(hash: string, fields: Map<string, string>, input: string, i
   const authoredAtText = fields.get('author-time');
   const authoredAt = Number(authoredAtText);
   const subject = fields.get('summary');
-  if (!authorName || !authorEmail || !authoredAtText || !subject || !Number.isSafeInteger(authoredAt)) {
+  if (!authorName || !authorEmail || !authoredAtText || subject === undefined || !Number.isSafeInteger(authoredAt)) {
     throw parseError('parseLinePorcelainBlame', byteOffsetString(input, index), 'invalid mandatory blame metadata');
   }
   return { hash, authorName, authorEmail, authoredAt, subject };

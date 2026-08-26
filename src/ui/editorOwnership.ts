@@ -2,6 +2,7 @@ import { isAbsolute, relative, sep } from 'node:path';
 
 import * as vscode from 'vscode';
 
+import { hasConfiguredIdentity } from '../core/identity.js';
 import type { FileRecord, OwnedRange } from '../core/model.js';
 import type { AnalyzerAccess, RepositoryRegistry } from '../extension/repositoryRegistry.js';
 
@@ -35,10 +36,16 @@ export function documentRange(range: Pick<OwnedRange, 'start' | 'endExclusive'>,
   return new vscode.Range(new vscode.Position(start, 0), new vscode.Position(end, 0));
 }
 
+export interface EditorOwnershipOptions {
+  readonly onError?: (error: unknown, operation: string, path: string) => void;
+  readonly scheduleRetry?: (callback: () => void) => void;
+}
+
 export class EditorOwnershipController implements vscode.Disposable {
   private committedDecoration: vscode.TextEditorDecorationType;
   private workingDecoration: vscode.TextEditorDecorationType;
   private readonly generations = new Map<string, number>();
+  private readonly suppressedDocumentUris = new Set<string>();
   private readonly dirtyDocumentUris = new Set<string>();
   private readonly pendingSaveRefreshes = new Map<string, number>();
   private readonly saveRefreshGenerations = new Map<string, number>();
@@ -46,15 +53,19 @@ export class EditorOwnershipController implements vscode.Disposable {
   private scheduled = false;
   private disposed = false;
 
-  public constructor(private readonly registry: RepositoryRegistry) {
+  public constructor(
+    private readonly registry: RepositoryRegistry,
+    private readonly options: EditorOwnershipOptions = {}
+  ) {
     this.committedDecoration = this.createDecoration('gitDecoration.addedResourceForeground');
     this.workingDecoration = this.createDecoration('gitDecoration.modifiedResourceForeground');
     this.subscriptions = [
       registry.onDidChange(() => this.scheduleRefresh()),
       vscode.window.onDidChangeActiveTextEditor(() => this.scheduleRefresh()),
       vscode.window.onDidChangeVisibleTextEditors(() => this.scheduleRefresh()),
-      vscode.workspace.onDidChangeTextDocument(({ document }) => this.invalidateUri(document.uri)),
-      vscode.workspace.onDidSaveTextDocument((document) => this.resumeUri(document.uri))
+      vscode.workspace.onDidChangeTextDocument(({ document }) => this.handleDocumentChange(document)),
+      vscode.workspace.onDidSaveTextDocument((document) => this.resumeUri(document.uri)),
+      vscode.workspace.onDidCloseTextDocument((document) => this.closeUri(document.uri))
     ];
   }
 
@@ -91,6 +102,7 @@ export class EditorOwnershipController implements vscode.Disposable {
     this.dirtyDocumentUris.clear();
     this.pendingSaveRefreshes.clear();
     this.saveRefreshGenerations.clear();
+    this.suppressedDocumentUris.clear();
   }
 
   private scheduleRefresh(): void {
@@ -110,10 +122,12 @@ export class EditorOwnershipController implements vscode.Disposable {
     this.generations.set(key, generation);
     this.clear(editor);
 
-    if (this.dirtyDocumentUris.has(key) || this.pendingSaveRefreshes.has(key)) return;
+    if (document.isDirty || this.dirtyDocumentUris.has(key) || this.pendingSaveRefreshes.has(key)
+      || this.suppressedDocumentUris.has(key)) return;
 
     const repository = this.registry.findByUri(document.uri);
     if (repository === undefined || repository.state !== 'ready') return;
+    if (!hasConfiguredIdentity(repository.analyzer.getSnapshot().identity)) return;
     const path = workspaceRelativePath(repository.root, document.uri.fsPath);
     if (path === undefined) return;
 
@@ -125,8 +139,10 @@ export class EditorOwnershipController implements vscode.Disposable {
       const record = resolved ?? findRecord(repository.analyzer, path);
       this.clear(editor);
       if (record !== undefined) this.apply(editor, record);
-    } catch {
-      if (this.isCurrent(key, generation)) this.clear(editor);
+    } catch (error) {
+      if (repository.analyzer.reportsErrors !== true) {
+        this.options.onError?.(error, 'editor-ownership', path);
+      }
     }
   }
 
@@ -134,21 +150,42 @@ export class EditorOwnershipController implements vscode.Disposable {
     return !this.disposed && this.generations.get(key) === generation;
   }
 
-  private invalidateUri(uri: vscode.Uri): void {
+  private handleDocumentChange(document: vscode.TextDocument): void {
+    const { uri } = document;
     if (this.disposed || !isSourceUri(uri)) return;
     const key = uri.toString();
-    this.dirtyDocumentUris.add(key);
-    this.pendingSaveRefreshes.delete(key);
     this.generations.set(key, (this.generations.get(key) ?? 0) + 1);
     for (const editor of vscode.window.visibleTextEditors) {
       if (editor.document.uri.toString() === key) this.clear(editor);
     }
+    if (document.isDirty) {
+      this.dirtyDocumentUris.add(key);
+      this.pendingSaveRefreshes.delete(key);
+      return;
+    }
+    this.dirtyDocumentUris.delete(key);
+    this.startRefresh(uri, 'editor-clean-refresh', 1);
   }
 
   private resumeUri(uri: vscode.Uri): void {
     if (this.disposed || !isSourceUri(uri)) return;
+    this.dirtyDocumentUris.delete(uri.toString());
+    this.startRefresh(uri, 'editor-save-refresh', 1);
+  }
+
+  private closeUri(uri: vscode.Uri): void {
+    if (!isSourceUri(uri)) return;
     const key = uri.toString();
     this.dirtyDocumentUris.delete(key);
+    this.pendingSaveRefreshes.delete(key);
+    this.suppressedDocumentUris.delete(key);
+    this.generations.set(key, (this.generations.get(key) ?? 0) + 1);
+    this.saveRefreshGenerations.set(key, (this.saveRefreshGenerations.get(key) ?? 0) + 1);
+  }
+
+  private startRefresh(uri: vscode.Uri, operation: string, maxRetries: number): void {
+    if (this.disposed || !isSourceUri(uri)) return;
+    const key = uri.toString();
     const repository = this.registry.findByUri(uri);
     const path = repository === undefined || repository.state !== 'ready'
       ? undefined
@@ -157,14 +194,33 @@ export class EditorOwnershipController implements vscode.Disposable {
     const token = (this.saveRefreshGenerations.get(key) ?? 0) + 1;
     this.saveRefreshGenerations.set(key, token);
     this.pendingSaveRefreshes.set(key, token);
-    void repository.analyzer.refresh('working-tree', [path]).then(
-      () => {
+    this.suppressedDocumentUris.add(key);
+
+    const run = async (attempt: number): Promise<void> => {
+      let succeeded = false;
+      let retry = false;
+      try {
+        await repository.analyzer.refresh('working-tree', [path]);
+        succeeded = true;
+      } catch (error) {
+        this.options.onError?.(error, operation, path);
+        retry = attempt < maxRetries;
+      } finally {
         if (this.disposed || this.pendingSaveRefreshes.get(key) !== token) return;
+        if (retry) {
+          const schedule = this.options.scheduleRetry ?? queueMicrotask;
+          schedule(() => {
+            if (!this.disposed && this.pendingSaveRefreshes.get(key) === token) void run(attempt + 1);
+          });
+          return;
+        }
         this.pendingSaveRefreshes.delete(key);
+        if (!succeeded) return;
+        this.suppressedDocumentUris.delete(key);
         void this.refreshUri(uri);
-      },
-      () => undefined
-    );
+      }
+    };
+    void run(0);
   }
 
   private clear(editor: vscode.TextEditor): void {

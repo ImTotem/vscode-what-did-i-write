@@ -135,7 +135,7 @@ function isCachedIndexFile(value: unknown): value is CachedIndexFile {
 function isSafeNormalizedRelativePath(value: string): boolean {
   return value.length > 0
     && !value.includes('\0')
-    && !value.includes('\\')
+    && (process.platform !== 'win32' || !value.includes('\\'))
     && !posix.isAbsolute(value)
     && !win32.isAbsolute(value)
     && posix.normalize(value) === value

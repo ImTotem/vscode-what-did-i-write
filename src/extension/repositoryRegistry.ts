@@ -8,7 +8,7 @@ import {
   type RepositoryAccess as AnalyzerRepositoryAccess
 } from '../analysis/repositoryAnalyzer.js';
 import type { FileRecord, RepositorySnapshot } from '../core/model.js';
-import { GitRunner } from '../git/gitRunner.js';
+import { GitCommandError, GitRunner } from '../git/gitRunner.js';
 import type { WorkingChange } from '../git/parsers.js';
 import { GitRepository, type RepositoryFingerprint } from '../git/repository.js';
 
@@ -22,6 +22,7 @@ export interface RepositoryAccess extends AnalyzerRepositoryAccess {
 }
 
 export interface AnalyzerAccess {
+  readonly reportsErrors?: boolean;
   initialize(): Promise<void>;
   refresh(reason: string, paths?: readonly string[]): Promise<void>;
   ensureFile(relativePath: string, priority: AnalysisPriority): Promise<FileRecord | undefined>;
@@ -43,7 +44,7 @@ export interface RegisteredRepository {
   readonly ready: boolean;
 }
 
-export type RegistryOperation = 'discover' | 'initialize';
+export type RegistryOperation = 'discover' | 'initialize' | 'blame';
 
 export interface RepositoryRegistryOptions {
   readonly getWorkspaceFolders: () => readonly UriAccess[];
@@ -115,7 +116,7 @@ export class RepositoryRegistry {
     return new RepositoryRegistry({
       getWorkspaceFolders,
       discover: (startPath) => GitRepository.discover(startPath, runner),
-      createAnalyzer: (repository) => new RepositoryAnalyzer(repository, cacheStore),
+      createAnalyzer: (repository) => new RepositoryAnalyzer(repository, cacheStore, onError),
       onError
     });
   }
@@ -140,7 +141,11 @@ export class RepositoryRegistry {
     return this.updateWorkspaceFolders(this.options.getWorkspaceFolders());
   }
 
-  public async updateWorkspaceFolders(workspaceFolders: readonly UriAccess[]): Promise<void> {
+  public rediscover(): Promise<void> {
+    return this.updateWorkspaceFolders(this.options.getWorkspaceFolders(), true);
+  }
+
+  public async updateWorkspaceFolders(workspaceFolders: readonly UriAccess[], reinitializeErrors = false): Promise<void> {
     if (this.disposed) return;
     const generation = ++this.generation;
     this.discovering = true;
@@ -150,8 +155,9 @@ export class RepositoryRegistry {
       try {
         return { folder, repository: await this.options.discover(folder.fsPath) };
       } catch (error) {
+        if (isBenignNonRepositoryError(error)) return { folder, benign: true as const };
         this.options.onError?.(error, 'discover', folder.fsPath);
-        return undefined;
+        return { folder, failed: true as const };
       }
     }));
     if (this.disposed || generation !== this.generation) return;
@@ -161,23 +167,25 @@ export class RepositoryRegistry {
       readonly folders: UriAccess[];
     }>();
     for (const discovery of discoveries) {
-      if (discovery === undefined) continue;
-      const key = normalizeFsPath(discovery.repository.root);
+      if (!('repository' in discovery)) continue;
+      const { repository } = discovery;
+      if (repository === undefined) continue;
+      const key = normalizeFsPath(repository.root);
       const group = grouped.get(key);
       if (group === undefined) {
-        grouped.set(key, { repository: discovery.repository, folders: [discovery.folder] });
+        grouped.set(key, { repository, folders: [discovery.folder] });
       } else {
         group.folders.push(discovery.folder);
       }
     }
     const activeFolderKeys = new Set(workspaceFolders.map(({ fsPath }) => normalizeFsPath(fsPath)));
-    const discoveredFolderKeys = new Set(discoveries.flatMap((discovery) =>
-      discovery === undefined ? [] : [normalizeFsPath(discovery.folder.fsPath)]
+    const handledFolderKeys = new Set(discoveries.flatMap((discovery) =>
+      'failed' in discovery ? [] : [normalizeFsPath(discovery.folder.fsPath)]
     ));
     for (const [key, lifetime] of this.lifetimes) {
       const retainedFolders = lifetime.workspaceFolders.filter(({ fsPath }) => {
         const folderKey = normalizeFsPath(fsPath);
-        return activeFolderKeys.has(folderKey) && !discoveredFolderKeys.has(folderKey);
+        return activeFolderKeys.has(folderKey) && !handledFolderKeys.has(folderKey);
       });
       if (retainedFolders.length === 0) continue;
       const group = grouped.get(key);
@@ -194,11 +202,16 @@ export class RepositoryRegistry {
         this.lifetimes.delete(key);
       }
     }
+    const initializations: Promise<void>[] = [];
     for (const [key, group] of grouped) {
       const existing = this.lifetimes.get(key);
       if (existing !== undefined) {
-        existing.setWorkspaceFolders(group.folders);
-        continue;
+        if (!reinitializeErrors || existing.state !== 'error') {
+          existing.setWorkspaceFolders(group.folders);
+          continue;
+        }
+        existing.dispose();
+        this.lifetimes.delete(key);
       }
 
       const analyzer = this.options.createAnalyzer(group.repository);
@@ -210,7 +223,7 @@ export class RepositoryRegistry {
         () => this.emitChange()
       );
       this.lifetimes.set(key, lifetime);
-      void analyzer.initialize().then(
+      const initialization = analyzer.initialize().then(
         () => {
           if (this.lifetimes.get(key) !== lifetime) return;
           lifetime.markReady();
@@ -223,10 +236,12 @@ export class RepositoryRegistry {
           this.emitChange();
         }
       );
+      initializations.push(initialization);
     }
     this.discovering = false;
-    this.discoveryFailed = discoveries.some((discovery) => discovery === undefined);
+    this.discoveryFailed = discoveries.some((discovery) => 'failed' in discovery);
     this.emitChange();
+    if (reinitializeErrors) await Promise.allSettled(initializations);
   }
 
   public findByUri(uri: UriAccess): RegisteredRepository | undefined {
@@ -266,4 +281,10 @@ function isParentTraversal(path: string): boolean {
 function normalizeFsPath(path: string): string {
   const normalized = resolve(path);
   return process.platform === 'win32' ? normalized.toLocaleLowerCase() : normalized;
+}
+
+function isBenignNonRepositoryError(error: unknown): boolean {
+  if (!(error instanceof GitCommandError) || error.exitCode === null) return false;
+  if (error.args[0] !== 'rev-parse' || !error.args.includes('--show-toplevel')) return false;
+  return /not a git repository|outside repository|must be run in a work tree/i.test(error.stderr);
 }

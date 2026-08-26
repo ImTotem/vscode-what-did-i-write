@@ -38,6 +38,43 @@ afterEach(async () => {
 });
 
 describe('RepositoryAnalyzer', () => {
+  it('publishes an empty paused analysis without reading work or scheduling blame when identity is missing', async () => {
+    const root = await createTemporaryDirectory();
+    await writeFile(join(root, 'paused.ts'), 'working only\n');
+    const calls = { index: 0, working: 0, blame: 0 };
+    const repository: RepositoryAccess = {
+      root,
+      getGlobalIdentity: async () => ({ name: '  ', email: '' }),
+      getHead: async () => 'a'.repeat(40),
+      getUserIndex: async () => {
+        calls.index += 1;
+        return indexForPaths(['paused.ts']);
+      },
+      getWorkingChanges: async () => {
+        calls.working += 1;
+        return [{ status: '?', path: 'paused.ts' }];
+      },
+      blame: async () => {
+        calls.blame += 1;
+        return [ownedLine(userCommit)];
+      }
+    };
+    const analyzer = new RepositoryAnalyzer(
+      repository,
+      new CacheStore(await createTemporaryDirectory())
+    );
+
+    await analyzer.initialize();
+
+    expect(analyzer.getSnapshot()).toMatchObject({
+      identity: { name: '  ', email: '' },
+      files: [],
+      scanning: false
+    });
+    await expect(analyzer.ensureFile('paused.ts', 'active-editor')).resolves.toBeUndefined();
+    expect(calls).toEqual({ index: 0, working: 0, blame: 0 });
+  });
+
   it('classifies surviving, overwritten, reverted, working, and untracked user code', async () => {
     const fixture = await createClassificationScenario();
     const storagePath = await createTemporaryDirectory();
@@ -360,7 +397,8 @@ describe('RepositoryAnalyzer', () => {
         'exited with code 128'
       );
     });
-    const analyzer = new RepositoryAnalyzer(repository, new CacheStore(storagePath));
+    const onError = vi.fn();
+    const analyzer = new RepositoryAnalyzer(repository, new CacheStore(storagePath), onError);
 
     await analyzer.initialize();
     await analyzer.ensureFile('reported-binary.dat', 'active-editor');
@@ -369,6 +407,33 @@ describe('RepositoryAnalyzer', () => {
       binary: true,
       ranges: []
     });
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('reports unexpected blame failures and retains the last valid ownership until replacement succeeds', async () => {
+    const root = await createTemporaryDirectory();
+    const storagePath = await createTemporaryDirectory();
+    await writeFile(join(root, 'retained.ts'), 'owned\n');
+    let blameCalls = 0;
+    const error = new Error('unexpected blame parse failure');
+    const repository = new ControlledRepository(root, ['retained.ts'], async () => {
+      blameCalls += 1;
+      if (blameCalls === 1) return [ownedLine(userCommit)];
+      throw error;
+    });
+    const onError = vi.fn();
+    const analyzer = new RepositoryAnalyzer(repository, new CacheStore(storagePath), onError);
+    await analyzer.initialize();
+    await analyzer.ensureFile('retained.ts', 'active-editor');
+    const lastValid = analyzer.getFile('retained.ts')?.ranges;
+
+    await analyzer.refresh('working-tree', ['retained.ts']);
+    await expect(analyzer.ensureFile('retained.ts', 'active-editor')).rejects.toThrow(
+      'unexpected blame parse failure'
+    );
+
+    expect(onError).toHaveBeenCalledWith(error, 'blame', 'retained.ts');
+    expect(analyzer.getFile('retained.ts')?.ranges).toEqual(lastValid);
   });
 
   it('settles scanning immediately when the index has no candidate files', async () => {
@@ -399,6 +464,70 @@ describe('RepositoryAnalyzer', () => {
     await Promise.all([initialize, overlappingRefresh]);
 
     expect(repository.logScans).toBe(1);
+  });
+
+  it('serializes cold index scans when concurrent refreshes use different cache keys', async () => {
+    const root = await createTemporaryDirectory();
+    const storagePath = await createTemporaryDirectory();
+    await writeFile(join(root, 'shared.ts'), 'shared\n');
+    const repository = new ChangingKeyIndexRepository(root, ['shared.ts']);
+    const analyzer = new RepositoryAnalyzer(repository, new AlwaysMissCacheStore(storagePath));
+
+    const initialize = analyzer.initialize();
+    await waitUntil(() => repository.logScans === 1);
+    repository.head = 'c'.repeat(40);
+    const overlappingRefresh = analyzer.refresh('head');
+    await nextTurn();
+    await nextTurn();
+
+    repository.resolveScan(0);
+    await waitUntil(() => repository.logScans === 2);
+    repository.resolveScan(1);
+    await Promise.all([initialize, overlappingRefresh]);
+
+    expect(repository.logScans).toBe(2);
+    expect(repository.maxActiveScans).toBe(1);
+  });
+
+  it('bounds candidate stats, reads only file headers, and streams untracked line counts', async () => {
+    const root = await createTemporaryDirectory();
+    const storagePath = await createTemporaryDirectory();
+    const regularPaths = Array.from({ length: 64 }, (_, index) => `src/file-${index}.ts`);
+    const trackedPath = 'large-tracked.ts';
+    const binaryPath = 'large-binary.dat';
+    const untrackedPath = 'large-untracked.ts';
+    const largeSize = 5 * 1024 * 1024;
+    const fileSystem = new InstrumentedAnalysisFileSystem(new Map([
+      [trackedPath, { size: largeSize, binary: false }],
+      [binaryPath, { size: largeSize, binary: true }],
+      [untrackedPath, { size: largeSize, binary: false }]
+    ]));
+    const repository = new ControlledRepository(
+      root,
+      [...regularPaths, trackedPath, binaryPath],
+      async () => [],
+      async () => [{ status: '?', path: untrackedPath }]
+    );
+    const analyzer = new RepositoryAnalyzer(
+      repository,
+      new CacheStore(storagePath),
+      undefined,
+      fileSystem
+    );
+
+    await analyzer.initialize();
+    await waitUntil(() => !analyzer.getSnapshot().scanning);
+
+    expect(fileSystem.statCalls).toBe(regularPaths.length + 3);
+    expect(fileSystem.maxActiveStats).toBeLessThanOrEqual(16);
+    expect(fileSystem.maxReadRequest).toBeLessThanOrEqual(64 * 1024);
+    expect(fileSystem.bytesReadFor(trackedPath)).toBeLessThanOrEqual(8192);
+    expect(fileSystem.bytesReadFor(binaryPath)).toBeLessThanOrEqual(8192);
+    expect(fileSystem.bytesReadFor(untrackedPath)).toBe(largeSize);
+    expect(analyzer.getFile(binaryPath)).toMatchObject({ binary: true, ranges: [] });
+    expect(analyzer.getFile(untrackedPath)?.ranges).toEqual([
+      { start: 0, endExclusive: 1, uncommitted: true }
+    ]);
   });
 
   it('rejects unsafe paths and missing commit references in the disk cache', async () => {
@@ -468,6 +597,65 @@ describe('RepositoryAnalyzer', () => {
 
       expect(repository.logScans).toBe(1);
       expect(analyzer.getFile('safe.ts')?.exists).toBe(true);
+    }
+  });
+
+  it('accepts a literal backslash in a POSIX cache path without rewriting it', async () => {
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+    try {
+      const storagePath = await createTemporaryDirectory();
+      const cacheStore = new CacheStore(storagePath);
+      const key: CacheIndexKey = {
+        rootHash: hashRepositoryRoot('/repo'),
+        head: 'a'.repeat(40),
+        normalizedIdentity: '["me","me@example.com"]'
+      };
+      const value: CachedRepositoryIndex = {
+        commits: [userCommit],
+        files: [{
+          relativePath: 'src/literal\\backslash.ts',
+          introducedByUser: false,
+          commitHashes: [userCommit.hash]
+        }]
+      };
+
+      await cacheStore.saveIndex(key, value);
+
+      expect(await cacheStore.loadIndex(key)).toEqual(value);
+    } finally {
+      platform.mockRestore();
+    }
+  });
+
+  it('preserves a literal backslash candidate through POSIX analyzer lookup and blame', async () => {
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+    try {
+      const root = await createTemporaryDirectory();
+      const path = 'src/literal\\backslash.ts';
+      const fileSystem = new InstrumentedAnalysisFileSystem(new Map([
+        [path, { size: 6, binary: false }]
+      ]));
+      const repository = new ControlledRepository(
+        root,
+        [path],
+        async () => [ownedLine(userCommit)]
+      );
+      const analyzer = new RepositoryAnalyzer(
+        repository,
+        new AlwaysMissCacheStore(await createTemporaryDirectory()),
+        undefined,
+        fileSystem
+      );
+
+      await analyzer.initialize();
+      await waitUntil(() => !analyzer.getSnapshot().scanning);
+
+      expect(analyzer.getSnapshot().files.map(({ relativePath }) => relativePath)).toEqual([path]);
+      expect((await analyzer.ensureFile(path, 'active-editor'))?.ranges).toEqual([
+        { start: 0, endExclusive: 1, commit: userCommit, uncommitted: false }
+      ]);
+    } finally {
+      platform.mockRestore();
     }
   });
 
@@ -704,6 +892,52 @@ class DeferredIndexRepository implements RepositoryAccess {
   }
 }
 
+class ChangingKeyIndexRepository implements RepositoryAccess {
+  private readonly scans: Array<Deferred<UserIndex>> = [];
+  public head = 'b'.repeat(40);
+  public logScans = 0;
+  public maxActiveScans = 0;
+  private activeScans = 0;
+
+  public constructor(
+    public readonly root: string,
+    private readonly paths: readonly string[]
+  ) {}
+
+  public async getGlobalIdentity(): Promise<GitIdentity> {
+    return { name: 'Me', email: 'me@example.com' };
+  }
+
+  public async getHead(): Promise<string> {
+    return this.head;
+  }
+
+  public async getUserIndex(_identity: GitIdentity): Promise<UserIndex> {
+    const scan = deferred<UserIndex>();
+    this.scans.push(scan);
+    this.logScans += 1;
+    this.activeScans += 1;
+    this.maxActiveScans = Math.max(this.maxActiveScans, this.activeScans);
+    try {
+      return await scan.promise;
+    } finally {
+      this.activeScans -= 1;
+    }
+  }
+
+  public async getWorkingChanges(): Promise<WorkingChange[]> {
+    return [];
+  }
+
+  public async blame(_path: string): Promise<BlameLine[]> {
+    return [];
+  }
+
+  public resolveScan(index: number): void {
+    this.scans[index]?.resolve(indexForPaths(this.paths));
+  }
+}
+
 class StaticRepository implements RepositoryAccess {
   public logScans = 0;
 
@@ -731,6 +965,55 @@ class StaticRepository implements RepositoryAccess {
 
   public async blame(_path: string): Promise<BlameLine[]> {
     return [];
+  }
+}
+
+class InstrumentedAnalysisFileSystem {
+  public statCalls = 0;
+  public maxActiveStats = 0;
+  public maxReadRequest = 0;
+  private activeStats = 0;
+  private readonly bytesRead = new Map<string, number>();
+
+  public constructor(
+    private readonly largeFiles: ReadonlyMap<string, { readonly size: number; readonly binary: boolean }>
+  ) {}
+
+  public async stat(_path: string): Promise<{ isFile(): boolean }> {
+    this.statCalls += 1;
+    this.activeStats += 1;
+    this.maxActiveStats = Math.max(this.maxActiveStats, this.activeStats);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    this.activeStats -= 1;
+    return { isFile: () => true };
+  }
+
+  public async open(path: string): Promise<{
+    read(buffer: Buffer, offset: number, length: number, position: number | null): Promise<{ bytesRead: number }>;
+    close(): Promise<void>;
+  }> {
+    const entry = [...this.largeFiles].find(([relativePath]) => path.endsWith(relativePath));
+    const relativePath = entry?.[0] ?? path;
+    const size = entry?.[1].size ?? 1;
+    const binary = entry?.[1].binary ?? false;
+    let cursor = 0;
+    return {
+      read: async (buffer, offset, length, position) => {
+        this.maxReadRequest = Math.max(this.maxReadRequest, length);
+        const start = position ?? cursor;
+        const bytesRead = Math.max(0, Math.min(length, size - start));
+        buffer.fill(0x61, offset, offset + bytesRead);
+        if (binary && start === 0 && bytesRead > 0) buffer[offset] = 0;
+        cursor = start + bytesRead;
+        this.bytesRead.set(relativePath, (this.bytesRead.get(relativePath) ?? 0) + bytesRead);
+        return { bytesRead };
+      },
+      close: async () => undefined
+    };
+  }
+
+  public bytesReadFor(relativePath: string): number {
+    return this.bytesRead.get(relativePath) ?? 0;
   }
 }
 

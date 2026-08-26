@@ -10,7 +10,7 @@ import {
 
 describe('Git parsers', () => {
   it('parses matching commit metadata and NUL-delimited name status', () => {
-    const raw = '\x1eabc\x1fAlice\x1falice@example.com\x1f1700000000\x1f제목\x00A\x00src/a file.ts\x00';
+    const raw = '\x00abc\x00Alice\x00alice@example.com\x001700000000\x00제목\x00\x00A\x00src/a file.ts\x00';
 
     expect(parseLogIndex(Buffer.from(raw))).toEqual([{
       commit: {
@@ -22,7 +22,7 @@ describe('Git parsers', () => {
   });
 
   it('accepts the double-NUL framing emitted by the prescribed log command', () => {
-    const raw = '\x1eabc\x1fAlice\x1falice@example.com\x1f1700000000\x1fsubject\x00\x00A\x00src/a file.ts\x00';
+    const raw = '\x00abc\x00Alice\x00alice@example.com\x001700000000\x00subject\x00\x00A\x00src/a file.ts\x00';
 
     expect(parseLogIndex(Buffer.from(raw))).toEqual([{
       commit: {
@@ -95,7 +95,7 @@ describe('Git parsers', () => {
   });
 
   it('parses record-separated history metadata without path records', () => {
-    const raw = '\x1eaaa\x1fAlice\x1falice@example.com\x1f1700000000\x1ffirst\x00\x1ebbb\x1fBob\x1fbob@example.com\x1f1700000001\x1fsecond\x00';
+    const raw = '\x00aaa\x00Alice\x00alice@example.com\x001700000000\x00first\x00\x00\x00bbb\x00Bob\x00bob@example.com\x001700000001\x00second\x00\x00';
 
     expect(parseHistoryRecords(Buffer.from(raw))).toEqual([
       { hash: 'aaa', authorName: 'Alice', authorEmail: 'alice@example.com', authoredAt: 1700000000, subject: 'first' },
@@ -103,10 +103,64 @@ describe('Git parsers', () => {
     ]);
   });
 
+  it('parses NUL-framed fixed fields with control bytes, empty subjects, and literal backslashes', () => {
+    const firstHash = 'a'.repeat(40);
+    const secondHash = 'b'.repeat(40);
+    const raw = Buffer.from([
+      '', firstHash, 'Alice', 'alice@example.com', '1700000000', 'subject\x1eand\x1fcontrols', '',
+      'A', 'src/control\x1e\x1f.ts',
+      '', secondHash, 'Alice', 'alice@example.com', '1700000001', '', '',
+      'M', 'src/literal\\backslash.ts', ''
+    ].join('\x00'));
+
+    expect(parseLogIndex(raw)).toEqual([
+      {
+        commit: {
+          hash: firstHash,
+          authorName: 'Alice',
+          authorEmail: 'alice@example.com',
+          authoredAt: 1700000000,
+          subject: 'subject\x1eand\x1fcontrols'
+        },
+        changes: [{ status: 'A', path: 'src/control\x1e\x1f.ts' }]
+      },
+      {
+        commit: {
+          hash: secondHash,
+          authorName: 'Alice',
+          authorEmail: 'alice@example.com',
+          authoredAt: 1700000001,
+          subject: ''
+        },
+        changes: [{ status: 'M', path: 'src/literal\\backslash.ts' }]
+      }
+    ]);
+  });
+
+  it('parses NUL-framed history with control bytes and a legal empty subject', () => {
+    const firstHash = 'c'.repeat(40);
+    const secondHash = 'd'.repeat(40);
+    const raw = Buffer.from([
+      '', firstHash, 'Alice', 'alice@example.com', '1700000000', 'subject\x1e\x1f',
+      '', secondHash, 'Alice', 'alice@example.com', '1700000001', '', ''
+    ].join('\x00'));
+
+    expect(parseHistoryRecords(raw)).toEqual([
+      {
+        hash: firstHash, authorName: 'Alice', authorEmail: 'alice@example.com',
+        authoredAt: 1700000000, subject: 'subject\x1e\x1f'
+      },
+      {
+        hash: secondHash, authorName: 'Alice', authorEmail: 'alice@example.com',
+        authoredAt: 1700000001, subject: ''
+      }
+    ]);
+  });
+
   it('reports a parser name and byte offset for malformed mandatory commit data', () => {
-    expect(() => parseHistoryRecords(Buffer.from('\x1eabc\x1fAlice\x1falice@example.com\x1fnot-a-time\x1fsubject\x00')))
+    expect(() => parseHistoryRecords(Buffer.from('\x00abc\x00Alice\x00alice@example.com\x00not-a-time\x00subject\x00\x00')))
       .toThrow(GitParseError);
-    expect(() => parseHistoryRecords(Buffer.from('\x1eabc\x1fAlice\x1falice@example.com\x1fnot-a-time\x1fsubject\x00')))
+    expect(() => parseHistoryRecords(Buffer.from('\x00abc\x00Alice\x00alice@example.com\x00not-a-time\x00subject\x00\x00')))
       .toThrow(/parseHistoryRecords.*byte offset 0/);
   });
 
@@ -119,7 +173,7 @@ describe('Git parsers', () => {
   });
 
   it('rejects empty mandatory commit and blame timestamps', () => {
-    expect(() => parseHistoryRecords(Buffer.from('\x1eabc\x1fAlice\x1falice@example.com\x1f\x1fsubject\x00')))
+    expect(() => parseHistoryRecords(Buffer.from('\x00abc\x00Alice\x00alice@example.com\x00\x00subject\x00\x00')))
       .toThrow(GitParseError);
     expect(() => parseLinePorcelainBlame('abcdef 1 1 1\nauthor Alice\nauthor-mail <alice@example.com>\nauthor-time \nsummary subject\n\tline\n'))
       .toThrow(GitParseError);

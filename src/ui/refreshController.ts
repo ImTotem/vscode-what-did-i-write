@@ -106,6 +106,7 @@ export class RefreshController {
   }
 
   public async refreshAll(reason = 'manual'): Promise<void> {
+    await this.registry.rediscover();
     await Promise.all(this.registry.repositories
       .filter(({ state }) => state === 'ready')
       .map(async (entry) => {

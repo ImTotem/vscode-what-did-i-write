@@ -2,6 +2,7 @@ import { basename, join } from 'node:path';
 
 import * as vscode from 'vscode';
 
+import { hasConfiguredIdentity } from '../core/identity.js';
 import type { CommitSummary, FileRecord, RepositorySnapshot } from '../core/model.js';
 import type { RepositoryRegistry } from '../extension/repositoryRegistry.js';
 
@@ -71,7 +72,8 @@ export class MyCodeTreeProvider implements vscode.TreeDataProvider<MyCodeNode>, 
     if (element === undefined) {
       return [...projectTree(this.registry.repositories
         .filter(({ state }) => state === 'ready')
-        .map(({ analyzer }) => analyzer.getSnapshot()))];
+        .map(({ analyzer }) => analyzer.getSnapshot())
+        .filter(({ identity }) => hasConfiguredIdentity(identity)))];
     }
     if (element.kind === 'file') return [...historyNodes(element)];
     return [...element.children];

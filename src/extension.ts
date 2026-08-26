@@ -26,9 +26,9 @@ export function activate(context: vscode.ExtensionContext): void {
     (error: unknown, operation: RegistryOperation, path: string) => reportError(error, operation, path)
   );
   const refreshController = new RefreshController(registry, { onError: reportError });
-  const decorationProvider = new MyCodeDecorationProvider(registry);
+  const decorationProvider = new MyCodeDecorationProvider(registry, reportError);
   const treeProvider = new MyCodeTreeProvider(registry);
-  const editorOwnership = new EditorOwnershipController(registry);
+  const editorOwnership = new EditorOwnershipController(registry, { onError: reportError });
   const gitContentProvider = new GitContentProvider(registry, reportError);
   const historyController = new HistoryController(registry);
   statusController = new StatusController(registry, statusItem, {

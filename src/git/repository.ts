@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { resolve } from 'node:path';
+import { lstat, open } from 'node:fs/promises';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 import { matchesIdentity } from '../core/identity.js';
 import type { CommitSummary, GitIdentity } from '../core/model.js';
@@ -14,7 +15,7 @@ import {
   type WorkingChange
 } from './parsers.js';
 
-const LOG_FORMAT = '--format=%x1e%H%x1f%an%x1f%ae%x1f%at%x1f%s%x00';
+const LOG_FORMAT = '--format=%x00%H%x00%an%x00%ae%x00%at%x00%s%x00';
 
 export interface UserIndex {
   readonly commits: readonly CommitSummary[];
@@ -60,7 +61,7 @@ export class GitRepository {
 
   public async getUserIndex(identity: GitIdentity): Promise<UserIndex> {
     const result = await this.runner.run(this.root, [
-      'log', 'HEAD', LOG_FORMAT, '--name-status', '-z', '--no-renames'
+      'log', 'HEAD', LOG_FORMAT, '--name-status', '-z', '--no-renames', '--diff-merges=first-parent'
     ]);
     const entries = parseLogIndex(result.stdout).filter(({ commit }) =>
       matchesIdentity(identity, commit.authorName, commit.authorEmail)
@@ -82,7 +83,7 @@ export class GitRepository {
 
   public async getFileHistory(path: string): Promise<CommitSummary[]> {
     const result = await this.runner.run(this.root, [
-      '--literal-pathspecs', 'log', 'HEAD', '--follow', LOG_FORMAT, '--', path
+      '--literal-pathspecs', 'log', 'HEAD', '-z', '--follow', LOG_FORMAT, '--', path
     ]);
     return parseHistoryRecords(result.stdout);
   }
@@ -111,10 +112,21 @@ export class GitRepository {
   }
 
 
+  public async mapWorkingLineToHead(path: string, line: number): Promise<number | undefined> {
+    if (!Number.isSafeInteger(line) || line < 1) {
+      throw new RangeError('line must be a positive one-based integer');
+    }
+    const result = await this.runner.run(this.root, [
+      '--literal-pathspecs', 'diff', '--no-ext-diff', '--no-color', '--unified=0',
+      'HEAD', '--', path
+    ]);
+    return mapWorkingLineThroughDiff(result.stdout.toString('utf8'), line);
+  }
+
   public async getLineHistory(path: string, line: number): Promise<CommitSummary[]> {
     if (!Number.isSafeInteger(line) || line < 1) throw new RangeError('line must be a positive one-based integer');
     const result = await this.runner.run(this.root, [
-      '--literal-pathspecs', 'log', 'HEAD', '--no-patch',
+      '--literal-pathspecs', 'log', 'HEAD', '-z', '--no-patch',
       '-L', `${line},${line}:${path}`, LOG_FORMAT
     ], { allowExitCodes: [0, 1, 128] });
     return result.exitCode === 0
@@ -136,9 +148,17 @@ export class GitRepository {
 
   public async getFingerprint(): Promise<RepositoryFingerprint> {
     const [head, status] = await Promise.all([this.getHead(), this.readStatus()]);
+    const paths = [...new Set(parsePorcelainV2Status(status.stdout).flatMap(({ path, originalPath }) =>
+      originalPath === undefined ? [path] : [path, originalPath]
+    ))].sort();
+    const pathFingerprints = await mapConcurrent(paths, 16, (path) => fingerprintPath(this.root, path));
+    const fingerprint = createHash('sha256').update(status.stdout);
+    for (let index = 0; index < paths.length; index += 1) {
+      fingerprint.update('\0').update(paths[index] as string).update('\0').update(pathFingerprints[index] as string);
+    }
     return {
       head,
-      status: createHash('sha256').update(status.stdout).digest('hex')
+      status: fingerprint.digest('hex')
     };
   }
 
@@ -156,4 +176,92 @@ export class GitRepository {
 
 function decodeLine(bytes: Buffer): string {
   return bytes.toString('utf8').replace(/[\r\n]+$/, '');
+}
+
+export function mapWorkingLineThroughDiff(diff: string, workingLine: number): number | undefined {
+  let headLine = workingLine;
+  const hunk = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm;
+  for (let match = hunk.exec(diff); match !== null; match = hunk.exec(diff)) {
+    const oldStart = Number(match[1]);
+    const oldCount = match[2] === undefined ? 1 : Number(match[2]);
+    const newStart = Number(match[3]);
+    const newCount = match[4] === undefined ? 1 : Number(match[4]);
+    if (
+      !Number.isSafeInteger(oldStart)
+      || !Number.isSafeInteger(oldCount)
+      || !Number.isSafeInteger(newStart)
+      || !Number.isSafeInteger(newCount)
+    ) continue;
+    if (
+      newCount > 0
+      && workingLine >= newStart
+      && workingLine < newStart + newCount
+    ) {
+      return undefined;
+    }
+    const followsHunk = newCount === 0
+      ? workingLine > newStart
+      : workingLine >= newStart + newCount;
+    if (followsHunk) headLine += oldCount - newCount;
+  }
+  return headLine;
+}
+
+const FILE_SAMPLE_BYTES = 4 * 1024;
+
+async function fingerprintPath(root: string, path: string): Promise<string> {
+  const absolutePath = resolve(root, path);
+  const relativeToRoot = relative(root, absolutePath);
+  if (relativeToRoot === '..' || relativeToRoot.startsWith(`..${sep}`) || isAbsolute(relativeToRoot)) {
+    throw new Error('fingerprint path is outside the repository');
+  }
+  let metadata: Awaited<ReturnType<typeof lstat>>;
+  try {
+    metadata = await lstat(absolutePath, { bigint: true });
+  } catch (error) {
+    if (isMissingPathError(error)) return 'missing';
+    throw error;
+  }
+  const hash = createHash('sha256')
+    .update(`${metadata.mode}:${metadata.size}:${metadata.mtimeNs}:${metadata.ctimeNs}`);
+  if (!metadata.isFile() || metadata.size === 0n) return hash.digest('hex');
+
+  const handle = await open(absolutePath, 'r');
+  try {
+    const sampleLength = Number(metadata.size < BigInt(FILE_SAMPLE_BYTES) ? metadata.size : BigInt(FILE_SAMPLE_BYTES));
+    const head = Buffer.allocUnsafe(sampleLength);
+    const { bytesRead: headBytes } = await handle.read(head, 0, sampleLength, 0);
+    hash.update(head.subarray(0, headBytes));
+    if (metadata.size > BigInt(FILE_SAMPLE_BYTES) && metadata.size <= BigInt(Number.MAX_SAFE_INTEGER)) {
+      const tail = Buffer.allocUnsafe(FILE_SAMPLE_BYTES);
+      const { bytesRead: tailBytes } = await handle.read(
+        tail, 0, FILE_SAMPLE_BYTES, Number(metadata.size) - FILE_SAMPLE_BYTES
+      );
+      hash.update(tail.subarray(0, tailBytes));
+    }
+    return hash.digest('hex');
+  } finally {
+    await handle.close();
+  }
+}
+
+async function mapConcurrent<T, R>(
+  values: readonly T[], limit: number, operation: (value: T) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(values.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < values.length) {
+      const index = next;
+      next += 1;
+      results[index] = await operation(values[index] as T);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, values.length) }, worker));
+  return results;
+}
+
+function isMissingPathError(error: unknown): boolean {
+  return error instanceof Error && 'code' in error
+    && (error.code === 'ENOENT' || error.code === 'ENOTDIR');
 }

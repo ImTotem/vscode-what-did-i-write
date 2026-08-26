@@ -13,11 +13,23 @@ export function normalizeEmail(value: string): string {
   return unwrapped.normalize('NFKC').toLocaleLowerCase();
 }
 
+export function hasConfiguredIdentity(identity: GitIdentity): boolean {
+  return normalizeIdentityPart(identity.name).length > 0
+    || normalizeEmail(identity.email).length > 0;
+}
+
 export function matchesIdentity(
   identity: GitIdentity,
   authorName: string,
   authorEmail: string
 ): boolean {
-  return normalizeIdentityPart(identity.name) === normalizeIdentityPart(authorName)
-    || normalizeEmail(identity.email) === normalizeEmail(authorEmail);
+  const name = normalizeIdentityPart(identity.name);
+  const email = normalizeEmail(identity.email);
+  return (
+    name.length > 0
+    && name === normalizeIdentityPart(authorName)
+  ) || (
+    email.length > 0
+    && email === normalizeEmail(authorEmail)
+  );
 }

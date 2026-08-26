@@ -15,6 +15,7 @@ const EMPTY_REVISION = '0000000';
 interface HistoryRepository {
   getFileHistory(path: string): Promise<CommitSummary[]>;
   getFileHistoryEntries?(path: string): Promise<FileHistoryEntry[]>;
+  mapWorkingLineToHead?(path: string, line: number): Promise<number | undefined>;
   getLineHistory(path: string, line: number): Promise<CommitSummary[]>;
   getWorkingChanges(): Promise<WorkingChange[]>;
 }
@@ -113,9 +114,12 @@ export class HistoryController {
     const repository = historyRepository(target.entry);
     const working = await currentChangeItem(repository, target.root, target.path);
     const historyPath = working?.headPath ?? target.path;
-    const history = working?.headExists === false
+    const headLine = working !== undefined && repository.mapWorkingLineToHead !== undefined
+      ? await repository.mapWorkingLineToHead(working.workingPath, line + 1)
+      : line + 1;
+    const history = working?.headExists === false || headLine === undefined
       ? []
-      : await repository.getLineHistory(historyPath, line + 1);
+      : await repository.getLineHistory(historyPath, headLine);
     const items: HistoryQuickPickItem[] = [
       ...(working === undefined ? [] : [working]),
       ...commitQuickPickItems(history, target.identity, target.path, this.now())
@@ -134,7 +138,7 @@ export class HistoryController {
       commit: selected.commit,
       path: selected.path,
       parentPath: selected.parentPath,
-      line
+      line: (headLine ?? line + 1) - 1
     });
   }
 

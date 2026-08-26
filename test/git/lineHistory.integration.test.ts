@@ -30,6 +30,26 @@ describe('GitRepository line history', () => {
       .toContain('Tracked base');
   });
 
+  it('maps inserted, deleted, and replaced working lines back to HEAD coordinates', async () => {
+    const fixture = await createGitFixture();
+    fixtures.push(fixture);
+    await fixture.setLocalIdentity(fixture.globalIdentity);
+    await fixture.writeText('mapped.ts', 'one\ntwo\nthree\nfour\n');
+    await fixture.commit('mapped base');
+    const repository = await GitRepository.discover(fixture.root, fixture.runner);
+
+    await fixture.writeText('mapped.ts', 'inserted\none\ntwo\nthree\nfour\n');
+    expect(await repository.mapWorkingLineToHead('mapped.ts', 1)).toBeUndefined();
+    expect(await repository.mapWorkingLineToHead('mapped.ts', 3)).toBe(2);
+
+    await fixture.writeText('mapped.ts', 'one\nthree\nfour\n');
+    expect(await repository.mapWorkingLineToHead('mapped.ts', 2)).toBe(3);
+
+    await fixture.writeText('mapped.ts', 'one\nreplacement\nthree\nfour\n');
+    expect(await repository.mapWorkingLineToHead('mapped.ts', 2)).toBeUndefined();
+    expect(await repository.mapWorkingLineToHead('mapped.ts', 3)).toBe(3);
+  });
+
   it('suppresses patch output for delimiter-safe line metadata', async () => {
     const runner = new RecordingLineRunner(process.cwd());
     const repository = await GitRepository.discover(process.cwd(), runner);

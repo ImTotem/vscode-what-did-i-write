@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { CacheStore } from '../../src/analysis/cacheStore.js';
 import { RepositoryAnalyzer } from '../../src/analysis/repositoryAnalyzer.js';
 import type { RepositorySnapshot } from '../../src/core/model.js';
+import { GitCommandError } from '../../src/git/gitRunner.js';
 import type { WorkingChange } from '../../src/git/parsers.js';
 import {
   RepositoryRegistry,
@@ -72,6 +73,93 @@ describe('RepositoryRegistry', () => {
     expect(registry.state).toBe('error');
     expect(registry.repositories).toHaveLength(1);
     expect(analyzer.dispose).not.toHaveBeenCalled();
+    registry.dispose();
+  });
+
+  it('ignores a benign non-Git folder without degrading a healthy multi-root workspace', async () => {
+    const repositoryRoot = join(process.cwd(), 'repository');
+    const plainRoot = join(process.cwd(), 'plain-folder');
+    const repository = fakeRepository(repositoryRoot);
+    const analyzer = fakeAnalyzer(repositoryRoot);
+    const onError = vi.fn();
+    const registry = new RepositoryRegistry({
+      getWorkspaceFolders: () => [{ fsPath: repositoryRoot }, { fsPath: plainRoot }],
+      discover: async (path) => {
+        if (path === plainRoot) {
+          throw new GitCommandError(
+            ['rev-parse', '--show-toplevel'],
+            'fatal: not a git repository (or any of the parent directories): .git',
+            128,
+            'exited with code 128'
+          );
+        }
+        return repository;
+      },
+      createAnalyzer: () => analyzer,
+      onError
+    });
+
+    await registry.start();
+    await waitUntil(() => registry.state === 'ready');
+
+    expect(registry.repositories.map(({ root }) => root)).toEqual([repositoryRoot]);
+    expect(registry.state).toBe('ready');
+    expect(onError).not.toHaveBeenCalled();
+    registry.dispose();
+  });
+
+  it('rediscovers a workspace after Git becomes available when Refresh is used', async () => {
+    const root = join(process.cwd(), 'missing-git-recovery');
+    const repository = fakeRepository(root);
+    const analyzer = fakeAnalyzer(root);
+    const discover = vi.fn()
+      .mockRejectedValueOnce(new GitCommandError(
+        ['rev-parse', '--show-toplevel'], '', null, 'spawn git ENOENT'
+      ))
+      .mockResolvedValueOnce(repository);
+    const registry = new RepositoryRegistry({
+      getWorkspaceFolders: () => [{ fsPath: root }],
+      discover,
+      createAnalyzer: () => analyzer
+    });
+    await registry.start();
+    expect(registry.state).toBe('error');
+    const controller = new RefreshController(registry, { scheduler: new FakeScheduler() });
+
+    await controller.refreshAll();
+    await waitUntil(() => registry.state === 'ready');
+
+    expect(discover).toHaveBeenCalledTimes(2);
+    expect(analyzer.initialize).toHaveBeenCalledOnce();
+    expect(analyzer.refresh).toHaveBeenCalledWith('manual');
+    controller.dispose();
+    registry.dispose();
+  });
+
+  it('recreates an analyzer that failed initialization when Retry is used', async () => {
+    const root = join(process.cwd(), 'initialize-recovery');
+    const repository = fakeRepository(root);
+    const failed = fakeAnalyzer(root, vi.fn(async () => { throw new Error('cache denied'); }));
+    const recovered = fakeAnalyzer(root);
+    const createAnalyzer = vi.fn()
+      .mockReturnValueOnce(failed)
+      .mockReturnValueOnce(recovered);
+    const registry = new RepositoryRegistry({
+      getWorkspaceFolders: () => [{ fsPath: root }],
+      discover: async () => repository,
+      createAnalyzer
+    });
+    await registry.start();
+    await waitUntil(() => registry.state === 'error');
+    const controller = new RefreshController(registry, { scheduler: new FakeScheduler() });
+
+    await controller.retryIdentity();
+    await waitUntil(() => registry.state === 'ready');
+
+    expect(createAnalyzer).toHaveBeenCalledTimes(2);
+    expect(failed.dispose).toHaveBeenCalledOnce();
+    expect(recovered.refresh).toHaveBeenCalledWith('identity');
+    controller.dispose();
     registry.dispose();
   });
 
@@ -348,9 +436,34 @@ describe('StatusController', () => {
     expect(showWarning).toHaveBeenCalledTimes(2);
     expect(showWarning).toHaveBeenLastCalledWith(
       expect.stringContaining('Git'),
+      'My Code: Retry',
       'My Code: Show Output'
     );
     controller.dispose();
+  });
+
+  it('runs the retry action from the missing-Git warning', async () => {
+    const root = join(process.cwd(), 'repository');
+    const analyzer = fakeAnalyzer(root);
+    const registry = await registryWith(root, fakeRepository(root), analyzer);
+    const retryIdentity = vi.fn(async () => undefined);
+    const controller = new StatusController(
+      registry,
+      { text: '', show: vi.fn() },
+      {
+        showWarning: vi.fn(async () => 'My Code: Retry'),
+        showOutput: vi.fn(),
+        retryIdentity
+      }
+    );
+
+    controller.reportMissingGit(new Error('git unavailable'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(retryIdentity).toHaveBeenCalledOnce();
+    controller.dispose();
+    registry.dispose();
   });
 });
 

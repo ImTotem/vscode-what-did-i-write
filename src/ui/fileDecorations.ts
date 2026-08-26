@@ -2,6 +2,7 @@ import { isAbsolute, relative, sep } from 'node:path';
 
 import * as vscode from 'vscode';
 
+import { hasConfiguredIdentity } from '../core/identity.js';
 import type { AnalyzerAccess, RepositoryRegistry } from '../extension/repositoryRegistry.js';
 
 export class MyCodeDecorationProvider implements vscode.FileDecorationProvider, vscode.Disposable {
@@ -11,7 +12,10 @@ export class MyCodeDecorationProvider implements vscode.FileDecorationProvider, 
 
   public readonly onDidChangeFileDecorations = this.emitter.event;
 
-  public constructor(private readonly registry: RepositoryRegistry) {
+  public constructor(
+    private readonly registry: RepositoryRegistry,
+    private readonly onError?: (error: unknown, operation: string, path: string) => void
+  ) {
     this.subscription = registry.onDidChange(() => this.emitter.fire(undefined));
   }
 
@@ -20,7 +24,9 @@ export class MyCodeDecorationProvider implements vscode.FileDecorationProvider, 
     if (repository === undefined || repository.state !== 'ready') return undefined;
     const path = workspaceRelativePath(repository.root, uri.fsPath);
     if (path === undefined) return undefined;
-    const file = repository.analyzer.getSnapshot().files
+    const snapshot = repository.analyzer.getSnapshot();
+    if (!hasConfiguredIdentity(snapshot.identity)) return undefined;
+    const file = snapshot.files
       .find((candidate) => candidate.relativePath === path);
     if (file?.kind === 'added') return decoration('A', 'Added by you', 'gitDecoration.addedResourceForeground');
     if (file?.kind === 'modified') return decoration('M', 'Modified by you', 'gitDecoration.modifiedResourceForeground');
@@ -44,7 +50,10 @@ export class MyCodeDecorationProvider implements vscode.FileDecorationProvider, 
     this.pending.add(key);
     void analyzer.ensureFile(path, 'explorer').then(
       () => this.emitter.fire(uri),
-      () => this.emitter.fire(uri)
+      (error: unknown) => {
+        if (analyzer.reportsErrors !== true) this.onError?.(error, 'explorer-ownership', path);
+        this.emitter.fire(uri);
+      }
     ).finally(() => this.pending.delete(key));
   }
 }

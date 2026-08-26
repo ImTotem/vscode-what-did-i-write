@@ -89,7 +89,8 @@ describe('MyCodeDecorationProvider', () => {
   it('lazily resolves an unresolved candidate and invalidates decorations after success or failure', async () => {
     const success = deferred<FileRecord | undefined>();
     const registry = fakeRegistry(snapshot(ROOT, [file('candidate.ts', 'past')]), success.promise);
-    const provider = new MyCodeDecorationProvider(registry);
+    const onError = vi.fn();
+    const provider = new MyCodeDecorationProvider(registry, onError);
     const changes: unknown[] = [];
     provider.onDidChangeFileDecorations((uri) => changes.push(uri));
     const candidateUri = uri(join(ROOT, 'candidate.ts'));
@@ -108,6 +109,23 @@ describe('MyCodeDecorationProvider', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(changes).toEqual([candidateUri, candidateUri]);
+    expect(onError).toHaveBeenCalledWith(expect.any(Error), 'explorer-ownership', 'candidate.ts');
+    provider.dispose();
+  });
+
+  it('does not duplicate a resolution error already reported by the analyzer', async () => {
+    const failure = deferred<FileRecord | undefined>();
+    const registry = fakeRegistry(snapshot(ROOT, [file('candidate.ts', 'past')]), failure.promise);
+    (registry.entry.analyzer as unknown as { reportsErrors: boolean }).reportsErrors = true;
+    const onError = vi.fn();
+    const provider = new MyCodeDecorationProvider(registry, onError);
+
+    provider.provideFileDecoration(uri(join(ROOT, 'candidate.ts')));
+    failure.reject(new Error('already reported blame failure'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onError).not.toHaveBeenCalled();
     provider.dispose();
   });
 
@@ -116,6 +134,19 @@ describe('MyCodeDecorationProvider', () => {
     const provider = new MyCodeDecorationProvider(registry);
 
     expect(provider.provideFileDecoration(uri(join(ROOT, 'file.ts')))).toBeUndefined();
+    expect(registry.entry.analyzer.ensureFile).not.toHaveBeenCalled();
+    provider.dispose();
+  });
+
+  it('suppresses decorations and lazy resolution while analysis is paused for identity', () => {
+    const paused = {
+      ...snapshot(ROOT, [file('stale.ts', 'modified')]),
+      identity: { name: '', email: '   ' }
+    };
+    const registry = fakeRegistry(paused);
+    const provider = new MyCodeDecorationProvider(registry);
+
+    expect(provider.provideFileDecoration(uri(join(ROOT, 'stale.ts')))).toBeUndefined();
     expect(registry.entry.analyzer.ensureFile).not.toHaveBeenCalled();
     provider.dispose();
   });
@@ -159,6 +190,17 @@ describe('MyCodeTreeProvider', () => {
 
   it('returns no roots when no repository is ready', () => {
     const provider = new MyCodeTreeProvider(fakeRegistry(snapshot(ROOT, []), undefined, 'initializing'));
+
+    expect(provider.getChildren()).toEqual([]);
+    provider.dispose();
+  });
+
+  it('returns no tree output while analysis is paused for identity', () => {
+    const paused = {
+      ...snapshot(ROOT, [file('stale.ts', 'modified')]),
+      identity: { name: '', email: '' }
+    };
+    const provider = new MyCodeTreeProvider(fakeRegistry(paused));
 
     expect(provider.getChildren()).toEqual([]);
     provider.dispose();

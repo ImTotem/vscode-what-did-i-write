@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => {
   const visibleListeners = new Set<() => void>();
   const documentListeners = new Set<(event: { document: vscode.TextDocument }) => void>();
   const saveListeners = new Set<(document: vscode.TextDocument) => void>();
+  const closeListeners = new Set<(document: vscode.TextDocument) => void>();
   const configuration = { lineBackground: false, updates: [] as unknown[][] };
   const window = {
     visibleTextEditors: [] as readonly vscode.TextEditor[],
@@ -43,7 +44,8 @@ const mocks = vi.hoisted(() => {
     }
   };
   return {
-    Position, Range, MarkdownString, ThemeColor, decorations, activeListeners, visibleListeners, documentListeners, saveListeners, configuration, window
+    Position, Range, MarkdownString, ThemeColor, decorations, activeListeners, visibleListeners,
+    documentListeners, saveListeners, closeListeners, configuration, window
   };
 });
 
@@ -66,6 +68,10 @@ vi.mock('vscode', () => ({
     onDidSaveTextDocument: (listener: (document: vscode.TextDocument) => void) => {
       mocks.saveListeners.add(listener);
       return { dispose: () => mocks.saveListeners.delete(listener) };
+    },
+    onDidCloseTextDocument: (listener: (document: vscode.TextDocument) => void) => {
+      mocks.closeListeners.add(listener);
+      return { dispose: () => mocks.closeListeners.delete(listener) };
     }
   }
 }));
@@ -156,6 +162,7 @@ describe('EditorOwnershipController', () => {
 
     await controller.refreshVisibleEditors();
     editor.setDecorations.mockClear();
+    setDirty(editor.document, true);
     for (const listener of mocks.documentListeners) listener({ document: editor.document });
     registry.emit();
     for (const listener of mocks.visibleListeners) listener();
@@ -163,6 +170,7 @@ describe('EditorOwnershipController', () => {
     expect(registry.entry.analyzer.ensureFile).toHaveBeenCalledTimes(1);
     expect(editor.setDecorations.mock.calls.every(([, options]) => Array.isArray(options) && options.length === 0)).toBe(true);
 
+    setDirty(editor.document, false);
     for (const listener of mocks.saveListeners) listener(editor.document);
     registry.emit();
     for (const listener of mocks.visibleListeners) listener();
@@ -202,9 +210,13 @@ describe('EditorOwnershipController', () => {
 
     await controller.refreshVisibleEditors();
     editor.setDecorations.mockClear();
+    setDirty(editor.document, true);
     for (const listener of mocks.documentListeners) listener({ document: editor.document });
+    setDirty(editor.document, false);
     for (const listener of mocks.saveListeners) listener(editor.document);
+    setDirty(editor.document, true);
     for (const listener of mocks.documentListeners) listener({ document: editor.document });
+    setDirty(editor.document, false);
     for (const listener of mocks.saveListeners) listener(editor.document);
     await flush();
     expect(registry.entry.analyzer.refresh).toHaveBeenCalledTimes(2);
@@ -217,6 +229,110 @@ describe('EditorOwnershipController', () => {
     saveB.resolve();
     await flush();
     expect(editor.setDecorations.mock.calls.slice(-1)[0]?.[1]).toEqual([expect.objectContaining({ range: expect.objectContaining({ start: expect.objectContaining({ line: 2 }) }) })]);
+    controller.dispose();
+  });
+
+  it('clears a discarded dirty latch on close so the same URI decorates after reopen', async () => {
+    const current = record([{ start: 0, endExclusive: 1, commit: committed, uncommitted: false }]);
+    const registry = fakeRegistry(current, Promise.resolve(current));
+    const first = editorFor(documentFor('/repo/current.ts', 2));
+    setVisibleEditors([first]);
+    const controller = new EditorOwnershipController(registry);
+    await controller.refreshVisibleEditors();
+
+    setDirty(first.document, true);
+    for (const listener of mocks.documentListeners) listener({ document: first.document });
+    setVisibleEditors([]);
+    for (const listener of mocks.closeListeners) listener(first.document);
+    const reopened = editorFor(documentFor('/repo/current.ts', 2));
+    setVisibleEditors([reopened]);
+
+    await controller.refreshVisibleEditors();
+
+    expect(registry.entry.analyzer.ensureFile).toHaveBeenCalledTimes(2);
+    expect(reopened.setDecorations.mock.calls.slice(-2).some(([, options]) =>
+      Array.isArray(options) && options.length > 0
+    )).toBe(true);
+    controller.dispose();
+  });
+
+  it('refreshes and resumes ownership when undo or external reload leaves a clean document', async () => {
+    const current = record([{ start: 0, endExclusive: 1, commit: committed, uncommitted: false }]);
+    const registry = fakeRegistry(current, Promise.resolve(current));
+    const editor = editorFor(documentFor('/repo/current.ts', 2));
+    setVisibleEditors([editor]);
+    const controller = new EditorOwnershipController(registry);
+    await controller.refreshVisibleEditors();
+    editor.setDecorations.mockClear();
+
+    setDirty(editor.document, true);
+    for (const listener of mocks.documentListeners) listener({ document: editor.document });
+    setDirty(editor.document, false);
+    for (const listener of mocks.documentListeners) listener({ document: editor.document });
+    await flush();
+
+    expect(registry.entry.analyzer.refresh).toHaveBeenCalledWith('working-tree', ['current.ts']);
+    expect(editor.setDecorations.mock.calls.slice(-2).some(([, options]) =>
+      Array.isArray(options) && options.length > 0
+    )).toBe(true);
+    controller.dispose();
+  });
+
+  it('reports a rejected save refresh, retries once, and never repaints the stale record', async () => {
+    const old = record([{ start: 0, endExclusive: 1, commit: committed, uncommitted: false }]);
+    const fresh = record([{ start: 1, endExclusive: 2, commit: undefined, uncommitted: true }]);
+    const onError = vi.fn();
+    let attempts = 0;
+    const registry = fakeRegistry(old, Promise.resolve(old));
+    registry.entry.analyzer.ensureFile.mockImplementation(async () => attempts === 2 ? fresh : old);
+    registry.entry.analyzer.refresh.mockImplementation(async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('transient refresh failure');
+      registry.publish(fresh);
+    });
+    const editor = editorFor(documentFor('/repo/current.ts', 2));
+    setVisibleEditors([editor]);
+    const controller = new EditorOwnershipController(registry, {
+      onError,
+      scheduleRetry: (callback) => callback()
+    });
+    await controller.refreshVisibleEditors();
+    editor.setDecorations.mockClear();
+
+    setDirty(editor.document, true);
+    for (const listener of mocks.documentListeners) listener({ document: editor.document });
+    setDirty(editor.document, false);
+    for (const listener of mocks.saveListeners) listener(editor.document);
+    await flush();
+    await flush();
+
+    expect(registry.entry.analyzer.refresh).toHaveBeenCalledTimes(2);
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'transient refresh failure' }),
+      'editor-save-refresh',
+      'current.ts'
+    );
+    expect(editor.setDecorations.mock.calls.slice(-1)[0]?.[1]).toEqual([
+      expect.objectContaining({ range: expect.objectContaining({ start: expect.objectContaining({ line: 1 }) }) })
+    ]);
+    controller.dispose();
+  });
+
+  it('reports unexpected resolution failures while retaining the last valid ownership', async () => {
+    const current = record([{ start: 0, endExclusive: 1, commit: committed, uncommitted: false }]);
+    const error = new Error('unexpected blame failure');
+    const onError = vi.fn();
+    const registry = fakeRegistry(current, Promise.reject(error));
+    const editor = editorFor(documentFor('/repo/current.ts', 2));
+    setVisibleEditors([editor]);
+    const controller = new EditorOwnershipController(registry, { onError });
+
+    await controller.refreshVisibleEditors();
+
+    expect(onError).toHaveBeenCalledWith(error, 'editor-ownership', 'current.ts');
+    expect(editor.setDecorations.mock.calls.slice(-2).some(([, options]) =>
+      Array.isArray(options) && options.length > 0
+    )).toBe(true);
     controller.dispose();
   });
 
@@ -240,6 +356,7 @@ describe('EditorOwnershipController', () => {
     });
     controller.dispose();
     expect(decorations.map(({ dispose }) => dispose.mock.calls.length)).toEqual([1, 1]);
+    expect(mocks.closeListeners.size).toBe(0);
   });
 });
 
@@ -248,7 +365,7 @@ function record(ranges: FileRecord['ranges']): FileRecord {
 }
 
 function documentFor(path: string, lineCount: number, scheme = 'file'): vscode.TextDocument {
-  return { uri: { fsPath: path, scheme, toString: () => `${scheme}:${path}` }, lineCount } as unknown as vscode.TextDocument;
+  return { uri: { fsPath: path, scheme, toString: () => `${scheme}:${path}` }, lineCount, isDirty: false } as unknown as vscode.TextDocument;
 }
 
 function editorFor(document: vscode.TextDocument) {
@@ -257,6 +374,10 @@ function editorFor(document: vscode.TextDocument) {
 
 function setVisibleEditors(editors: readonly vscode.TextEditor[]): void {
   mocks.window.visibleTextEditors = editors;
+}
+
+function setDirty(document: vscode.TextDocument, isDirty: boolean): void {
+  (document as unknown as { isDirty: boolean }).isDirty = isDirty;
 }
 
 function fakeRegistry(current: FileRecord, ensureResult: Promise<FileRecord | undefined>) {
@@ -286,8 +407,11 @@ function fakeRegistry(current: FileRecord, ensureResult: Promise<FileRecord | un
 
 function deferred<T>() {
   let resolvePromise: ((value: T) => void) | undefined;
-  const promise = new Promise<T>((resolve) => { resolvePromise = resolve; });
-  return { promise, resolve: (value: T) => resolvePromise?.(value) };
+  let rejectPromise: ((reason: unknown) => void) | undefined;
+  const promise = new Promise<T>((resolve, reject) => {
+    resolvePromise = resolve; rejectPromise = reject;
+  });
+  return { promise, resolve: (value: T) => resolvePromise?.(value), reject: (reason: unknown) => rejectPromise?.(reason) };
 }
 
 async function flush(): Promise<void> {

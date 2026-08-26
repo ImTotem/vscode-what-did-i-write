@@ -91,6 +91,32 @@ describe('reviewed working line history', () => {
     expect(items.map(({ itemType }) => itemType)).toEqual(['working', 'commit']);
   });
 
+  it('queries HEAD history with the mapped coordinate after working insertions or deletions', async () => {
+    const repository = fakeRepository([{ status: '.M', path: 'source.ts' }]);
+    repository.mapWorkingLineToHead.mockResolvedValueOnce(4);
+    const controller = new HistoryController(registry(repository, 'source.ts'));
+
+    await controller.showLineHistory(join(ROOT, 'source.ts'), 2);
+
+    expect(repository.mapWorkingLineToHead).toHaveBeenCalledWith('source.ts', 3);
+    expect(repository.getLineHistory).toHaveBeenCalledWith('source.ts', 4);
+    const items = mocks.showQuickPick.mock.calls[0]?.[0] as unknown as HistoryQuickPickItem[];
+    expect(items.map(({ itemType }) => itemType)).toEqual(['working', 'commit']);
+  });
+
+  it('shows only Current changes when the selected working line has no HEAD origin', async () => {
+    const repository = fakeRepository([{ status: '.M', path: 'source.ts' }]);
+    repository.mapWorkingLineToHead.mockResolvedValueOnce(undefined);
+    const controller = new HistoryController(registry(repository, 'source.ts'));
+
+    await controller.showLineHistory(join(ROOT, 'source.ts'), 1);
+
+    expect(repository.mapWorkingLineToHead).toHaveBeenCalledWith('source.ts', 2);
+    expect(repository.getLineHistory).not.toHaveBeenCalled();
+    const items = mocks.showQuickPick.mock.calls[0]?.[0] as unknown as HistoryQuickPickItem[];
+    expect(items.map(({ itemType }) => itemType)).toEqual(['working']);
+  });
+
   it('uses the recreated workspace file after a staged deletion plus untracked record', async () => {
     const repository = fakeRepository([
       { status: 'D.', path: 'source.ts' },
@@ -159,6 +185,7 @@ function fakeRepository(changes: readonly { status: string; path: string; origin
     getFileHistoryEntries: vi.fn(async () => [{ commit, path: 'source.ts', parentPath: 'source.ts' }]),
     getFileHistory: vi.fn(async () => [commit]),
     getLineHistory: vi.fn(async () => [commit]),
+    mapWorkingLineToHead: vi.fn(async (_path: string, line: number): Promise<number | undefined> => line),
     getWorkingChanges: vi.fn(async () => [...changes]),
     showFile: vi.fn(async () => Buffer.from('content'))
   };

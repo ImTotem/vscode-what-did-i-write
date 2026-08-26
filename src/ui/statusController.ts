@@ -32,9 +32,11 @@ export class StatusController {
     this.missingGitWarningShown = true;
     void this.actions.showWarning(
       'My Code could not run Git. Install Git or make it available on PATH, then open the output for details.',
+      'My Code: Retry',
       'My Code: Show Output'
     ).then((selection) => {
-      if (selection === 'My Code: Show Output') this.actions.showOutput();
+      if (selection === 'My Code: Retry') void this.actions.retryIdentity();
+      else if (selection === 'My Code: Show Output') this.actions.showOutput();
     });
   }
 
