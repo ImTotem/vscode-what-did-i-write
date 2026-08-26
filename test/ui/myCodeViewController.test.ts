@@ -120,6 +120,47 @@ describe('MyCodeViewController', () => {
     expect(mocks.executeCommand.mock.calls.at(-1)).toEqual(['setContext', 'myCode.treeAllExpanded', false]);
     controller.dispose();
   });
+
+
+  it('keeps a rebuild reset when an earlier deferred reveal resolves', async () => {
+    const fixture = treeFixture(['root', 'folder']);
+    const firstReveal = deferred<void>();
+    fixture.view.reveal.mockReturnValueOnce(firstReveal.promise);
+    const controller = new MyCodeViewController(fixture.provider, fixture.view);
+    await flush();
+    mocks.executeCommand.mockClear();
+
+    const expansion = controller.expandAll();
+    await flush();
+    expect(fixture.view.reveal).toHaveBeenCalledTimes(1);
+
+    fixture.rebuild();
+    firstReveal.resolve();
+    await expansion;
+
+    expect(fixture.view.reveal).toHaveBeenCalledTimes(1);
+    expect(mocks.executeCommand.mock.calls.at(-1)).toEqual(['setContext', 'myCode.treeAllExpanded', false]);
+    controller.dispose();
+  });
+
+  it('retains successful reveals so manual expansion can complete a failed expand-all', async () => {
+    const fixture = treeFixture(['root', 'folder']);
+    const secondReveal = deferred<void>();
+    fixture.view.reveal.mockResolvedValueOnce(undefined).mockReturnValueOnce(secondReveal.promise);
+    const controller = new MyCodeViewController(fixture.provider, fixture.view);
+    await flush();
+    mocks.executeCommand.mockClear();
+
+    const expansion = controller.expandAll();
+    await flush();
+    secondReveal.reject(new Error('second reveal failed'));
+    await expect(expansion).rejects.toThrow('second reveal failed');
+
+    fixture.expand(fixture.nodes[1]!);
+    await flush();
+    expect(mocks.executeCommand.mock.calls.at(-1)).toEqual(['setContext', 'myCode.treeAllExpanded', true]);
+    controller.dispose();
+  });
 });
 
 describe('VisualModeController', () => {
@@ -164,6 +205,26 @@ describe('VisualModeController', () => {
     expect(editors.setEnabled).toHaveBeenCalledWith(false);
   });
 
+
+  it('keeps an immediate OFF toggle after a deferred initial repaint settles', async () => {
+    const initialRepaint = deferred<void>();
+    const decorations = { setEnabled: vi.fn() };
+    const editors = { setEnabled: vi.fn((enabled: boolean) => enabled
+      ? initialRepaint.promise
+      : Promise.resolve()) };
+    const controller = new VisualModeController(decorations, editors);
+    await flush();
+
+    const toggle = controller.toggle();
+    await flush();
+    initialRepaint.resolve();
+    await toggle;
+    await flush();
+
+    expect(decorations.setEnabled.mock.calls).toEqual([[true], [false]]);
+    expect(editors.setEnabled.mock.calls).toEqual([[true], [false]]);
+    expect(mocks.executeCommand.mock.calls.at(-1)).toEqual(['setContext', 'myCode.visualsEnabled', false]);
+  });
   it('restores visual state when the Workspace configuration write fails', async () => {
     const decorations = { setEnabled: vi.fn() };
     const editors = { setEnabled: vi.fn(async () => undefined) };
@@ -238,4 +299,18 @@ function treeFixture(ids: readonly string[]) {
 async function flush(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
+
+}
+function deferred<T>() {
+  let resolvePromise: ((value: T) => void) | undefined;
+  let rejectPromise: ((reason: unknown) => void) | undefined;
+  const promise = new Promise<T>((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+  return {
+    promise,
+    resolve: (value: T) => resolvePromise?.(value),
+    reject: (reason: unknown) => rejectPromise?.(reason)
+  };
 }

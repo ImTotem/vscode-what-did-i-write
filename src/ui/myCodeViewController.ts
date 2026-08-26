@@ -9,6 +9,8 @@ type CurrentTree = Pick<MyCodeTreeProvider, 'expandableNodes' | 'getParent' | 'o
 export class MyCodeViewController implements vscode.Disposable {
   private readonly subscriptions: vscode.Disposable[];
   private readonly expanded = new Set<string>();
+  private expansionOperation = 0;
+  private rebuildGeneration = 0;
 
   public constructor(
     private readonly provider: CurrentTree,
@@ -23,22 +25,28 @@ export class MyCodeViewController implements vscode.Disposable {
   }
 
   public async expandAll(): Promise<void> {
+    const operation = ++this.expansionOperation;
+    const rebuildGeneration = this.rebuildGeneration;
     const nodes = this.provider.expandableNodes();
     try {
       for (const node of nodes) {
         await this.view.reveal(node, { expand: true, select: false, focus: false });
+        if (!this.isCurrentExpansion(operation, rebuildGeneration)) return;
+        this.expanded.add(node.id);
       }
-      this.expanded.clear();
-      for (const node of nodes) this.expanded.add(node.id);
-      await this.setAllExpanded(nodes.length > 0);
+      if (!this.isCurrentExpansion(operation, rebuildGeneration)) return;
+      await this.syncExpansionContext();
+      if (!this.isCurrentExpansion(operation, rebuildGeneration)) return;
     } catch (error) {
-      this.expanded.clear();
-      await Promise.resolve(this.setAllExpanded(false)).catch(() => undefined);
+      if (this.isCurrentExpansion(operation, rebuildGeneration)) {
+        await this.syncExpansionContext().catch(() => undefined);
+      }
       throw error;
     }
   }
 
   public async collapseAll(): Promise<void> {
+    this.expansionOperation += 1;
     try {
       await vscode.commands.executeCommand('myCode.explorer.focus');
       await vscode.commands.executeCommand('list.collapseAll');
@@ -62,6 +70,7 @@ export class MyCodeViewController implements vscode.Disposable {
   }
 
   private recordCollapsed(element: MyCodeNode): void {
+    this.expansionOperation += 1;
     for (const node of this.provider.expandableNodes()) {
       if (this.isInCollapsedSubtree(node, element)) this.expanded.delete(node.id);
     }
@@ -77,7 +86,13 @@ export class MyCodeViewController implements vscode.Disposable {
     return false;
   }
 
+  private isCurrentExpansion(operation: number, rebuildGeneration: number): boolean {
+    return this.expansionOperation === operation && this.rebuildGeneration === rebuildGeneration;
+  }
+
   private resetExpansionState(): void {
+    this.expansionOperation += 1;
+    this.rebuildGeneration += 1;
     this.expanded.clear();
     void Promise.resolve(this.setAllExpanded(false)).catch(() => undefined);
   }
@@ -95,6 +110,7 @@ export class MyCodeViewController implements vscode.Disposable {
 
 export class VisualModeController {
   private enabled = true;
+  private operation = 0;
 
   public constructor(
     private readonly decorations: Pick<MyCodeDecorationProvider, 'setEnabled'>,
@@ -104,50 +120,60 @@ export class VisualModeController {
   }
 
   public async toggle(): Promise<void> {
+    const operation = ++this.operation;
     const previous = this.enabled;
     const next = !this.visualsEnabled();
     const configuration = vscode.workspace.getConfiguration('myCode');
     try {
       await configuration.update('visuals.enabled', next, vscode.ConfigurationTarget.Workspace);
     } catch (error) {
-      await this.restore(previous);
+      if (this.isCurrentOperation(operation)) await this.restore(previous, operation);
       throw error;
     }
-    await this.applyOrRestore(next, previous);
+    if (!this.isCurrentOperation(operation)) return;
+    await this.applyOrRestore(next, previous, operation);
   }
 
   public async acceptConfigurationChange(): Promise<void> {
+    const operation = ++this.operation;
     const previous = this.enabled;
-    await this.applyOrRestore(this.visualsEnabled(), previous);
+    await this.applyOrRestore(this.visualsEnabled(), previous, operation);
   }
 
   private async acceptInitialConfiguration(): Promise<void> {
+    const operation = ++this.operation;
     const previous = this.enabled;
     try {
-      await this.apply(this.visualsEnabled());
+      await this.apply(this.visualsEnabled(), operation);
     } catch {
-      await this.restore(previous);
+      if (this.isCurrentOperation(operation)) await this.restore(previous, operation);
     }
   }
 
-  private async applyOrRestore(next: boolean, previous: boolean): Promise<void> {
+  private async applyOrRestore(next: boolean, previous: boolean, operation: number): Promise<void> {
     try {
-      await this.apply(next);
+      await this.apply(next, operation);
     } catch (error) {
-      await this.restoreConfiguration(previous);
-      await this.restore(previous);
+      if (this.isCurrentOperation(operation)) {
+        await this.restoreConfiguration(previous, operation);
+        await this.restore(previous, operation);
+      }
       throw error;
     }
   }
 
-  private async apply(enabled: boolean): Promise<void> {
+  private async apply(enabled: boolean, operation: number): Promise<void> {
+    if (!this.isCurrentOperation(operation)) return;
     this.decorations.setEnabled(enabled);
     await this.editors.setEnabled(enabled);
+    if (!this.isCurrentOperation(operation)) return;
     await vscode.commands.executeCommand('setContext', 'myCode.visualsEnabled', enabled);
+    if (!this.isCurrentOperation(operation)) return;
     this.enabled = enabled;
   }
 
-  private async restore(enabled: boolean): Promise<void> {
+  private async restore(enabled: boolean, operation: number): Promise<void> {
+    if (!this.isCurrentOperation(operation)) return;
     try {
       this.decorations.setEnabled(enabled);
     } catch {
@@ -158,21 +184,27 @@ export class VisualModeController {
     } catch {
       // Preserve the original failure while restoring the context key.
     }
+    if (!this.isCurrentOperation(operation)) return;
     try {
       await vscode.commands.executeCommand('setContext', 'myCode.visualsEnabled', enabled);
     } catch {
       // The extension cannot repair a failed VS Code command invocation.
     }
-    this.enabled = enabled;
+    if (this.isCurrentOperation(operation)) this.enabled = enabled;
   }
 
-  private async restoreConfiguration(enabled: boolean): Promise<void> {
+  private async restoreConfiguration(enabled: boolean, operation: number): Promise<void> {
+    if (!this.isCurrentOperation(operation)) return;
     try {
       await vscode.workspace.getConfiguration('myCode')
         .update('visuals.enabled', enabled, vscode.ConfigurationTarget.Workspace);
     } catch {
       // The visual providers are restored even if VS Code rejects the rollback write.
     }
+  }
+
+  private isCurrentOperation(operation: number): boolean {
+    return this.operation === operation;
   }
 
   private visualsEnabled(): boolean {
