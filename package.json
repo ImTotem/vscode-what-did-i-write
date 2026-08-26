@@ -1,10 +1,10 @@
 {
-  "name": "my-code",
+  "name": "what-did-i-write",
   "type": "commonjs",
   "publisher": "local-only",
-  "displayName": "My Code",
+  "displayName": "What Did I Write?",
   "version": "0.1.0",
-  "description": "Show local Git code owned by the current Git user.",
+  "description": "Find the files, lines, and commits you authored.",
   "license": "UNLICENSED",
   "categories": [
     "Other"
@@ -29,52 +29,143 @@
     "commands": [
       {
         "command": "myCode.refresh",
-        "title": "My Code: Refresh"
+        "title": "My Code: Refresh",
+        "icon": "$(refresh)"
       },
       {
         "command": "myCode.showOutput",
-        "title": "My Code: Show Output"
+        "title": "My Code: Show Output",
+        "icon": "$(output)"
       },
       {
         "command": "myCode.retryIdentity",
-        "title": "My Code: Retry"
+        "title": "My Code: Retry",
+        "icon": "$(debug-restart)"
       },
       {
         "command": "myCode.openFile",
-        "title": "My Code: Open File"
+        "title": "My Code: Open File",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "myCode.focusFileHistory",
+        "title": "My Code: Focus File History",
+        "icon": "$(history)"
+      },
+      {
+        "command": "myCode.focusLineHistory",
+        "title": "My Code: Focus Line History",
+        "icon": "$(list-tree)"
       },
       {
         "command": "myCode.showFileHistory",
-        "title": "My Code: Show File History"
+        "title": "My Code: Show File History",
+        "icon": "$(history)"
       },
       {
         "command": "myCode.showLineHistory",
-        "title": "My Code: Show Line History"
+        "title": "My Code: Show Line History",
+        "icon": "$(list-tree)"
       },
       {
         "command": "myCode.toggleLineBackground",
-        "title": "My Code: Toggle Line Background"
+        "title": "My Code: Toggle Line Background",
+        "icon": "$(color-mode)"
       }
     ],
     "configuration": {
-      "title": "My Code",
+      "title": "What Did I Write?",
       "properties": {
         "myCode.editor.lineBackground": {
           "type": "boolean",
           "default": false,
           "description": "Highlight your owned lines with a subtle background color."
+        },
+        "myCode.visuals.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show ownership colors and markers in the editor."
         }
       }
     },
-    "views": {
-      "explorer": [
+    "colors": [
+      {
+        "id": "myCode.editor.committedLineBackground",
+        "description": "Subtle background for committed code owned by you.",
+        "defaults": {
+          "dark": "#2EA0431A",
+          "light": "#1A7F371A",
+          "highContrast": "#2EA04333",
+          "highContrastLight": "#1A7F3733"
+        }
+      },
+      {
+        "id": "myCode.editor.workingLineBackground",
+        "description": "Subtle background for uncommitted code owned by you.",
+        "defaults": {
+          "dark": "#D299221A",
+          "light": "#9A67001A",
+          "highContrast": "#D2992233",
+          "highContrastLight": "#9A670033"
+        }
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
         {
-          "id": "myCode.explorer",
-          "name": "MY CODE"
+          "id": "myCode",
+          "title": "MY CODE",
+          "icon": "media/my-code.svg"
         }
       ]
     },
+    "views": {
+      "myCode": [
+        {
+          "id": "myCode.explorer",
+          "name": "MY CHANGES"
+        },
+        {
+          "id": "myCode.pastActivity",
+          "name": "PAST ACTIVITY",
+          "visibility": "collapsed"
+        },
+        {
+          "id": "myCode.history",
+          "name": "FILE HISTORY",
+          "type": "webview"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "myCode.explorer",
+        "contents": "Your changed files appear here.\n[Refresh My Code](command:myCode.refresh)\nOpen a changed file and hover one of your marked lines to see file and line history."
+      }
+    ],
     "menus": {
+      "view/title": [
+        {
+          "command": "myCode.refresh",
+          "when": "view == myCode.explorer",
+          "group": "navigation@1"
+        },
+        {
+          "command": "myCode.showFileHistory",
+          "when": "view == myCode.explorer",
+          "group": "navigation@2"
+        },
+        {
+          "command": "myCode.showLineHistory",
+          "when": "view == myCode.explorer",
+          "group": "navigation@3"
+        },
+        {
+          "command": "myCode.toggleLineBackground",
+          "when": "view == myCode.explorer",
+          "group": "navigation@4"
+        }
+      ],
       "view/item": [
         {
           "command": "myCode.showFileHistory",

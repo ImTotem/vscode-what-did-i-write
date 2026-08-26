@@ -1,6 +1,8 @@
-# My Code
+# What Did I Write?
 
-My Code is a desktop VS Code extension for finding the code you wrote in the
+Find the files, lines, and commits you authored.
+
+What Did I Write? is a desktop VS Code extension for finding the code you wrote in the
 currently checked-out Git repository. It runs automatically when VS Code has
 finished starting: there is no account sign-in, base-commit picker, setup
 screen, cloud service, or GitHub dependency.
@@ -19,13 +21,12 @@ Staged, unstaged, and untracked files are treated as your current work.
 Build a local installable package with `npm run package`, then install it:
 
 ```powershell
-code --install-extension .\my-code-0.1.0.vsix
+code --install-extension .\what-did-i-write-0.1.0.vsix
 ```
 
 Open a Git repository after installation. Folders outside Git repositories are
 left alone. If VS Code cannot find Git, or no global identity is configured,
-My Code shows one actionable warning and keeps the details in the **My Code**
-output channel.
+What Did I Write? shows one actionable warning and keeps the details in the **What Did I Write?** output channel.
 
 ## What you see
 
@@ -37,19 +38,39 @@ code and propagates the indication to their parent folders:
 - `◷` — a path you touched historically whose work no longer survives. This
   appears under **PAST ACTIVITY**, not as a current Explorer badge.
 
-The **MY CODE** Explorer view groups each repository into **CURRENT** and
-**PAST ACTIVITY**. Current files open normally; both current and past files
-expand to your relevant commits. Selecting a commit opens a read-only
-first-parent diff.
+The **MY CODE** icon is an independent Activity Bar destination, next to
+Explorer and Source Control. Its sidebar contains only your files, grouped into
+**CURRENT** and **PAST ACTIVITY**. Expand the folders and select a file to open
+it; commit entries live in the separate **FILE HISTORY** view.
+
+The **MY CHANGES** list uses a collapsible Explorer-like folder hierarchy.
+The **FILE HISTORY** view places saved working changes first and the newest commit at the top.
+Its vertical rail points toward older matching commits, so the time direction is visible
+without reading every timestamp. Clicking a commit keeps the source pinned and updates
+one reusable preview diff beside it.
 
 When you open a candidate text file, My Code keeps the complete current file
-visible and marks your lines in the gutter and overview ruler. Hover a marked
-line for its author, date, short commit hash, subject, and links to file or
-line history. Binary files may be listed, but are never line-decorated.
+visible and marks your lines in the glyph gutter and overview ruler. It no
+longer draws a border inside the code content. The stable VS Code extension API
+does not expose direct minimap decorations, so the overview ruler beside the
+minimap is used instead. Hover a gutter marker to see a compact ownership card,
+then choose line or file history.
+Binary files may be listed, but are never line-decorated.
+
+## Where features live
+
+| Location | What is there |
+| --- | --- |
+| Activity Bar → **MY CODE** | Only your current and past changed files. |
+| **MY CHANGES** title bar | Refresh, File History, Line History, and line-background toggle. |
+| Editor glyph gutter / overview ruler | Committed and working ownership markers outside the code content. |
+| Editor gutter hover | Current ownership plus Line History and File History actions. |
+| **FILE HISTORY** | Newest-first commit rail; click an entry to update the reusable preview diff beside the source. |
+| Command Palette | Every My Code command, including Retry and Show Output. |
 
 ## Commands and setting
 
-Use the Command Palette for:
+The same actions are also available from the Command Palette:
 
 - `My Code: Refresh` — refresh every discovered repository.
 - `My Code: Retry` — retry identity discovery after changing global Git config.
@@ -59,7 +80,9 @@ Use the Command Palette for:
 - `My Code: Show Line History` — show matching history for the active line.
 - `My Code: Toggle Line Background` — toggle the optional owned-line background.
 
-The setting `myCode.editor.lineBackground` defaults to `false`. Enable it if
+The setting `myCode.visuals.enabled` defaults to `true`; turn it off to hide
+ownership colors and markers while keeping analysis and views active. The
+setting `myCode.editor.lineBackground` defaults to `false`. Enable it if
 you want a subtle whole-line background in addition to the gutter and ruler.
 
 ## Multi-root workspaces and refresh
@@ -71,7 +94,7 @@ My Code reacts to saves, creates, deletes, renames, workspace-folder changes,
 visible-editor changes, and focused-window repository fingerprint checks. An
 explicit refresh, checkout, commit, or rebase rebuilds the relevant index. A
 global identity change is not detected by repository fingerprint polling; after
-changing `user.name` or `user.email`, run `My Code: Retry or My Code: Refresh`
+changing `user.name` or `user.email`, run `My Code: Retry` or `My Code: Refresh`
 to re-read the identity and rebuild the index. It scans matching reachable
 paths first, processes active editors and Explorer requests ahead of background
 work, bounds Git subprocesses to four per repository, and caches only index

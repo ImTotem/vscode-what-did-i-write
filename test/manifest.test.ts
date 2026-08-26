@@ -3,18 +3,38 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const manifest = JSON.parse(readFileSync('package.json', 'utf8')) as {
+  readonly name?: string;
+  readonly displayName?: string;
+  readonly description?: string;
   readonly main?: string;
   readonly type?: string;
   readonly extensionKind?: readonly string[];
   readonly activationEvents?: readonly string[];
   readonly contributes?: {
-    readonly commands?: readonly { readonly command: string; readonly title: string }[];
-    readonly menus?: { readonly 'view/item'?: readonly { readonly command: string; readonly when: string }[] };
-    readonly views?: { readonly explorer?: readonly { readonly id: string; readonly name: string }[] };
+    readonly commands?: readonly { readonly command: string; readonly title: string; readonly icon?: string }[];
+    readonly menus?: {
+      readonly 'view/item'?: readonly { readonly command: string; readonly when: string }[];
+      readonly 'view/title'?: readonly { readonly command: string; readonly when: string; readonly group?: string }[];
+    };
+    readonly viewsContainers?: {
+      readonly activitybar?: readonly { readonly id: string; readonly title: string; readonly icon: string }[];
+    };
+    readonly colors?: readonly { readonly id: string; readonly defaults: Record<string, string> }[];
+    readonly configuration?: {
+      readonly title?: string;
+      readonly properties?: Record<string, { readonly type: string; readonly default: boolean }>;
+    };
+    readonly views?: Record<string, readonly { readonly id: string; readonly name: string; readonly type?: string; readonly visibility?: string }[]>;
+    readonly viewsWelcome?: readonly { readonly view: string; readonly contents: string }[];
   };
 };
 
 describe('extension manifest', () => {
+  it('uses the What Did I Write package branding and tagline', () => {
+    expect(manifest.name).toBe('what-did-i-write');
+    expect(manifest.displayName).toBe('What Did I Write?');
+    expect(manifest.description).toBe('Find the files, lines, and commits you authored.');
+  });
   it('activates in a workspace with the packaged CommonJS entry point', () => {
     expect(manifest.main).toBe('./dist/extension.js');
     expect(manifest.type).toBe('commonjs');
@@ -29,6 +49,8 @@ describe('extension manifest', () => {
       'myCode.showOutput',
       'myCode.retryIdentity',
       'myCode.openFile',
+      'myCode.focusFileHistory',
+      'myCode.focusLineHistory',
       'myCode.showFileHistory',
       'myCode.showLineHistory'
     ]));
@@ -36,12 +58,47 @@ describe('extension manifest', () => {
       'myCode.openCommitDiff',
       'myCode.openWorkingTreeDiff'
     ]));
+
   });
 
-  it('contributes the MY CODE Explorer view', () => {
-    expect(manifest.contributes?.views?.explorer).toEqual(expect.arrayContaining([
-      { id: 'myCode.explorer', name: 'MY CODE' }
+  it('contributes MY CODE as its own Activity Bar destination', () => {
+    expect(manifest.contributes?.viewsContainers?.activitybar).toEqual(expect.arrayContaining([
+      { id: 'myCode', title: 'MY CODE', icon: 'media/my-code.svg' }
     ]));
+    expect(manifest.contributes?.views?.myCode).toEqual(expect.arrayContaining([
+      { id: 'myCode.explorer', name: 'MY CHANGES' },
+      { id: 'myCode.pastActivity', name: 'PAST ACTIVITY', visibility: 'collapsed' },
+      { id: 'myCode.history', name: 'FILE HISTORY', type: 'webview' }
+    ]));
+    expect(manifest.contributes?.views?.explorer).toBeUndefined();
+  });
+
+  it('keeps the MY CODE settings namespace while exposing the visual toggle', () => {
+    expect(manifest.contributes?.configuration?.title).toBe('What Did I Write?');
+    expect(manifest.contributes?.configuration?.properties?.['myCode.visuals.enabled']).toEqual(expect.objectContaining({
+      type: 'boolean',
+      default: true
+    }));
+  });
+
+  it('explains the file-first workflow when the MY CODE view is empty', () => {
+    expect(manifest.contributes?.viewsWelcome).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        view: 'myCode.explorer',
+        contents: expect.stringContaining('changed files')
+      })
+    ]));
+  });
+
+  it('exposes the core actions in the MY CODE view title bar', () => {
+    expect(manifest.contributes?.menus?.['view/title']).toEqual(expect.arrayContaining([
+      expect.objectContaining({ command: 'myCode.refresh', when: 'view == myCode.explorer' }),
+      expect.objectContaining({ command: 'myCode.showFileHistory', when: 'view == myCode.explorer' }),
+      expect.objectContaining({ command: 'myCode.showLineHistory', when: 'view == myCode.explorer' }),
+      expect.objectContaining({ command: 'myCode.toggleLineBackground', when: 'view == myCode.explorer' })
+    ]));
+    const commands = manifest.contributes?.commands ?? [];
+    expect(commands.filter(({ command }) => command.startsWith('myCode.')).every(({ icon }) => icon !== undefined)).toBe(true);
   });
 
   it('routes file history from current and past MY CODE tree items', () => {

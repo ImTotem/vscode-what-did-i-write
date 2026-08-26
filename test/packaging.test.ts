@@ -9,6 +9,9 @@ describe('release package contract', () => {
   it('documents local-only operation and its primary user workflow', () => {
     const readme = read('README.md');
 
+    expect(readme).toContain('What Did I Write?');
+    expect(readme).toContain('Find the files, lines, and commits you authored.');
+    expect(readme).toContain('what-did-i-write-0.1.0.vsix');
     expect(readme).toContain('local Git');
     expect(readme).toContain('MY CODE');
     expect(readme).toContain('`A`');
