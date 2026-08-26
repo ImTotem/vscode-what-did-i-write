@@ -1,4 +1,4 @@
-import { isAbsolute, relative, sep } from 'node:path';
+import { isAbsolute, join, relative, sep } from 'node:path';
 
 import * as vscode from 'vscode';
 
@@ -6,8 +6,9 @@ import { hasConfiguredIdentity } from '../core/identity.js';
 import type { FileRecord, OwnedRange } from '../core/model.js';
 import type { AnalyzerAccess, RepositoryRegistry } from '../extension/repositoryRegistry.js';
 
-const FILE_HISTORY_COMMAND = 'myCode.showFileHistory';
-const LINE_HISTORY_COMMAND = 'myCode.showLineHistory';
+import type { HistoryPreview } from './historyController.js';
+const FILE_HISTORY_COMMAND = 'myCode.focusFileHistory';
+const LINE_HISTORY_COMMAND = 'myCode.focusLineHistory';
 const TRUSTED_HOVER_COMMANDS = [FILE_HISTORY_COMMAND, LINE_HISTORY_COMMAND] as const;
 
 export type CommandFactory = (command: string, args: readonly unknown[]) => string;
@@ -18,13 +19,26 @@ export function commandUri(command: string, args: readonly unknown[]): string {
 
 export function toDecorationOptions(
   record: Pick<FileRecord, 'ranges'>,
-  document: Pick<vscode.TextDocument, 'lineCount' | 'uri'>,
-  commandFactory: CommandFactory = commandUri
+  document: Pick<vscode.TextDocument, 'lineCount'>,
+  sourcePath?: string
 ): vscode.DecorationOptions[] {
   return record.ranges.flatMap((ownedRange) => {
-    const range = documentRange(ownedRange, document.lineCount);
-    if (range === undefined) return [];
-    return [{ range, hoverMessage: hoverMessage(ownedRange, document.uri, commandFactory) }];
+    const ownedDocumentRange = documentRange(ownedRange, document.lineCount);
+    if (ownedDocumentRange === undefined) return [];
+    const options: vscode.DecorationOptions[] = [];
+    for (let line = ownedDocumentRange.start.line; line <= ownedDocumentRange.end.line; line += 1) {
+      const range = new vscode.Range(
+        new vscode.Position(line, 0),
+        new vscode.Position(line, 0)
+      );
+      options.push({
+        range,
+        ...(sourcePath === undefined ? {} : {
+          hoverMessage: ownershipHoverMarkdown(ownedRange, sourcePath, line)
+        })
+      });
+    }
+    return options;
   });
 }
 
@@ -33,7 +47,49 @@ export function documentRange(range: Pick<OwnedRange, 'start' | 'endExclusive'>,
   const start = Math.min(Math.max(0, range.start), safeLineCount);
   const end = Math.min(Math.max(start, range.endExclusive), safeLineCount);
   if (start === end) return undefined;
-  return new vscode.Range(new vscode.Position(start, 0), new vscode.Position(end, 0));
+  return new vscode.Range(
+    new vscode.Position(start, 0),
+    new vscode.Position(end - 1, Number.MAX_SAFE_INTEGER)
+  );
+}
+
+export function ownershipHoverMarkdown(
+  range: OwnedRange,
+  sourcePath: string,
+  zeroBasedLine: number,
+  commandFactory: CommandFactory = commandUri
+): vscode.MarkdownString {
+  return compactOwnershipHover(new vscode.MarkdownString(), range, sourcePath, zeroBasedLine, commandFactory);
+}
+
+function compactOwnershipHover(
+  hover: vscode.MarkdownString,
+  range: OwnedRange,
+  sourcePath: string,
+  zeroBasedLine: number,
+  commandFactory: CommandFactory
+): vscode.MarkdownString {
+  hover.appendMarkdown('**\uB0B4\uAC00 \uC791\uC131\uD55C \uCF54\uB4DC | Your code**');
+  if (range.commit === undefined) {
+    hover.appendMarkdown('\n\n_\uC544\uC9C1 \uCEE4\uBC0B\uB418\uC9C0 \uC54A\uC740 \uBCC0\uACBD_');
+  } else {
+    const commit = range.commit;
+    const date = new Date(commit.authoredAt * 1_000).toLocaleDateString();
+    hover.appendMarkdown(
+      '\n\n\x60' + escapeMarkdown(commit.hash.slice(0, 7)) + '\x60 | '
+        + escapeMarkdown(date) + '  \n\n' + escapeMarkdown(commit.subject)
+    );
+  }
+  hover.appendMarkdown(
+    '\n\n[$(list-tree) \uC774 \uC904\uC758 \uBCC0\uACBD \uD750\uB984]('
+      + commandFactory(LINE_HISTORY_COMMAND, [sourcePath, zeroBasedLine]) + ')'
+  );
+  hover.appendMarkdown(
+    ' | [$(history) \uD30C\uC77C \uBCC0\uACBD \uD750\uB984]('
+      + commandFactory(FILE_HISTORY_COMMAND, [sourcePath]) + ')'
+  );
+  hover.isTrusted = { enabledCommands: TRUSTED_HOVER_COMMANDS };
+  return hover;
 }
 
 export interface EditorOwnershipOptions {
@@ -45,6 +101,7 @@ export class EditorOwnershipController implements vscode.Disposable {
   private committedDecoration: vscode.TextEditorDecorationType;
   private workingDecoration: vscode.TextEditorDecorationType;
   private readonly generations = new Map<string, number>();
+  private readonly rendered = new WeakMap<vscode.TextEditor, string>();
   private readonly suppressedDocumentUris = new Set<string>();
   private readonly dirtyDocumentUris = new Set<string>();
   private readonly pendingSaveRefreshes = new Map<string, number>();
@@ -52,6 +109,8 @@ export class EditorOwnershipController implements vscode.Disposable {
   private readonly subscriptions: vscode.Disposable[];
   private scheduled = false;
   private disposed = false;
+  private enabled = true;
+  private decorationRevision = 0;
 
   public constructor(
     private readonly registry: RepositoryRegistry,
@@ -70,14 +129,35 @@ export class EditorOwnershipController implements vscode.Disposable {
   }
 
   public async refreshVisibleEditors(): Promise<void> {
-    if (this.disposed) return;
+    if (this.disposed || !this.enabled) return;
     await Promise.all(vscode.window.visibleTextEditors.map((editor) => this.refreshEditor(editor)));
   }
 
   public async refreshUri(uri: vscode.Uri): Promise<void> {
-    if (this.disposed || !isSourceUri(uri)) return;
+    if (this.disposed || !this.enabled || !isSourceUri(uri)) return;
     const editors = vscode.window.visibleTextEditors.filter((editor) => editor.document.uri.toString() === uri.toString());
     await Promise.all(editors.map((editor) => this.refreshEditor(editor)));
+  }
+
+  public async setEnabled(enabled: boolean): Promise<void> {
+    if (this.disposed) return;
+    if (this.enabled === enabled) {
+      if (enabled) await this.refreshVisibleEditors();
+      return;
+    }
+
+    this.enabled = enabled;
+    this.decorationRevision += 1;
+    if (!enabled) {
+      for (const editor of vscode.window.visibleTextEditors) {
+        const key = editor.document.uri.toString();
+        this.generations.set(key, (this.generations.get(key) ?? 0) + 1);
+        this.clear(editor);
+      }
+      return;
+    }
+
+    await this.refreshVisibleEditors();
   }
 
   public async toggleLineBackground(): Promise<void> {
@@ -85,6 +165,7 @@ export class EditorOwnershipController implements vscode.Disposable {
     const enabled = configuration.get<boolean>('editor.lineBackground', false);
     await configuration.update('editor.lineBackground', !enabled, vscode.ConfigurationTarget.Global);
     if (this.disposed) return;
+    this.decorationRevision += 1;
     this.committedDecoration.dispose();
     this.workingDecoration.dispose();
     this.committedDecoration = this.createDecoration('gitDecoration.addedResourceForeground');
@@ -106,7 +187,7 @@ export class EditorOwnershipController implements vscode.Disposable {
   }
 
   private scheduleRefresh(): void {
-    if (this.disposed || this.scheduled) return;
+    if (this.disposed || !this.enabled || this.scheduled) return;
     this.scheduled = true;
     queueMicrotask(() => {
       this.scheduled = false;
@@ -117,28 +198,40 @@ export class EditorOwnershipController implements vscode.Disposable {
   private async refreshEditor(editor: vscode.TextEditor): Promise<void> {
     const { document } = editor;
     if (!isSourceUri(document.uri)) return;
+    if (!this.enabled) return;
     const key = document.uri.toString();
     const generation = (this.generations.get(key) ?? 0) + 1;
     this.generations.set(key, generation);
-    this.clear(editor);
 
     if (document.isDirty || this.dirtyDocumentUris.has(key) || this.pendingSaveRefreshes.has(key)
-      || this.suppressedDocumentUris.has(key)) return;
+      || this.suppressedDocumentUris.has(key)) {
+      this.clear(editor);
+      return;
+    }
 
     const repository = this.registry.findByUri(document.uri);
-    if (repository === undefined || repository.state !== 'ready') return;
-    if (!hasConfiguredIdentity(repository.analyzer.getSnapshot().identity)) return;
+    if (repository === undefined || repository.state !== 'ready') {
+      this.clear(editor);
+      return;
+    }
+    if (!hasConfiguredIdentity(repository.analyzer.getSnapshot().identity)) {
+      this.clear(editor);
+      return;
+    }
     const path = workspaceRelativePath(repository.root, document.uri.fsPath);
-    if (path === undefined) return;
+    if (path === undefined) {
+      this.clear(editor);
+      return;
+    }
 
     const known = findRecord(repository.analyzer, path);
-    if (known !== undefined) this.apply(editor, known);
+    if (known !== undefined) this.render(editor, known);
     try {
       const resolved = await repository.analyzer.ensureFile(path, 'active-editor');
       if (!this.isCurrent(key, generation)) return;
       const record = resolved ?? findRecord(repository.analyzer, path);
-      this.clear(editor);
-      if (record !== undefined) this.apply(editor, record);
+      if (record === undefined) this.clear(editor);
+      else this.render(editor, record);
     } catch (error) {
       if (repository.analyzer.reportsErrors !== true) {
         this.options.onError?.(error, 'editor-ownership', path);
@@ -147,7 +240,7 @@ export class EditorOwnershipController implements vscode.Disposable {
   }
 
   private isCurrent(key: string, generation: number): boolean {
-    return !this.disposed && this.generations.get(key) === generation;
+    return !this.disposed && this.enabled && this.generations.get(key) === generation;
   }
 
   private handleDocumentChange(document: vscode.TextDocument): void {
@@ -232,34 +325,72 @@ export class EditorOwnershipController implements vscode.Disposable {
   }
 
   private clear(editor: vscode.TextEditor): void {
-    editor.setDecorations(this.committedDecoration, []);
-    editor.setDecorations(this.workingDecoration, []);
+    this.render(editor);
   }
 
-  private apply(editor: vscode.TextEditor, record: FileRecord): void {
-    const committed = toDecorationOptions({ ranges: record.ranges.filter((range) => !range.uncommitted) }, editor.document);
-    const working = toDecorationOptions({ ranges: record.ranges.filter((range) => range.uncommitted) }, editor.document);
+  private render(editor: vscode.TextEditor, record?: FileRecord): void {
+    const fingerprint = record === undefined
+      ? `clear:${this.decorationRevision}`
+      : `${recordFingerprint(record, this.decorationRevision)}:${editor.document.lineCount}`;
+    if (this.rendered.get(editor) === fingerprint) return;
+    const sourcePath = editor.document.uri.fsPath;
+    const committed = record === undefined ? [] : toDecorationOptions(
+      { ranges: record.ranges.filter((range) => !range.uncommitted) },
+      editor.document,
+      sourcePath
+    );
+    const working = record === undefined ? [] : toDecorationOptions(
+      { ranges: record.ranges.filter((range) => range.uncommitted) },
+      editor.document,
+      sourcePath
+    );
     editor.setDecorations(this.committedDecoration, committed);
     editor.setDecorations(this.workingDecoration, working);
+    this.rendered.set(editor, fingerprint);
   }
 
   private createDecoration(colorId: 'gitDecoration.addedResourceForeground' | 'gitDecoration.modifiedResourceForeground'):
   vscode.TextEditorDecorationType {
     const background = vscode.workspace.getConfiguration('myCode').get<boolean>('editor.lineBackground', false);
+    const committed = colorId === 'gitDecoration.addedResourceForeground';
+    const icon = committed ? 'owned-committed.svg' : 'owned-working.svg';
+    const backgroundColor = committed
+      ? 'myCode.editor.committedLineBackground'
+      : 'myCode.editor.workingLineBackground';
     return vscode.window.createTextEditorDecorationType({
       isWholeLine: true,
-      borderWidth: '0 0 0 2px',
-      borderStyle: 'solid',
-      borderColor: new vscode.ThemeColor(colorId),
+      gutterIconPath: join(__dirname, '..', 'media', icon),
+      gutterIconSize: 'contain',
       overviewRulerColor: new vscode.ThemeColor(colorId),
-      overviewRulerLane: vscode.OverviewRulerLane.Left,
-      ...(background ? { backgroundColor: new vscode.ThemeColor(colorId) } : {})
+      overviewRulerLane: vscode.OverviewRulerLane.Full,
+      ...(background ? { backgroundColor: new vscode.ThemeColor(backgroundColor) } : {})
     });
   }
 }
 
-function hoverMessage(range: OwnedRange, uri: vscode.Uri, commandFactory: CommandFactory): vscode.MarkdownString {
+function recordFingerprint(record: FileRecord, revision: number): string {
+  return JSON.stringify([
+    revision,
+    record.relativePath,
+    record.ranges.map((range) => [
+      range.start,
+      range.endExclusive,
+      range.uncommitted,
+      range.commit?.hash,
+      range.commit?.authoredAt,
+      range.commit?.subject
+    ])
+  ]);
+}
+
+export function historyPreviewMarkdown(
+  preview: HistoryPreview,
+  uri: vscode.Uri,
+  zeroBasedLine: number,
+  commandFactory: CommandFactory = commandUri
+): vscode.MarkdownString {
   const hover = new vscode.MarkdownString();
+  const range = preview.ownedRange;
   if (range.commit === undefined) {
     hover.appendMarkdown('**Your uncommitted work**');
   } else {
@@ -268,12 +399,25 @@ function hoverMessage(range: OwnedRange, uri: vscode.Uri, commandFactory: Comman
     const author = `${commit.authorName} <${commit.authorEmail}>`;
     hover.appendMarkdown(`**Your commit**  \n\n${escapeMarkdown(author)}  \n\n\`${escapeMarkdown(commit.hash.slice(0, 7))}\` · ${escapeMarkdown(date)}  \n\n${escapeMarkdown(commit.subject)}`);
   }
+  appendHistory(hover, 'Line history', preview.lineHistory);
+  appendHistory(hover, 'File history', preview.fileHistory);
   hover.appendMarkdown(`\n\n[$(history) File history](${commandFactory(FILE_HISTORY_COMMAND, [uri.fsPath])})`);
-  hover.appendMarkdown(`\n\n[$(list-tree) Line history](${commandFactory(LINE_HISTORY_COMMAND, [uri.fsPath, range.start])})`);
+  hover.appendMarkdown(`\n\n[$(list-tree) Line history](${commandFactory(LINE_HISTORY_COMMAND, [uri.fsPath, zeroBasedLine])})`);
   hover.isTrusted = { enabledCommands: TRUSTED_HOVER_COMMANDS };
   return hover;
 }
 
+function appendHistory(hover: vscode.MarkdownString, title: string, commits: readonly HistoryPreview['fileHistory'][number][]): void {
+  hover.appendMarkdown('\n\n---\n\n**' + title + '**');
+  if (commits.length === 0) {
+    hover.appendMarkdown('\n\n_No matching commits_');
+    return;
+  }
+  for (const commit of commits.slice(0, 3)) {
+    const date = new Date(commit.authoredAt * 1_000).toLocaleDateString();
+    hover.appendMarkdown('\n\n- `' + escapeMarkdown(commit.hash.slice(0, 7)) + '` · ' + escapeMarkdown(date) + ' — ' + escapeMarkdown(commit.subject));
+  }
+}
 function escapeMarkdown(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/([\\`*_{}\[\]()#+.!|-])/g, '\\$1');
 }

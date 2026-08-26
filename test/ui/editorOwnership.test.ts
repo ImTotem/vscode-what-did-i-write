@@ -66,7 +66,7 @@ vi.mock('vscode', () => ({
   Range: mocks.Range,
   MarkdownString: mocks.MarkdownString,
   ThemeColor: mocks.ThemeColor,
-  OverviewRulerLane: { Left: 1 },
+  OverviewRulerLane: { Left: 1, Full: 7 },
   window: mocks.window,
   workspace: {
     getConfiguration: () => ({
@@ -100,23 +100,26 @@ const committed = {
 };
 
 describe('toDecorationOptions', () => {
-  it('maps end-exclusive ranges, clips to the document, and creates trusted commit hover links', () => {
+  it('maps end-exclusive ranges and attaches compact history actions to gutter decorations', () => {
     const document = documentFor('/repo/src/a file.ts', 3);
     const result = toDecorationOptions(record([
       { start: 1, endExclusive: 3, commit: committed, uncommitted: false },
       { start: 2, endExclusive: 9, commit: undefined, uncommitted: true }
-    ]), document, commandUri);
+    ]), document, document.uri.fsPath);
 
-    expect(result).toHaveLength(2);
-    expect(result[0]?.range).toEqual({ start: { line: 1, character: 0 }, end: { line: 3, character: 0 } });
-    expect(result[1]?.range).toEqual({ start: { line: 2, character: 0 }, end: { line: 3, character: 0 } });
+    expect(result).toHaveLength(3);
+    expect(result[0]?.range).toEqual({ start: { line: 1, character: 0 }, end: { line: 1, character: 0 } });
+    expect(result[1]?.range).toEqual({ start: { line: 2, character: 0 }, end: { line: 2, character: 0 } });
+    expect(result[2]?.range).toEqual({ start: { line: 2, character: 0 }, end: { line: 2, character: 0 } });
     const hover = result[0]?.hoverMessage as unknown as { value: string; isTrusted: unknown };
-    expect(hover.value).toContain('abcdef1');
-    expect(hover.value).toContain('Me &lt;owner&gt;');
+    expect(hover.value).toContain('Your code');
     expect(hover.value).toContain('Fix markdown &lt;escaping&gt;');
-    expect(hover.value).toContain('$(history) File history');
-    expect(hover.value).toContain('$(list-tree) Line history');
-    expect(hover.isTrusted).toEqual({ enabledCommands: ['myCode.showFileHistory', 'myCode.showLineHistory'] });
+    expect(hover.value).toContain('myCode.focusLineHistory');
+    expect(hover.value).toContain('myCode.focusFileHistory');
+    expect(hover.value.match(/Fix markdown/g)).toHaveLength(1);
+    expect(hover.isTrusted).toEqual({
+      enabledCommands: ['myCode.focusFileHistory', 'myCode.focusLineHistory']
+    });
   });
 
   it('encodes command arguments as JSON before URI escaping', () => {
@@ -127,6 +130,89 @@ describe('toDecorationOptions', () => {
 });
 
 describe('EditorOwnershipController', () => {
+  it('clears both decoration layers and suppresses repainting until visuals are re-enabled', async () => {
+    const current = record([{ start: 0, endExclusive: 2, commit: committed, uncommitted: false }]);
+    const registry = fakeRegistry(current, Promise.resolve(current));
+    const editor = editorFor(documentFor('/repo/current.ts', 3));
+    setVisibleEditors([editor]);
+    const controller = new EditorOwnershipController(registry);
+
+    await controller.refreshVisibleEditors();
+    const resolvesBeforeDisable = registry.entry.analyzer.ensureFile.mock.calls.length;
+    editor.setDecorations.mockClear();
+
+    await controller.setEnabled(false);
+    await controller.refreshVisibleEditors();
+
+    expect(editor.setDecorations.mock.calls).toHaveLength(2);
+    expect(editor.setDecorations.mock.calls.map(([, options]) => options)).toEqual([[], []]);
+    expect(registry.entry.analyzer.ensureFile).toHaveBeenCalledTimes(resolvesBeforeDisable);
+
+    await controller.setEnabled(true);
+
+    expect(registry.entry.analyzer.ensureFile.mock.calls.length).toBeGreaterThan(resolvesBeforeDisable);
+    expect(editor.setDecorations.mock.calls.slice(-2).some(([, options]) => Array.isArray(options) && options.length > 0)).toBe(true);
+    controller.dispose();
+  });
+
+  it('does not repaint an editor when the resolved ownership fingerprint is unchanged', async () => {
+    const current = record([{ start: 0, endExclusive: 2, commit: committed, uncommitted: false }]);
+    const registry = fakeRegistry(current, Promise.resolve(current));
+    const editor = editorFor(documentFor('/repo/current.ts', 3));
+    setVisibleEditors([editor]);
+    const controller = new EditorOwnershipController(registry);
+
+    await controller.refreshVisibleEditors();
+    const callsAfterFirstRefresh = editor.setDecorations.mock.calls.length;
+    await controller.refreshVisibleEditors();
+
+    const actualCalls = editor.setDecorations.mock.calls.length;
+    controller.dispose();
+    expect(callsAfterFirstRefresh).toBeGreaterThan(0);
+    expect(actualCalls).toBe(callsAfterFirstRefresh);
+  });
+
+  it('keeps a known ownership record visible while resolution is pending', async () => {
+    const current = record([{ start: 0, endExclusive: 2, commit: committed, uncommitted: false }]);
+    const pending = deferred<FileRecord | undefined>();
+    const registry = fakeRegistry(current, pending.promise);
+    const editor = editorFor(documentFor('/repo/current.ts', 3));
+    setVisibleEditors([editor]);
+    const controller = new EditorOwnershipController(registry);
+
+    void controller.refreshVisibleEditors();
+    await flush();
+
+    const hasOwned = editor.setDecorations.mock.calls.some(([, options]) =>
+      Array.isArray(options) && options.length > 0
+    );
+    const emptyCalls = editor.setDecorations.mock.calls.filter(([, options]) =>
+      Array.isArray(options) && options.length === 0
+    ).length;
+    pending.resolve(current);
+    await flush();
+    controller.dispose();
+    expect(hasOwned).toBe(true);
+    expect(emptyCalls).toBeLessThan(2);
+  });
+
+  it('uses extension-specific translucent background theme colors when enabled', () => {
+    mocks.decorations.splice(0);
+    mocks.configuration.lineBackground = true;
+    const registry = fakeRegistry(record([]), Promise.resolve(undefined));
+    const controller = new EditorOwnershipController(registry);
+    const decorations = mocks.decorations.slice(-2);
+
+    mocks.configuration.lineBackground = false;
+    controller.dispose();
+    expect(decorations[0]?.options).toMatchObject({
+      backgroundColor: { id: 'myCode.editor.committedLineBackground' }
+    });
+    expect(decorations[1]?.options).toMatchObject({
+      backgroundColor: { id: 'myCode.editor.workingLineBackground' }
+    });
+  });
+
   it('decorates only source documents, asks the analyzer at active-editor priority, and clears stale results', async () => {
     const current = record([{ start: 0, endExclusive: 2, commit: committed, uncommitted: false }]);
     const stale = deferred<FileRecord | undefined>();
@@ -439,7 +525,7 @@ describe('EditorOwnershipController', () => {
     controller.dispose();
   });
 
-  it('creates committed green and working blue decorations, applies inclusive full-document ranges, and disposes', () => {
+  it('keeps ownership markers out of code content and uses the gutter plus full overview ruler', () => {
     mocks.decorations.splice(0);
     const registry = fakeRegistry(record([]), Promise.resolve(undefined));
     const controller = new EditorOwnershipController(registry);
@@ -447,16 +533,21 @@ describe('EditorOwnershipController', () => {
     expect(decorations).toHaveLength(2);
     expect(decorations[0]?.options).toMatchObject({
       isWholeLine: true,
-      borderWidth: '0 0 0 2px',
-      borderStyle: 'solid',
-      borderColor: { id: 'gitDecoration.addedResourceForeground' },
+      gutterIconPath: expect.stringContaining('owned-committed.svg'),
+      gutterIconSize: 'contain',
       overviewRulerColor: { id: 'gitDecoration.addedResourceForeground' },
-      overviewRulerLane: 1
+      overviewRulerLane: 7
     });
+    expect(decorations[0]?.options).not.toHaveProperty('borderWidth');
+    expect(decorations[0]?.options).not.toHaveProperty('borderColor');
     expect(decorations[1]?.options).toMatchObject({
-      borderColor: { id: 'gitDecoration.modifiedResourceForeground' },
-      overviewRulerColor: { id: 'gitDecoration.modifiedResourceForeground' }
+      gutterIconPath: expect.stringContaining('owned-working.svg'),
+      gutterIconSize: 'contain',
+      overviewRulerColor: { id: 'gitDecoration.modifiedResourceForeground' },
+      overviewRulerLane: 7
     });
+    expect(decorations[1]?.options).not.toHaveProperty('borderWidth');
+    expect(decorations[1]?.options).not.toHaveProperty('borderColor');
     controller.dispose();
     expect(decorations.map(({ dispose }) => dispose.mock.calls.length)).toEqual([1, 1]);
     expect(mocks.closeListeners.size).toBe(0);

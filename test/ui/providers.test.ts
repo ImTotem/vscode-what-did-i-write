@@ -156,6 +156,24 @@ describe('MyCodeDecorationProvider', () => {
     expect(registry.entry.analyzer.ensureFile).not.toHaveBeenCalled();
     provider.dispose();
   });
+
+  it('invalidates root decorations and skips lazy analysis while My Code visuals are disabled', () => {
+    const registry = fakeRegistry(snapshot(ROOT, [file('candidate.ts', 'past')]));
+    const provider = new MyCodeDecorationProvider(registry);
+    const changes: unknown[] = [];
+    provider.onDidChangeFileDecorations((uri) => changes.push(uri));
+
+    provider.setEnabled(false);
+
+    expect(changes).toEqual([undefined]);
+    expect(provider.provideFileDecoration(uri(join(ROOT, 'candidate.ts')))).toBeUndefined();
+    expect(registry.entry.analyzer.ensureFile).not.toHaveBeenCalled();
+
+    provider.setEnabled(true);
+
+    expect(changes).toEqual([undefined, undefined]);
+    provider.dispose();
+  });
 });
 
 describe('MyCodeTreeProvider', () => {
