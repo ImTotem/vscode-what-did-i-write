@@ -4,8 +4,17 @@ import { describe, expect, it } from 'vitest';
 
 const read = (path: string): string => readFileSync(path, 'utf8');
 const manifest = JSON.parse(read('package.json')) as { readonly scripts?: { readonly package?: string } };
+const packageLock = JSON.parse(read('package-lock.json')) as {
+  readonly name?: string;
+  readonly packages?: { readonly '': { readonly name?: string } };
+};
 
 describe('release package contract', () => {
+  it('keeps the package-lock root identity in sync with the extension ID', () => {
+    expect(packageLock.name).toBe('what-did-i-write');
+    expect(packageLock.packages?.['']?.name).toBe('what-did-i-write');
+  });
+
   it('documents local-only operation and its primary user workflow', () => {
     const readme = read('README.md');
 
