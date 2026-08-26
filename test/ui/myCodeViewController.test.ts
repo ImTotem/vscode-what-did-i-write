@@ -108,6 +108,31 @@ describe('MyCodeViewController', () => {
     controller.dispose();
   });
 
+
+  it('finishes a rebuild reset after an in-flight all-expanded context write', async () => {
+    const fixture = treeFixture(['root']);
+    const staleContext = deferred<void>();
+    const completedContexts: boolean[] = [];
+    const controller = new MyCodeViewController(fixture.provider, fixture.view);
+    await flush();
+    mocks.executeCommand.mockImplementation((command, _key, value) => {
+      if (command !== 'setContext') return Promise.resolve(undefined);
+      if (value === true) return staleContext.promise.then(() => { completedContexts.push(true); return undefined; });
+      completedContexts.push(value as boolean);
+      return Promise.resolve(undefined);
+    });
+
+    const expansion = controller.expandAll();
+    await flush();
+    fixture.rebuild();
+    await flush();
+    staleContext.resolve();
+    await expansion;
+    await flush();
+
+    expect(completedContexts.at(-1)).toBe(false);
+    controller.dispose();
+  });
   it('does not leave the all-expanded context set after a reveal fails', async () => {
     const fixture = treeFixture(['root', 'folder']);
     fixture.view.reveal.mockRejectedValueOnce(new Error('reveal failed'));
@@ -224,6 +249,31 @@ describe('VisualModeController', () => {
     expect(decorations.setEnabled.mock.calls).toEqual([[true], [false]]);
     expect(editors.setEnabled.mock.calls).toEqual([[true], [false]]);
     expect(mocks.executeCommand.mock.calls.at(-1)).toEqual(['setContext', 'myCode.visualsEnabled', false]);
+  });
+
+  it('keeps a newer OFF toggle after an in-flight initial context write settles', async () => {
+    const staleContext = deferred<void>();
+    const completedContexts: boolean[] = [];
+    mocks.executeCommand.mockImplementation((command, _key, value) => {
+      if (command !== 'setContext') return Promise.resolve(undefined);
+      if (value === true) return staleContext.promise.then(() => { completedContexts.push(true); return undefined; });
+      completedContexts.push(value as boolean);
+      return Promise.resolve(undefined);
+    });
+    const decorations = { setEnabled: vi.fn() };
+    const editors = { setEnabled: vi.fn(async () => undefined) };
+    const controller = new VisualModeController(decorations, editors);
+    await flush();
+
+    const toggle = controller.toggle();
+    await flush();
+    staleContext.resolve();
+    await toggle;
+    await flush();
+
+    expect(decorations.setEnabled.mock.calls.at(-1)).toEqual([false]);
+    expect(editors.setEnabled.mock.calls.at(-1)).toEqual([false]);
+    expect(completedContexts.at(-1)).toBe(false);
   });
   it('restores visual state when the Workspace configuration write fails', async () => {
     const decorations = { setEnabled: vi.fn() };

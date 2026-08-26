@@ -9,6 +9,7 @@ type CurrentTree = Pick<MyCodeTreeProvider, 'expandableNodes' | 'getParent' | 'o
 export class MyCodeViewController implements vscode.Disposable {
   private readonly subscriptions: vscode.Disposable[];
   private readonly expanded = new Set<string>();
+  private contextWrite: Promise<void> | undefined;
   private expansionOperation = 0;
   private rebuildGeneration = 0;
 
@@ -100,16 +101,29 @@ export class MyCodeViewController implements vscode.Disposable {
   private syncExpansionContext(): Promise<void> {
     const nodes = this.provider.expandableNodes();
     const allExpanded = nodes.length > 0 && nodes.every((node) => this.expanded.has(node.id));
-    return Promise.resolve(this.setAllExpanded(allExpanded)).then(() => undefined);
+    return this.setAllExpanded(allExpanded);
   }
 
-  private setAllExpanded(value: boolean): Thenable<unknown> {
-    return vscode.commands.executeCommand('setContext', 'myCode.treeAllExpanded', value);
+  private setAllExpanded(value: boolean): Promise<void> {
+    const previous = this.contextWrite;
+    const execute = (): Promise<void> => Promise.resolve(
+      vscode.commands.executeCommand('setContext', 'myCode.treeAllExpanded', value)
+    ).then(() => undefined);
+    const write = previous === undefined
+      ? execute()
+      : previous.catch(() => undefined).then(execute);
+    this.contextWrite = write;
+    void write.then(
+      () => { if (this.contextWrite === write) this.contextWrite = undefined; },
+      () => { if (this.contextWrite === write) this.contextWrite = undefined; }
+    );
+    return write;
   }
 }
 
 export class VisualModeController {
   private enabled = true;
+  private contextWrite: Promise<void> | undefined;
   private operation = 0;
 
   public constructor(
@@ -167,7 +181,7 @@ export class VisualModeController {
     this.decorations.setEnabled(enabled);
     await this.editors.setEnabled(enabled);
     if (!this.isCurrentOperation(operation)) return;
-    await vscode.commands.executeCommand('setContext', 'myCode.visualsEnabled', enabled);
+    await this.setVisualsEnabled(enabled);
     if (!this.isCurrentOperation(operation)) return;
     this.enabled = enabled;
   }
@@ -186,7 +200,7 @@ export class VisualModeController {
     }
     if (!this.isCurrentOperation(operation)) return;
     try {
-      await vscode.commands.executeCommand('setContext', 'myCode.visualsEnabled', enabled);
+      await this.setVisualsEnabled(enabled);
     } catch {
       // The extension cannot repair a failed VS Code command invocation.
     }
@@ -201,6 +215,22 @@ export class VisualModeController {
     } catch {
       // The visual providers are restored even if VS Code rejects the rollback write.
     }
+  }
+
+  private setVisualsEnabled(enabled: boolean): Promise<void> {
+    const previous = this.contextWrite;
+    const execute = (): Promise<void> => Promise.resolve(
+      vscode.commands.executeCommand('setContext', 'myCode.visualsEnabled', enabled)
+    ).then(() => undefined);
+    const write = previous === undefined
+      ? execute()
+      : previous.catch(() => undefined).then(execute);
+    this.contextWrite = write;
+    void write.then(
+      () => { if (this.contextWrite === write) this.contextWrite = undefined; },
+      () => { if (this.contextWrite === write) this.contextWrite = undefined; }
+    );
+    return write;
   }
 
   private isCurrentOperation(operation: number): boolean {
