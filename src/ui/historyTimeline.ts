@@ -2,6 +2,8 @@ import { randomBytes } from 'node:crypto';
 
 import * as vscode from 'vscode';
 
+import { displayLanguage, formatDateTime, localize } from '../localization.js';
+
 import type { CommitTimelineEntry, HistoryController, HistoryTimelineModel, WorkingTimelineEntry } from './historyController.js';
 
 export type HistoryTimelineViewState =
@@ -225,7 +227,7 @@ export function renderTimelineHtml(
   const body = renderBody(state);
   const safeNonce = escapeHtml(nonce);
   return `<!doctype html>
-<html lang="en">
+<html lang="${escapeHtml(displayLanguage())}">
 <head>
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="${escapeHtml(policy)}">
@@ -274,13 +276,13 @@ export function renderTimelineHtml(
 function renderBody(state: HistoryTimelineViewState): string {
   switch (state.kind) {
     case 'idle':
-      return '<div class="state"><strong>File history</strong>Open a file or choose history from a gutter marker.</div>';
+      return stateMessage('File history', localize('Open a file or choose history from a gutter marker.'));
     case 'loading':
-      return '<div class="state"><strong>Loading history...</strong>Reading local Git history.</div>';
+      return stateMessage('Loading history...', localize('Reading local Git history.'));
     case 'empty':
-      return `<div class="state"><strong>No matching commits</strong>${escapeHtml(state.path)} has no commits by your Git identity.</div>`;
+      return stateMessage('No matching commits', localize('{path} has no commits by your Git identity.', { path: state.path }));
     case 'error':
-      return `<div class="state"><strong>History unavailable</strong>${escapeHtml(state.message)}</div>`;
+      return stateMessage('History unavailable', state.message);
     case 'ready':
       return renderModel(state.model);
   }
@@ -289,22 +291,28 @@ function renderBody(state: HistoryTimelineViewState): string {
 function renderModel(model: HistoryTimelineModel): string {
   const working = model.entries.find((entry): entry is WorkingTimelineEntry => entry.kind === 'working');
   const commits = model.entries.filter((entry): entry is CommitTimelineEntry => entry.kind === 'commit');
-  const mode = model.mode === 'line' ? `LINE ${(model.line ?? 0) + 1}` : 'FILE';
+  const mode = model.mode === 'line'
+    ? localize('LINE {line}', { line: (model.line ?? 0) + 1 })
+    : localize('FILE');
   const workingMarkup = working === undefined ? '' : `
-    <div class="working">${entryButton(working.id, working.title, working.detail)}</div>`;
+    <div class="working">${entryButton(working.id, localize('Current changes'), working.detail)}</div>`;
   const commitMarkup = commits.map((entry) => `
     <li class="entry${entry.latest ? ' latest' : ''}">
       <button class="card" type="button" data-entry-id="${escapeHtml(entry.id)}">
-        <span class="title">${escapeHtml(entry.title)}${entry.latest ? '<span class="badge">LATEST</span>' : ''}</span>
-        <span class="meta">${escapeHtml(entry.commit.hash.slice(0, 7))} | ${escapeHtml(entry.relativeDate)} | ${escapeHtml(new Date(entry.authoredAt * 1_000).toLocaleString())}</span>
+        <span class="title">${escapeHtml(entry.title)}${entry.latest ? `<span class="badge">${escapeHtml(localize('LATEST'))}</span>` : ''}</span>
+        <span class="meta">${escapeHtml(entry.commit.hash.slice(0, 7))} | ${escapeHtml(entry.relativeDate)} | ${escapeHtml(formatDateTime(entry.authoredAt))}</span>
         <span class="author">${escapeHtml(entry.commit.authorName)} &lt;${escapeHtml(entry.commit.authorEmail)}&gt;</span>
       </button>
     </li>`).join('');
   return `
     <div class="header"><span class="path">${escapeHtml(model.relativePath)}</span><span class="mode">${mode}</span></div>
     ${workingMarkup}
-    <div class="direction"><span class="latest-label">LATEST</span><span>Older &darr;</span></div>
-    <ol class="timeline-rail" aria-label="Newest to oldest">${commitMarkup}</ol>`;
+    <div class="direction"><span class="latest-label">${escapeHtml(localize('LATEST'))}</span><span>${escapeHtml(localize('Older'))} &darr;</span></div>
+    <ol class="timeline-rail" aria-label="${escapeHtml(localize('Newest to oldest'))}">${commitMarkup}</ol>`;
+}
+
+function stateMessage(title: string, detail: string): string {
+  return `<div class="state"><strong>${escapeHtml(localize(title))}</strong>${escapeHtml(detail)}</div>`;
 }
 
 function entryButton(id: string, title: string, detail: string): string {

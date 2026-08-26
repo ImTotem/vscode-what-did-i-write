@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => {
   return { EventEmitter };
 });
 
-vi.mock('vscode', () => ({ EventEmitter: mocks.EventEmitter }));
+vi.mock('vscode', () => ({ EventEmitter: mocks.EventEmitter, env: { language: 'en' }, l10n: { t: (message: string) => message } }));
 
 import {
   MyCodeTreeProvider,

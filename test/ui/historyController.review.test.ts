@@ -43,7 +43,9 @@ vi.mock('vscode', () => ({
   TextEditorRevealType: { InCenterIfOutsideViewport: 2 },
   commands: { executeCommand: mocks.executeCommand },
   window: { activeTextEditor: mocks.activeTextEditor, showQuickPick: mocks.showQuickPick },
-  workspace: { fs: { stat: mocks.stat } }
+  workspace: { fs: { stat: mocks.stat } },
+  env: { language: 'en' },
+  l10n: { t: (message: string) => message }
 }));
 
 import type { CommitSummary } from '../../src/core/model.js';

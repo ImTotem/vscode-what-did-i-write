@@ -1,8 +1,11 @@
 import { dirname, join, resolve } from 'node:path';
 
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('vscode', () => ({}));
+const translate = vi.hoisted(() => vi.fn((message: string) => message));
+vi.mock('vscode', () => ({ env: { language: 'en' }, l10n: { t: translate } }));
+
+beforeEach(() => translate.mockImplementation((message: string) => message));
 
 import {
   MyCodeFileActions,
@@ -62,6 +65,20 @@ describe('MyCodeFileActions target normalization', () => {
 
     expect(boundary.deletedFiles).toEqual([]);
     expect(boundary.warnings).toEqual(['Past activity is read-only.']);
+  });
+});
+
+describe('MyCodeFileActions localization', () => {
+  it('localizes immutable-history warnings through VS Code l10n', async () => {
+    translate.mockImplementation((message: string) => message === 'Past activity is read-only.'
+      ? '과거 활동은 읽기 전용입니다.'
+      : message);
+    const boundary = fakeBoundary([[join(ROOT, 'shared.ts'), 'file']]);
+    const { actions } = actionHarness({ boundary });
+
+    await actions.delete(pastNode('shared.ts'));
+
+    expect(boundary.warnings).toEqual(['과거 활동은 읽기 전용입니다.']);
   });
 });
 

@@ -5,6 +5,7 @@ import * as vscode from 'vscode';
 import { CacheStore } from './analysis/cacheStore.js';
 import { RepositoryRegistry, type RegistryOperation } from './extension/repositoryRegistry.js';
 import { GitCommandError } from './git/gitRunner.js';
+import { localize } from './localization.js';
 import { MyCodeDecorationProvider } from './ui/fileDecorations.js';
 import { EditorOwnershipController } from './ui/editorOwnership.js';
 import { GIT_CONTENT_SCHEME, GitContentProvider } from './ui/gitContentProvider.js';
@@ -50,7 +51,8 @@ export function activate(context: vscode.ExtensionContext): void {
     selection: () => myChangesView.selection,
     roots: () => registry.repositories.map(({ root }) => root),
     refresh: refreshAllViews,
-    onError: reportError
+    onError: reportError,
+    localize
   });
   const dragAndDropController = new MyCodeDragAndDropController(treeProvider, fileActions);
   myChangesView = vscode.window.createTreeView<MyCodeNode>('myCode.explorer', {
@@ -63,7 +65,8 @@ export function activate(context: vscode.ExtensionContext): void {
   statusController = new StatusController(registry, statusItem, {
     showWarning: (message, ...actions) => vscode.window.showWarningMessage(message, ...actions),
     showOutput: () => output.show(),
-    retryIdentity: () => refreshController.retryIdentity()
+    retryIdentity: () => refreshController.retryIdentity(),
+    localize
   });
   const refreshFingerprintsWhenFocused = (): Promise<void> =>
     vscode.window.state.focused ? refreshController.tick() : Promise.resolve();
@@ -93,7 +96,7 @@ export function activate(context: vscode.ExtensionContext): void {
   ): Promise<void> => {
     const node = currentNode(target);
     if (node === undefined) {
-      await vscode.window.showWarningMessage('That MY CHANGES item is no longer available. Refresh and try again.');
+      await vscode.window.showWarningMessage(localize('That MY CHANGES item is no longer available. Refresh and try again.'));
       return;
     }
     await action(node);
@@ -104,7 +107,7 @@ export function activate(context: vscode.ExtensionContext): void {
   ): Promise<void> => {
     const node = pastNode(target);
     if (node === undefined) {
-      await vscode.window.showWarningMessage('That PAST ACTIVITY item is no longer available. Refresh and try again.');
+      await vscode.window.showWarningMessage(localize('That PAST ACTIVITY item is no longer available. Refresh and try again.'));
       return;
     }
     await action(node);
@@ -132,14 +135,17 @@ export function activate(context: vscode.ExtensionContext): void {
       await action(current);
       return;
     }
-    await vscode.window.showWarningMessage('That history item is no longer available. Refresh and try again.');
+    await vscode.window.showWarningMessage(localize('That history item is no longer available. Refresh and try again.'));
   };
   const runUiCommand = async (operation: string, action: () => Promise<void>): Promise<void> => {
     try {
       await action();
     } catch (error) {
       reportError(error, operation, 'myCode.explorer');
-      await vscode.window.showErrorMessage('Could not ' + operation + '. See the What Did I Write? output for details.');
+      await vscode.window.showErrorMessage(localize(
+        'Could not {operation}. See the What Did I Write? output for details.',
+        { operation: localize(operation) }
+      ));
     }
   };
 

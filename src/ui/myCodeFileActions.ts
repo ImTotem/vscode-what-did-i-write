@@ -3,6 +3,8 @@ import { basename, dirname, isAbsolute, parse, relative, resolve, sep } from 'no
 
 import * as vscode from 'vscode';
 
+import { localize, type Localize } from '../localization.js';
+
 import type {
   HistoryTreeNode,
   MyCodeNode,
@@ -51,6 +53,7 @@ export interface MyCodeFileActionsOptions {
   readonly refresh: () => void | Promise<void>;
   readonly onError: (error: unknown, operation: string, path: string) => void;
   readonly boundary?: MyCodeFileActionBoundary;
+  readonly localize?: Localize;
 }
 
 interface ResolvedNode {
@@ -87,10 +90,12 @@ interface FileClipboard {
 
 export class MyCodeFileActions {
   private readonly boundary: MyCodeFileActionBoundary;
+  private readonly t: Localize;
   private clipboard: FileClipboard | undefined;
 
   public constructor(private readonly options: MyCodeFileActionsOptions) {
     this.boundary = options.boundary ?? createVsCodeBoundary();
+    this.t = options.localize ?? localize;
   }
 
   public targets(clicked: MyCodeFileActionNode): readonly MyCodeFileActionNode[] {
@@ -178,9 +183,9 @@ export class MyCodeFileActions {
     if (sources === undefined) return;
     if (sources.some(({ kind }) => kind === 'directory')) {
       const confirmed = await this.boundary.confirm({
-        message: 'Cut this folder? It may contain hidden files not shown in What Did I Write?.',
-        detail: 'Pasting will move the entire real directory.',
-        confirmLabel: 'Cut Folder'
+        message: this.t('Cut this folder? It may contain hidden files not shown in What Did I Write?.'),
+        detail: this.t('Pasting will move the entire real directory.'),
+        confirmLabel: this.t('Cut Folder')
       });
       if (!confirmed) return;
     }
@@ -243,7 +248,7 @@ export class MyCodeFileActions {
     const candidates: string[] = [];
     for (const path of new Set(paths)) {
       if (path.trim() === '' || !isAbsolute(path)) {
-        await this.boundary.warn('External drag paths must be absolute and cannot use symbolic links or junctions.');
+        await this.boundary.warn(this.t('External drag paths must be absolute and cannot use symbolic links or junctions.'));
         return;
       }
       candidates.push(resolve(path));
@@ -251,26 +256,26 @@ export class MyCodeFileActions {
     const sources: ExternalSource[] = [];
     for (const candidate of [...new Set(candidates)]) {
       if (await this.hasSymbolicLink(candidate)) {
-        await this.boundary.warn('External drag paths must be absolute and cannot use symbolic links or junctions.');
+        await this.boundary.warn(this.t('External drag paths must be absolute and cannot use symbolic links or junctions.'));
         return;
       }
       const canonicalPath = await this.boundary.realPath(candidate);
       const kind = await this.boundary.kind(candidate);
       if (canonicalPath === undefined || kind === undefined) {
-        await this.boundary.warn('Missing external paths cannot be copied into What Did I Write?.');
+        await this.boundary.warn(this.t('Missing external paths cannot be copied into What Did I Write?.'));
         return;
       }
       if (kind === 'directory' && pathContains(canonicalPath, destination.canonicalPath)) {
-        await this.boundary.warn('A folder cannot be copied into itself or one of its descendants.');
+        await this.boundary.warn(this.t('A folder cannot be copied into itself or one of its descendants.'));
         return;
       }
       sources.push({ path: candidate, canonicalPath, kind });
     }
     if (sources.length === 0) return;
     if (sources.some(({ kind }) => kind === 'directory') && !await this.boundary.confirm({
-      message: 'Copy this folder? It may contain hidden files not shown in What Did I Write?.',
-      detail: 'The entire real directory will be copied recursively.',
-      confirmLabel: 'Copy Folder Recursively'
+      message: this.t('Copy this folder? It may contain hidden files not shown in What Did I Write?.'),
+      detail: this.t('The entire real directory will be copied recursively.'),
+      confirmLabel: this.t('Copy Folder Recursively')
     })) return;
 
     const planned = new Set<string>();
@@ -305,32 +310,32 @@ export class MyCodeFileActions {
         || !samePath(currentDestination.canonicalRoot, destination.canonicalRoot)
         || !samePath(currentDestination.canonicalPath, destination.canonicalPath)
       ) {
-        await this.boundary.warn('The destination changed before the external copy could be written.');
+        await this.boundary.warn(this.t('The destination changed before the external copy could be written.'));
         continue;
       }
       if (await this.hasSymbolicLink(plan.source.path)) {
-        await this.boundary.warn('External drag paths cannot use symbolic links or junctions.');
+        await this.boundary.warn(this.t('External drag paths cannot use symbolic links or junctions.'));
         continue;
       }
       const currentCanonical = await this.boundary.realPath(plan.source.path);
       const currentKind = await this.boundary.kind(plan.source.path);
       if (currentCanonical === undefined || currentKind === undefined) {
-        await this.boundary.warn('Missing external paths cannot be copied into What Did I Write?.');
+        await this.boundary.warn(this.t('Missing external paths cannot be copied into What Did I Write?.'));
         continue;
       }
       if (currentKind !== plan.source.kind || !samePath(currentCanonical, plan.source.canonicalPath)) {
-        await this.boundary.warn('The external source changed before it could be copied.');
+        await this.boundary.warn(this.t('The external source changed before it could be copied.'));
         continue;
       }
       if (currentKind === 'directory' && pathContains(currentCanonical, currentDestination.canonicalPath)) {
-        await this.boundary.warn('A folder cannot be copied into itself or one of its descendants.');
+        await this.boundary.warn(this.t('A folder cannot be copied into itself or one of its descendants.'));
         continue;
       }
       const target = resolve(currentDestination.path, plan.name);
       const validatedDestination = await this.validateWriteDestination(currentDestination.root, target);
       if (validatedDestination === undefined || samePath(currentCanonical, validatedDestination.identity)) continue;
       if (await this.boundary.kind(validatedDestination.path) !== undefined) {
-        await this.boundary.warn('The destination now exists: ' + validatedDestination.path);
+        await this.boundary.warn(this.t('The destination now exists: {path}', { path: validatedDestination.path }));
         continue;
       }
       try {
@@ -351,16 +356,16 @@ export class MyCodeFileActions {
 
   private async renameImpl(clicked: MyCodeFileActionNode): Promise<void> {
     if (!isFileOrFolder(clicked)) {
-      await this.boundary.warn('Repository and group roots cannot be renamed.');
+      await this.boundary.warn(this.t('Repository and group roots cannot be renamed.'));
       return;
     }
     const source = await this.resolveCurrent(clicked, 'rename');
     if (source === undefined) return;
     if (source.kind === 'directory') {
       const confirmed = await this.boundary.confirm({
-        message: 'Rename this folder? It may contain hidden files not shown in What Did I Write?.',
-        detail: 'The entire real directory will be renamed.',
-        confirmLabel: 'Rename Folder'
+        message: this.t('Rename this folder? It may contain hidden files not shown in What Did I Write?.'),
+        detail: this.t('The entire real directory will be renamed.'),
+        confirmLabel: this.t('Rename Folder')
       });
       if (!confirmed) return;
     }
@@ -373,7 +378,7 @@ export class MyCodeFileActions {
     const validatedDestination = await this.validateWriteDestination(current.root, destination);
     if (validatedDestination === undefined) return;
     if (await this.boundary.kind(validatedDestination.path) !== undefined) {
-      await this.boundary.warn('That name already exists.');
+      await this.boundary.warn(this.t('That name already exists.'));
       return;
     }
     try {
@@ -392,11 +397,11 @@ export class MyCodeFileActions {
     const nodes = this.targets(clicked);
     const immutable = nodes.find(isImmutable);
     if (immutable !== undefined) {
-      await this.boundary.warn(immutableMessage(immutable));
+      await this.boundary.warn(this.t(immutableMessage(immutable)));
       return;
     }
     if (nodes.some((node) => !isFileOrFolder(node))) {
-      await this.boundary.warn('Repository and group roots cannot be deleted.');
+      await this.boundary.warn(this.t('Repository and group roots cannot be deleted.'));
       return;
     }
     const resolved = await this.resolveSources(nodes, 'delete');
@@ -405,13 +410,17 @@ export class MyCodeFileActions {
     const allPaths = resolved.map(({ path }) => path);
     const confirmed = await this.boundary.confirm({
       message: allPaths.length === 1
-        ? `Delete ${allPaths[0] ?? ''}?`
-        : `Delete ${allPaths.length} selected items?\n${allPaths.join('\n')}`,
+        ? this.t('Delete {path}?', { path: allPaths[0] ?? '' })
+        : this.t('Delete {count} selected items?\n{paths}', {
+          count: allPaths.length,
+          paths: allPaths.join('\n')
+        }),
       ...(directories.length === 0 ? {} : {
-        detail: `Recursively deletes: ${directories.map(({ path }) => path).join(', ')}. `
-          + 'Entire real folders are removed, including hidden files not shown in What Did I Write?.'
+        detail: this.t('Recursively deletes: {paths}. Entire real folders are removed, including hidden files not shown in What Did I Write?.', {
+          paths: directories.map(({ path }) => path).join(', ')
+        })
       }),
-      confirmLabel: directories.length === 0 ? 'Delete' : 'Delete Folder Recursively'
+      confirmLabel: this.t(directories.length === 0 ? 'Delete' : 'Delete Folder Recursively')
     });
     if (!confirmed) return;
 
@@ -450,7 +459,7 @@ export class MyCodeFileActions {
     ...args: unknown[]
   ): Promise<void> {
     if (fileOnly && clicked.kind !== 'file' || isImmutable(clicked)) {
-      await this.boundary.warn(fileOnly ? 'Only current files can be opened.' : 'Past activity cannot be revealed.');
+      await this.boundary.warn(this.t(fileOnly ? 'Only current files can be opened.' : 'Past activity cannot be revealed.'));
       return;
     }
     const target = await this.resolveCurrent(clicked, operation);
@@ -474,7 +483,7 @@ export class MyCodeFileActions {
     const validatedDestination = await this.validateWriteDestination(currentDestination.root, path);
     if (validatedDestination === undefined) return;
     if (await this.boundary.kind(validatedDestination.path) !== undefined) {
-      await this.boundary.warn('That name already exists.');
+      await this.boundary.warn(this.t('That name already exists.'));
       return;
     }
     try {
@@ -495,25 +504,27 @@ export class MyCodeFileActions {
     const sources = await this.resolveSources(nodes, mode);
     if (sources === undefined) return { completed: [], failed: nodes, cancelled: true };
     if (mode === 'move' && sources.some(({ root }) => !samePath(root, destination.root))) {
-      await this.boundary.warn('Cut items cannot be moved to another repository. Use Copy instead.');
+      await this.boundary.warn(this.t('Cut items cannot be moved to another repository. Use Copy instead.'));
       return { completed: [], failed: nodes, cancelled: true };
     }
     if (mode === 'move' && warnForFolderMove && sources.some(({ kind }) => kind === 'directory') && !await this.boundary.confirm({
-      message: 'Move this folder? It may contain hidden files not shown in What Did I Write?.',
-      detail: 'The entire real directory will be moved.',
-      confirmLabel: 'Move Folder'
+      message: this.t('Move this folder? It may contain hidden files not shown in What Did I Write?.'),
+      detail: this.t('The entire real directory will be moved.'),
+      confirmLabel: this.t('Move Folder')
     })) return { completed: [], failed: nodes, cancelled: true };
 
     for (const source of sources) {
       if (source.kind === 'directory' && pathContains(source.canonicalPath, destination.canonicalPath)) {
-        await this.boundary.warn(`A folder cannot be ${mode === 'copy' ? 'copied' : 'moved'} into itself or one of its descendants.`);
+        await this.boundary.warn(this.t(mode === 'copy'
+          ? 'A folder cannot be copied into itself or one of its descendants.'
+          : 'A folder cannot be moved into itself or one of its descendants.'));
         return { completed: [], failed: nodes, cancelled: true };
       }
     }
     if (mode === 'copy' && sources.some(({ kind }) => kind === 'directory') && !await this.boundary.confirm({
-      message: 'Copy this folder? It may contain hidden files not shown in What Did I Write?.',
-      detail: 'The entire real directory will be copied recursively.',
-      confirmLabel: 'Copy Folder Recursively'
+      message: this.t('Copy this folder? It may contain hidden files not shown in What Did I Write?.'),
+      detail: this.t('The entire real directory will be copied recursively.'),
+      confirmLabel: this.t('Copy Folder Recursively')
     })) return { completed: [], failed: nodes, cancelled: true };
 
     const plans = await this.planTransfers(sources, destination, mode);
@@ -530,12 +541,14 @@ export class MyCodeFileActions {
         continue;
       }
       if (mode === 'move' && !samePath(current.root, currentDestination.root)) {
-        await this.boundary.warn('Cut items cannot be moved to another repository. Use Copy instead.');
+        await this.boundary.warn(this.t('Cut items cannot be moved to another repository. Use Copy instead.'));
         failed.push(plan.node);
         continue;
       }
       if (current.kind === 'directory' && pathContains(current.canonicalPath, currentDestination.canonicalPath)) {
-        await this.boundary.warn(`A folder cannot be ${mode === 'copy' ? 'copied' : 'moved'} into itself or one of its descendants.`);
+        await this.boundary.warn(this.t(mode === 'copy'
+          ? 'A folder cannot be copied into itself or one of its descendants.'
+          : 'A folder cannot be moved into itself or one of its descendants.'));
         failed.push(plan.node);
         continue;
       }
@@ -550,7 +563,7 @@ export class MyCodeFileActions {
         continue;
       }
       if (await this.boundary.kind(validatedDestination.path) !== undefined) {
-        await this.boundary.warn(`The destination now exists: ${validatedDestination.path}`);
+        await this.boundary.warn(this.t('The destination now exists: {path}', { path: validatedDestination.path }));
         failed.push(plan.node);
         continue;
       }
@@ -586,7 +599,12 @@ export class MyCodeFileActions {
         continue;
       }
       if (planned.has(pathKey(targetIdentity)) || await this.boundary.kind(target) !== undefined) {
-        const name = await this.promptAvailableName(destination.path, basename(source.path), `${mode === 'copy' ? 'Copy' : 'Move'} Conflict`, planned);
+        const name = await this.promptAvailableName(
+          destination.path,
+          basename(source.path),
+          mode === 'copy' ? 'Copy Conflict' : 'Move Conflict',
+          planned
+        );
         if (name === undefined) return undefined;
         target = resolve(destination.path, name);
         targetIdentity = resolve(destination.canonicalPath, name);
@@ -605,15 +623,15 @@ export class MyCodeFileActions {
   ): Promise<string | undefined> {
     const validateInput = async (candidate: string): Promise<string | undefined> => {
       const nameError = validateName(candidate);
-      if (nameError !== undefined) return nameError;
+      if (nameError !== undefined) return this.t(nameError);
       const path = resolve(parent, candidate);
-      if (!pathContains(parent, path) || samePath(parent, path)) return 'Enter a single name without path separators.';
-      if (planned.has(pathKey(path)) || await this.boundary.kind(path) !== undefined) return 'That name already exists.';
+      if (!pathContains(parent, path) || samePath(parent, path)) return this.t('Enter a single name without path separators.');
+      if (planned.has(pathKey(path)) || await this.boundary.kind(path) !== undefined) return this.t('That name already exists.');
       return undefined;
     };
     const name = await this.boundary.promptName({
-      title,
-      prompt: 'Enter a non-conflicting name, or cancel.',
+      title: this.t(title),
+      prompt: this.t('Enter a non-conflicting name, or cancel.'),
       ...(value === undefined ? {} : { value }),
       validateInput
     });
@@ -656,7 +674,7 @@ export class MyCodeFileActions {
       };
     }
     if (current.kind !== 'directory') {
-      await this.boundary.warn('Choose a folder, repository root, or file parent as the destination.');
+      await this.boundary.warn(this.t('Choose a folder, repository root, or file parent as the destination.'));
       return undefined;
     }
     return current;
@@ -664,7 +682,7 @@ export class MyCodeFileActions {
 
   private async resolveReadable(node: MyCodeFileActionNode, allowPast: boolean): Promise<ResolvedNode | undefined> {
     if (!allowPast && isImmutable(node)) {
-      await this.boundary.warn(immutableMessage(node));
+      await this.boundary.warn(this.t(immutableMessage(node)));
       return undefined;
     }
     const lexical = await this.lexicalNode(node);
@@ -680,7 +698,7 @@ export class MyCodeFileActions {
 
   private async resolveCurrent(node: MyCodeFileActionNode, operation: string): Promise<ResolvedNode | undefined> {
     if (isImmutable(node)) {
-      await this.boundary.warn(immutableMessage(node));
+      await this.boundary.warn(this.t(immutableMessage(node)));
       return undefined;
     }
     const lexical = await this.lexicalNode(node);
@@ -696,13 +714,13 @@ export class MyCodeFileActions {
 
   private async lexicalNode(node: MyCodeFileActionNode): Promise<{ path: string; root: string } | undefined> {
     if (node.root.trim() === '') {
-      await this.boundary.warn('Repository roots cannot be empty.');
+      await this.boundary.warn(this.t('Repository roots cannot be empty.'));
       return undefined;
     }
     const root = resolve(node.root);
     const path = nodePath(node);
     if (path === undefined) {
-      await this.boundary.warn('Ambiguous empty paths cannot be changed from What Did I Write?.');
+      await this.boundary.warn(this.t('Ambiguous empty paths cannot be changed from What Did I Write?.'));
       return undefined;
     }
     if (!await this.validateOwnership(root, path)) return undefined;
@@ -714,14 +732,14 @@ export class MyCodeFileActions {
       .filter((registered) => registered.trim() !== '')
       .map((registered) => resolve(registered));
     if (!registeredRoots.some((registered) => samePath(registered, root)) || !pathContains(root, path)) {
-      await this.boundary.warn('The selected path is outside a registered repository.');
+      await this.boundary.warn(this.t('The selected path is outside a registered repository.'));
       return false;
     }
     const owner = registeredRoots
       .filter((registered) => pathContains(registered, path))
       .sort((left, right) => right.length - left.length)[0];
     if (owner === undefined || !samePath(owner, root)) {
-      await this.boundary.warn('The selected path belongs to a more specific registered repository.');
+      await this.boundary.warn(this.t('The selected path belongs to a more specific registered repository.'));
       return false;
     }
     return true;
@@ -733,18 +751,18 @@ export class MyCodeFileActions {
   ): Promise<Omit<ResolvedNode, 'node'> | undefined> {
     if (!await this.validateOwnership(root, path)) return undefined;
     if (await this.hasSymbolicLink(path)) {
-      await this.boundary.warn('Paths through symbolic links or junctions cannot be changed from What Did I Write?.');
+      await this.boundary.warn(this.t('Paths through symbolic links or junctions cannot be changed from What Did I Write?.'));
       return undefined;
     }
     const canonicalRoot = await this.boundary.realPath(root);
     const canonicalPath = await this.boundary.realPath(path);
     const kind = await this.boundary.kind(path);
     if (canonicalRoot === undefined || canonicalPath === undefined || kind === undefined) {
-      await this.boundary.warn('Missing paths cannot be changed from What Did I Write?.');
+      await this.boundary.warn(this.t('Missing paths cannot be changed from What Did I Write?.'));
       return undefined;
     }
     if (!pathContains(canonicalRoot, canonicalPath)) {
-      await this.boundary.warn('The selected path is outside a registered repository.');
+      await this.boundary.warn(this.t('The selected path is outside a registered repository.'));
       return undefined;
     }
     return { root, path, canonicalRoot, canonicalPath, kind };
@@ -759,7 +777,7 @@ export class MyCodeFileActions {
     const existingParent = await this.resolveExistingPath(root, parent);
     if (existingParent === undefined) return undefined;
     if (existingParent.kind !== 'directory') {
-      await this.boundary.warn('The destination parent is not a directory.');
+      await this.boundary.warn(this.t('The destination parent is not a directory.'));
       return undefined;
     }
     return {
@@ -805,18 +823,33 @@ export class MyCodeFileActions {
 
   private async reportSingleFailure(error: unknown, operation: string, path: string): Promise<void> {
     this.options.onError(error, operation, path);
-    await this.boundary.showError(`Could not ${operation} ${path}. See What Did I Write? output for details.`);
+    await this.boundary.showError(this.t(
+      'Could not {operation} {path}. See What Did I Write? output for details.',
+      { operation: this.operationLabel(operation), path }
+    ));
   }
 
   private async reportBatchFailures(operation: string, count: number): Promise<void> {
     if (count === 0) return;
-    await this.boundary.showError(`Could not ${operation} ${count} ${count === 1 ? 'item' : 'items'}. See What Did I Write? output for details.`);
+    await this.boundary.showError(this.t(
+      count === 1
+        ? 'Could not {operation} {count} item. See What Did I Write? output for details.'
+        : 'Could not {operation} {count} items. See What Did I Write? output for details.',
+      { operation: this.operationLabel(operation), count }
+    ));
+  }
+
+  private operationLabel(operation: string): string {
+    const suffix = ' refresh';
+    return operation.endsWith(suffix)
+      ? this.t('{operation} refresh', { operation: this.t(operation.slice(0, -suffix.length)) })
+      : this.t(operation);
   }
 }
 
 function createVsCodeBoundary(): MyCodeFileActionBoundary {
   const apply = async (edit: vscode.WorkspaceEdit): Promise<void> => {
-    if (!await vscode.workspace.applyEdit(edit)) throw new Error('VS Code rejected the workspace edit.');
+    if (!await vscode.workspace.applyEdit(edit)) throw new Error(localize('VS Code rejected the workspace edit.'));
   };
   return {
     async executeCommand(command, path, ...args) {

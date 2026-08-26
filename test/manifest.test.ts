@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
+const englishMessages = JSON.parse(readFileSync('package.nls.json', 'utf8')) as Readonly<Record<string, string>>;
+
 const manifest = JSON.parse(readFileSync('package.json', 'utf8')) as {
   readonly name?: string;
   readonly displayName?: string;
@@ -28,12 +30,18 @@ const manifest = JSON.parse(readFileSync('package.json', 'utf8')) as {
     readonly viewsWelcome?: readonly { readonly view: string; readonly contents: string }[];
   };
 };
+function english(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const match = /^%([^%]+)%$/.exec(value);
+  return match === null ? value : englishMessages[match[1] as string];
+}
+
 
 describe('extension manifest', () => {
   it('uses the What Did I Write package branding and tagline', () => {
     expect(manifest.name).toBe('what-did-i-write');
-    expect(manifest.displayName).toBe('What Did I Write?');
-    expect(manifest.description).toBe('Find the files, lines, and commits you authored.');
+    expect(english(manifest.displayName)).toBe('What Did I Write?');
+    expect(english(manifest.description)).toBe('Find the files, lines, and commits you authored.');
   });
   it('activates in a workspace with the packaged CommonJS entry point', () => {
     expect(manifest.main).toBe('./dist/extension.js');
@@ -62,10 +70,12 @@ describe('extension manifest', () => {
   });
 
   it('contributes MY CODE as its own Activity Bar destination', () => {
-    expect(manifest.contributes?.viewsContainers?.activitybar).toEqual(expect.arrayContaining([
+    const activitybar = manifest.contributes?.viewsContainers?.activitybar ?? [];
+    expect(activitybar.map((item) => ({ ...item, title: english(item.title) }))).toEqual(expect.arrayContaining([
       { id: 'myCode', title: 'MY CODE', icon: 'media/my-code.svg' }
     ]));
-    expect(manifest.contributes?.views?.myCode).toEqual(expect.arrayContaining([
+    const views = manifest.contributes?.views?.myCode ?? [];
+    expect(views.map((item) => ({ ...item, name: english(item.name) }))).toEqual(expect.arrayContaining([
       { id: 'myCode.explorer', name: 'MY CHANGES' },
       { id: 'myCode.pastActivity', name: 'PAST ACTIVITY', visibility: 'collapsed' },
       { id: 'myCode.history', name: 'FILE HISTORY', type: 'webview' }
@@ -74,7 +84,7 @@ describe('extension manifest', () => {
   });
 
   it('keeps the MY CODE settings namespace while exposing the visual toggle', () => {
-    expect(manifest.contributes?.configuration?.title).toBe('What Did I Write?');
+    expect(english(manifest.contributes?.configuration?.title)).toBe('What Did I Write?');
     expect(manifest.contributes?.configuration?.properties?.['myCode.visuals.enabled']).toEqual(expect.objectContaining({
       type: 'boolean',
       default: true
@@ -96,9 +106,10 @@ describe('extension manifest', () => {
     expect(manifest.contributes?.viewsWelcome).toEqual(expect.arrayContaining([
       expect.objectContaining({
         view: 'myCode.explorer',
-        contents: expect.stringContaining('changed files')
+        contents: expect.any(String)
       })
     ]));
+    expect(english(manifest.contributes?.viewsWelcome?.[0]?.contents)).toContain('changed files');
   });
 
   it('exposes the core actions in the MY CODE view title bar', () => {
@@ -124,7 +135,7 @@ describe('extension manifest', () => {
     const required = ['expandAll', 'collapseAll', 'hideDecorations', 'showDecorations', 'openToSide', 'revealInExplorer', 'revealInOs', 'copyPath', 'copyRelativePath', 'copyHistoricalPath', 'copyHistoricalRelativePath', 'cut', 'copy', 'paste', 'newFile', 'newFolder', 'rename', 'delete'].map((id) => `myCode.${id}`);
     expect(commands.map(({ command }) => command)).toEqual(expect.arrayContaining(required));
     for (const command of commands.filter(({ command }) => command.startsWith('myCode.'))) {
-      expect(command.title).toMatch(/^What Did I Write\?: /);
+      expect(english(command.title)).toMatch(/^What Did I Write\?: /);
       expect(command.icon).toBeTruthy();
     }
   });

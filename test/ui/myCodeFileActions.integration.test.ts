@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('vscode', () => ({}));
+vi.mock('vscode', () => ({ env: { language: 'en' }, l10n: { t: (message: string) => message } }));
 
 import {
   MyCodeFileActions,

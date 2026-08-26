@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as vscode from 'vscode';
 
@@ -7,15 +7,22 @@ const mocks = vi.hoisted(() => {
     public constructor(public readonly scheme: string, public readonly fsPath: string) {}
     public static file(path: string): Uri { return new Uri('file', path); }
   }
-  return { Uri };
+  const translate = vi.fn((message: string) => message);
+  return { Uri, translate };
 });
 
-vi.mock('vscode', () => ({ Uri: mocks.Uri }));
+vi.mock('vscode', () => ({
+  Uri: mocks.Uri,
+  env: { language: 'en' },
+  l10n: { t: mocks.translate }
+}));
 
 import type { HistoryTimelineModel } from '../../src/ui/historyController.js';
 import { HistoryTimelineViewProvider, renderTimelineHtml } from '../../src/ui/historyTimeline.js';
 
 const ROOT = 'C:/repo';
+
+beforeEach(() => mocks.translate.mockImplementation((message: string) => message));
 
 describe('renderTimelineHtml', () => {
   it('renders working changes before a visible newest-to-oldest commit rail and escapes Git text', () => {
@@ -36,6 +43,27 @@ describe('renderTimelineHtml', () => {
     expect(renderTimelineHtml({ kind: 'loading' }, 'n', 'vscode-resource:')).toContain('Loading history');
     expect(renderTimelineHtml({ kind: 'empty', path: 'src/empty.ts' }, 'n', 'vscode-resource:')).toContain('No matching commits');
     expect(renderTimelineHtml({ kind: 'error', message: '<bad>' }, 'n', 'vscode-resource:')).toContain('&lt;bad&gt;');
+  });
+
+  it('renders the timeline chrome through the VS Code Korean localizer', () => {
+    const translations: Record<string, string> = {
+      'Current changes': '현재 변경 사항',
+      'Newest to oldest': '최신에서 과거순',
+      LATEST: '최신',
+      Older: '과거',
+      'Loading history...': '히스토리를 불러오는 중...',
+      'Reading local Git history.': '로컬 Git 히스토리를 읽고 있습니다.'
+    };
+    mocks.translate.mockImplementation((message: string) => translations[message] ?? message);
+
+    const ready = renderTimelineHtml({ kind: 'ready', model: timelineModel() }, 'n', 'vscode-resource:');
+    const loading = renderTimelineHtml({ kind: 'loading' }, 'n', 'vscode-resource:');
+
+    expect(ready).toContain('현재 변경 사항');
+    expect(ready).toContain('aria-label="최신에서 과거순"');
+    expect(ready).toContain('최신');
+    expect(ready).toContain('과거');
+    expect(loading).toContain('히스토리를 불러오는 중...');
   });
 });
 

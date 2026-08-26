@@ -2,6 +2,10 @@
 
 Find the files, lines, and commits you authored.
 
+[English](https://github.com/ImTotem/vscode-what-did-i-write/blob/main/docs/README.en.md) | [한국어](https://github.com/ImTotem/vscode-what-did-i-write/blob/main/docs/README.ko.md)
+
+Supported UI languages: English and 한국어. The extension follows VS Code's display language automatically.
+
 What Did I Write? is a desktop VS Code extension for finding the code you wrote in the
 currently checked-out Git repository. It runs automatically when VS Code has
 finished starting: there is no account sign-in, base-commit picker, setup

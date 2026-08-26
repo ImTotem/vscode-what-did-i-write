@@ -1,4 +1,5 @@
 import type { RepositoryRegistry } from '../extension/repositoryRegistry.js';
+import type { LocalizationArgs, Localize } from '../localization.js';
 
 export interface StatusAccess {
   text: string;
@@ -9,6 +10,7 @@ export interface StatusControllerActions {
   readonly showWarning: (message: string, ...actions: string[]) => PromiseLike<string | undefined>;
   readonly showOutput: () => void;
   readonly retryIdentity: () => void | Promise<void>;
+  readonly localize?: Localize;
 }
 
 export class StatusController {
@@ -30,13 +32,15 @@ export class StatusController {
   public reportMissingGit(_error: unknown): void {
     if (this.disposed || this.missingGitWarningShown) return;
     this.missingGitWarningShown = true;
+    const retry = this.t('What Did I Write?: Retry');
+    const showOutput = this.t('What Did I Write?: Show Output');
     void this.actions.showWarning(
-      'What Did I Write? could not run Git. Install Git or make it available on PATH, then open the output for details.',
-      'What Did I Write?: Retry',
-      'What Did I Write?: Show Output'
+      this.t('What Did I Write? could not run Git. Install Git or make it available on PATH, then open the output for details.'),
+      retry,
+      showOutput
     ).then((selection) => {
-      if (selection === 'What Did I Write?: Retry') void this.actions.retryIdentity();
-      else if (selection === 'What Did I Write?: Show Output') this.actions.showOutput();
+      if (selection === retry) void this.actions.retryIdentity();
+      else if (selection === showOutput) this.actions.showOutput();
     });
   }
 
@@ -49,11 +53,11 @@ export class StatusController {
   private render(): void {
     if (this.disposed) return;
     if (this.registry.state === 'discovering' || this.registry.state === 'initializing') {
-      this.status.text = '$(sync~spin) What Did I Write?: Scanning';
+      this.status.text = '$(sync~spin) ' + this.t('What Did I Write?: Scanning');
       return;
     }
     if (this.registry.state === 'error') {
-      this.status.text = '$(warning) What Did I Write?: Error';
+      this.status.text = '$(warning) ' + this.t('What Did I Write?: Error');
       return;
     }
     const snapshots = this.registry.repositories
@@ -63,26 +67,34 @@ export class StatusController {
       identity.name.trim().length === 0 && identity.email.trim().length === 0
     );
     if (missingIdentity) {
-      this.status.text = '$(warning) What Did I Write?: Git identity';
+      this.status.text = '$(warning) ' + this.t('What Did I Write?: Git identity');
       this.warnMissingIdentity();
       return;
     }
     if (snapshots.some(({ scanning }) => scanning)) {
-      this.status.text = '$(sync~spin) What Did I Write?: Scanning';
+      this.status.text = '$(sync~spin) ' + this.t('What Did I Write?: Scanning');
       return;
     }
     const fileCount = snapshots.reduce((total, snapshot) => total + snapshot.files.length, 0);
-    this.status.text = `$(account) What Did I Write?: ${fileCount} files`;
+    this.status.text = '$(account) ' + this.t('What Did I Write?: {count} files', { count: fileCount });
   }
 
   private warnMissingIdentity(): void {
     if (this.missingIdentityWarningShown) return;
     this.missingIdentityWarningShown = true;
+    const retry = this.t('What Did I Write?: Retry');
     void this.actions.showWarning(
-      'What Did I Write? could not find a global Git identity. Configure user.name or user.email, then retry.',
-      'What Did I Write?: Retry'
+      this.t('What Did I Write? could not find a global Git identity. Configure user.name or user.email, then retry.'),
+      retry
     ).then((selection) => {
-      if (selection === 'What Did I Write?: Retry') void this.actions.retryIdentity();
+      if (selection === retry) void this.actions.retryIdentity();
     });
+  }
+
+  private t(message: string, args?: LocalizationArgs): string {
+    if (this.actions.localize !== undefined) return this.actions.localize(message, args);
+    if (args === undefined) return message;
+    return message.replace(/\{([^{}]+)\}/g, (placeholder, key: string) =>
+      Object.prototype.hasOwnProperty.call(args, key) ? String(args[key]) : placeholder);
   }
 }

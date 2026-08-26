@@ -92,7 +92,9 @@ vi.mock('vscode', () => ({
       mocks.closeListeners.add(listener);
       return { dispose: () => mocks.closeListeners.delete(listener) };
     }
-  }
+  },
+  env: { language: 'en' },
+  l10n: { t: (message: string) => message }
 }));
 
 import {
@@ -120,6 +122,9 @@ describe('toDecorationOptions', () => {
     expect(result[2]?.range).toEqual({ start: { line: 2, character: 0 }, end: { line: 2, character: 0 } });
     const hover = result[0]?.hoverMessage as unknown as { value: string; isTrusted: unknown };
     expect(hover.value).toContain('Your code');
+    expect(hover.value).toContain('Line history');
+    expect(hover.value).toContain('File history');
+    expect(hover.value).not.toContain('변경 흐름');
     expect(hover.value).toContain('Fix markdown &lt;escaping&gt;');
     expect(hover.value).toContain('myCode.focusLineHistory');
     expect(hover.value).toContain('myCode.focusFileHistory');

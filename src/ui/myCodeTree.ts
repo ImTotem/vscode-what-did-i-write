@@ -4,6 +4,7 @@ import * as vscode from 'vscode';
 
 import { hasConfiguredIdentity } from '../core/identity.js';
 import type { CommitSummary, FileRecord, RepositorySnapshot } from '../core/model.js';
+import { formatDateTime, localize } from '../localization.js';
 import type { RepositoryRegistry } from '../extension/repositoryRegistry.js';
 
 export type MyCodeNode = RepositoryTreeNode | GroupTreeNode | FolderTreeNode | FileTreeNode;
@@ -180,9 +181,9 @@ export class MyCodeTreeProvider implements vscode.TreeDataProvider<MyCodeNode>, 
     item.tooltip = node.file.relativePath;
     if (node.file.exists) {
       item.resourceUri = fileUri(node);
-      item.command = { command: 'myCode.openFile', title: 'Open File', arguments: [node] };
+      item.command = { command: 'myCode.openFile', title: localize('Open File'), arguments: [node] };
     } else {
-      item.command = { command: 'myCode.focusFileHistory', title: 'Show File History', arguments: [node] };
+      item.command = { command: 'myCode.focusFileHistory', title: localize('Show File History'), arguments: [node] };
     }
     item.contextValue = node.file.exists ? 'myCode.file' : 'myCode.pastFile';
     return item;
@@ -204,7 +205,7 @@ export class PastActivityTreeProvider implements vscode.TreeDataProvider<PastAct
     const item = new vscode.TreeItem(element.label, vscode.TreeItemCollapsibleState.None);
     item.description = pastDescription(element);
     item.tooltip = element.relativePath;
-    item.command = { command: 'myCode.focusFileHistory', title: 'Show File History', arguments: [join(element.root, element.relativePath)] };
+    item.command = { command: 'myCode.focusFileHistory', title: localize('Show File History'), arguments: [join(element.root, element.relativePath)] };
     item.contextValue = 'myCode.pastFile';
     item.iconPath = new vscode.ThemeIcon('history');
     return item;
@@ -304,11 +305,11 @@ function legacyRepository(snapshot: RepositorySnapshot): RepositoryTreeNode {
   const children: GroupTreeNode[] = [];
   if (current.length > 0) children.push({
     id: myCodeNodeId('group', snapshot.root, 'current'), kind: 'group', group: 'current', root: snapshot.root,
-    label: 'CURRENT', children: folderTree(snapshot.root, current, 'current')
+    label: localize('CURRENT'), children: folderTree(snapshot.root, current, 'current')
   });
   if (past.length > 0) children.push({
     id: myCodeNodeId('group', snapshot.root, 'past'), kind: 'group', group: 'past', root: snapshot.root,
-    label: 'PAST ACTIVITY', children: folderTree(snapshot.root, past, 'past')
+    label: localize('PAST ACTIVITY'), children: folderTree(snapshot.root, past, 'past')
   });
   return {
     id: myCodeNodeId('repository', snapshot.root),
@@ -395,7 +396,9 @@ function pastNode(root: string, file: FileRecord): PastActivityNode {
 }
 
 function pastDescription(node: PastActivityNode): string {
-  const latestTime = node.latestCommit === undefined ? 'Unknown time' : new Date(node.latestCommit.authoredAt * 1_000).toLocaleString();
+  const latestTime = node.latestCommit === undefined
+    ? localize('Unknown time')
+    : formatDateTime(node.latestCommit.authoredAt);
   return `${node.parentPath} · ${latestTime}`;
 }
 

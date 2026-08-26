@@ -4,6 +4,7 @@ import * as vscode from 'vscode';
 
 import { hasConfiguredIdentity } from '../core/identity.js';
 import type { FileRecord, OwnedRange } from '../core/model.js';
+import { formatDate, localize } from '../localization.js';
 import type { AnalyzerAccess, RepositoryRegistry } from '../extension/repositoryRegistry.js';
 
 import type { HistoryPreview } from './historyController.js';
@@ -69,23 +70,23 @@ function compactOwnershipHover(
   zeroBasedLine: number,
   commandFactory: CommandFactory
 ): vscode.MarkdownString {
-  hover.appendMarkdown('**\uB0B4\uAC00 \uC791\uC131\uD55C \uCF54\uB4DC | Your code**');
+  hover.appendMarkdown('**' + escapeMarkdown(localize('Your code')) + '**');
   if (range.commit === undefined) {
-    hover.appendMarkdown('\n\n_\uC544\uC9C1 \uCEE4\uBC0B\uB418\uC9C0 \uC54A\uC740 \uBCC0\uACBD_');
+    hover.appendMarkdown('\n\n_' + escapeMarkdown(localize('Uncommitted changes')) + '_');
   } else {
     const commit = range.commit;
-    const date = new Date(commit.authoredAt * 1_000).toLocaleDateString();
+    const date = formatDate(commit.authoredAt);
     hover.appendMarkdown(
       '\n\n\x60' + escapeMarkdown(commit.hash.slice(0, 7)) + '\x60 | '
         + escapeMarkdown(date) + '  \n\n' + escapeMarkdown(commit.subject)
     );
   }
   hover.appendMarkdown(
-    '\n\n[$(list-tree) \uC774 \uC904\uC758 \uBCC0\uACBD \uD750\uB984]('
+    '\n\n[$(list-tree) ' + escapeMarkdown(localize('Line history')) + ']('
       + commandFactory(LINE_HISTORY_COMMAND, [sourcePath, zeroBasedLine]) + ')'
   );
   hover.appendMarkdown(
-    ' | [$(history) \uD30C\uC77C \uBCC0\uACBD \uD750\uB984]('
+    ' | [$(history) ' + escapeMarkdown(localize('File history')) + ']('
       + commandFactory(FILE_HISTORY_COMMAND, [sourcePath]) + ')'
   );
   hover.isTrusted = { enabledCommands: TRUSTED_HOVER_COMMANDS };
@@ -409,17 +410,17 @@ export function historyPreviewMarkdown(
   const hover = new vscode.MarkdownString();
   const range = preview.ownedRange;
   if (range.commit === undefined) {
-    hover.appendMarkdown('**Your uncommitted work**');
+    hover.appendMarkdown('**' + escapeMarkdown(localize('Your uncommitted work')) + '**');
   } else {
     const commit = range.commit;
-    const date = new Date(commit.authoredAt * 1_000).toLocaleDateString();
+    const date = formatDate(commit.authoredAt);
     const author = `${commit.authorName} <${commit.authorEmail}>`;
-    hover.appendMarkdown(`**Your commit**  \n\n${escapeMarkdown(author)}  \n\n\`${escapeMarkdown(commit.hash.slice(0, 7))}\` · ${escapeMarkdown(date)}  \n\n${escapeMarkdown(commit.subject)}`);
+    hover.appendMarkdown(`**${escapeMarkdown(localize('Your commit'))}**  \n\n${escapeMarkdown(author)}  \n\n\`${escapeMarkdown(commit.hash.slice(0, 7))}\` · ${escapeMarkdown(date)}  \n\n${escapeMarkdown(commit.subject)}`);
   }
-  appendHistory(hover, 'Line history', preview.lineHistory);
-  appendHistory(hover, 'File history', preview.fileHistory);
-  hover.appendMarkdown(`\n\n[$(history) File history](${commandFactory(FILE_HISTORY_COMMAND, [uri.fsPath])})`);
-  hover.appendMarkdown(`\n\n[$(list-tree) Line history](${commandFactory(LINE_HISTORY_COMMAND, [uri.fsPath, zeroBasedLine])})`);
+  appendHistory(hover, localize('Line history'), preview.lineHistory);
+  appendHistory(hover, localize('File history'), preview.fileHistory);
+  hover.appendMarkdown(`\n\n[$(history) ${escapeMarkdown(localize('File history'))}](${commandFactory(FILE_HISTORY_COMMAND, [uri.fsPath])})`);
+  hover.appendMarkdown(`\n\n[$(list-tree) ${escapeMarkdown(localize('Line history'))}](${commandFactory(LINE_HISTORY_COMMAND, [uri.fsPath, zeroBasedLine])})`);
   hover.isTrusted = { enabledCommands: TRUSTED_HOVER_COMMANDS };
   return hover;
 }
@@ -427,11 +428,11 @@ export function historyPreviewMarkdown(
 function appendHistory(hover: vscode.MarkdownString, title: string, commits: readonly HistoryPreview['fileHistory'][number][]): void {
   hover.appendMarkdown('\n\n---\n\n**' + title + '**');
   if (commits.length === 0) {
-    hover.appendMarkdown('\n\n_No matching commits_');
+    hover.appendMarkdown('\n\n_' + escapeMarkdown(localize('No matching commits')) + '_');
     return;
   }
   for (const commit of commits.slice(0, 3)) {
-    const date = new Date(commit.authoredAt * 1_000).toLocaleDateString();
+    const date = formatDate(commit.authoredAt);
     hover.appendMarkdown('\n\n- `' + escapeMarkdown(commit.hash.slice(0, 7)) + '` · ' + escapeMarkdown(date) + ' — ' + escapeMarkdown(commit.subject));
   }
 }

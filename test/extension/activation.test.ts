@@ -67,6 +67,8 @@ vi.mock('vscode', () => ({
     executeCommand: mocks.executeCommand
   },
   EventEmitter: mocks.EventEmitter,
+  env: { language: 'en' },
+  l10n: { t: (message: string) => message },
   languages: {
     registerHoverProvider: (selector: unknown, provider: unknown) => {
       mocks.hoverProviders.push({ selector, provider });

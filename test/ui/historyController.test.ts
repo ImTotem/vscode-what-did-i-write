@@ -50,7 +50,9 @@ const mocks = vi.hoisted(() => {
     revealRange: vi.fn()
   };
 
-  return { Uri, Position, Range, Selection, executeCommand, showQuickPick, activeTextEditor };
+  const language = { value: 'en' };
+  const translate = vi.fn((message: string) => message);
+  return { Uri, Position, Range, Selection, executeCommand, showQuickPick, activeTextEditor, language, translate };
 });
 
 vi.mock('vscode', () => ({
@@ -66,6 +68,8 @@ vi.mock('vscode', () => ({
     showQuickPick: mocks.showQuickPick
   },
   workspace: { fs: undefined },
+  env: { get language() { return mocks.language.value; } },
+  l10n: { t: mocks.translate }
 }));
 
 import type { CommitSummary, FileRecord, GitIdentity } from '../../src/core/model.js';
@@ -91,6 +95,23 @@ afterEach(() => {
   mocks.showQuickPick.mockReset();
   mocks.activeTextEditor.revealRange.mockReset();
   mocks.activeTextEditor.selection = undefined;
+  mocks.language.value = 'en';
+  mocks.translate.mockImplementation((message: string) => message);
+});
+
+describe('localized history labels', () => {
+  it('formats relative commit times using the VS Code display language', () => {
+    mocks.language.value = 'ko';
+
+    const [item] = commitQuickPickItems(
+      [mine],
+      identity,
+      'src/time.h',
+      mine.authoredAt * 1_000 + 120_000
+    );
+
+    expect(item?.description).toContain('2분 전');
+  });
 });
 
 describe('Git revision documents', () => {

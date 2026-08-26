@@ -2,9 +2,9 @@
   "name": "what-did-i-write",
   "type": "commonjs",
   "publisher": "local-only",
-  "displayName": "What Did I Write?",
+  "displayName": "%extension.displayName%",
   "version": "0.1.0",
-  "description": "Find the files, lines, and commits you authored.",
+  "description": "%extension.description%",
   "license": "UNLICENSED",
   "categories": [
     "Other"
@@ -29,161 +29,161 @@
     "commands": [
       {
         "command": "myCode.refresh",
-        "title": "What Did I Write?: Refresh",
+        "title": "%command.refresh%",
         "icon": "$(refresh)"
       },
       {
         "command": "myCode.showOutput",
-        "title": "What Did I Write?: Show Output",
+        "title": "%command.showOutput%",
         "icon": "$(output)"
       },
       {
         "command": "myCode.retryIdentity",
-        "title": "What Did I Write?: Retry",
+        "title": "%command.retryIdentity%",
         "icon": "$(debug-restart)"
       },
       {
         "command": "myCode.openFile",
-        "title": "What Did I Write?: Open",
+        "title": "%command.openFile%",
         "icon": "$(go-to-file)"
       },
       {
         "command": "myCode.focusFileHistory",
-        "title": "What Did I Write?: Focus File History",
+        "title": "%command.focusFileHistory%",
         "icon": "$(history)"
       },
       {
         "command": "myCode.focusLineHistory",
-        "title": "What Did I Write?: Focus Line History",
+        "title": "%command.focusLineHistory%",
         "icon": "$(list-tree)"
       },
       {
         "command": "myCode.showFileHistory",
-        "title": "What Did I Write?: Show File History",
+        "title": "%command.showFileHistory%",
         "icon": "$(history)"
       },
       {
         "command": "myCode.showLineHistory",
-        "title": "What Did I Write?: Show Line History",
+        "title": "%command.showLineHistory%",
         "icon": "$(list-tree)"
       },
       {
         "command": "myCode.toggleLineBackground",
-        "title": "What Did I Write?: Toggle Line Background",
+        "title": "%command.toggleLineBackground%",
         "icon": "$(color-mode)"
       },
       {
         "command": "myCode.expandAll",
-        "title": "What Did I Write?: Expand All",
+        "title": "%command.expandAll%",
         "icon": "$(expand-all)"
       },
       {
         "command": "myCode.collapseAll",
-        "title": "What Did I Write?: Collapse All",
+        "title": "%command.collapseAll%",
         "icon": "$(collapse-all)"
       },
       {
         "command": "myCode.hideDecorations",
-        "title": "What Did I Write?: Hide My Code Decorations",
+        "title": "%command.hideDecorations%",
         "icon": "$(eye-closed)",
         "enablement": "myCode.visualsEnabled"
       },
       {
         "command": "myCode.showDecorations",
-        "title": "What Did I Write?: Show My Code Decorations",
+        "title": "%command.showDecorations%",
         "icon": "$(eye)",
         "enablement": "!myCode.visualsEnabled"
       },
       {
         "command": "myCode.openToSide",
-        "title": "What Did I Write?: Open to the Side",
+        "title": "%command.openToSide%",
         "icon": "$(split-horizontal)"
       },
       {
         "command": "myCode.revealInExplorer",
-        "title": "What Did I Write?: Reveal in Explorer",
+        "title": "%command.revealInExplorer%",
         "icon": "$(folder-opened)"
       },
       {
         "command": "myCode.revealInOs",
-        "title": "What Did I Write?: Reveal in File Manager",
+        "title": "%command.revealInOs%",
         "icon": "$(folder-library)"
       },
       {
         "command": "myCode.copyPath",
-        "title": "What Did I Write?: Copy Path",
+        "title": "%command.copyPath%",
         "icon": "$(copy)"
       },
       {
         "command": "myCode.copyRelativePath",
-        "title": "What Did I Write?: Copy Relative Path",
+        "title": "%command.copyRelativePath%",
         "icon": "$(copy)"
       },
       {
         "command": "myCode.copyHistoricalPath",
-        "title": "What Did I Write?: Copy Historical Path",
+        "title": "%command.copyHistoricalPath%",
         "icon": "$(copy)"
       },
       {
         "command": "myCode.copyHistoricalRelativePath",
-        "title": "What Did I Write?: Copy Historical Relative Path",
+        "title": "%command.copyHistoricalRelativePath%",
         "icon": "$(copy)"
       },
       {
         "command": "myCode.cut",
-        "title": "What Did I Write?: Cut",
+        "title": "%command.cut%",
         "icon": "$(cut)"
       },
       {
         "command": "myCode.copy",
-        "title": "What Did I Write?: Copy",
+        "title": "%command.copy%",
         "icon": "$(copy)"
       },
       {
         "command": "myCode.paste",
-        "title": "What Did I Write?: Paste",
+        "title": "%command.paste%",
         "icon": "$(clippy)"
       },
       {
         "command": "myCode.newFile",
-        "title": "What Did I Write?: New File",
+        "title": "%command.newFile%",
         "icon": "$(new-file)"
       },
       {
         "command": "myCode.newFolder",
-        "title": "What Did I Write?: New Folder",
+        "title": "%command.newFolder%",
         "icon": "$(new-folder)"
       },
       {
         "command": "myCode.rename",
-        "title": "What Did I Write?: Rename",
+        "title": "%command.rename%",
         "icon": "$(edit)"
       },
       {
         "command": "myCode.delete",
-        "title": "What Did I Write?: Delete",
+        "title": "%command.delete%",
         "icon": "$(trash)"
       }
     ],
     "configuration": {
-      "title": "What Did I Write?",
+      "title": "%configuration.title%",
       "properties": {
         "myCode.editor.lineBackground": {
           "type": "boolean",
           "default": false,
-          "description": "Highlight your owned lines with a subtle background color."
+          "description": "%configuration.lineBackground.description%"
         },
         "myCode.visuals.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Show What Did I Write? ownership colors and markers in Explorer and the editor."
+          "description": "%configuration.visuals.description%"
         }
       }
     },
     "colors": [
       {
         "id": "myCode.editor.committedLineBackground",
-        "description": "Subtle background for committed code owned by you.",
+        "description": "%color.committedLineBackground.description%",
         "defaults": {
           "dark": "#2EA0431A",
           "light": "#1A7F371A",
@@ -193,7 +193,7 @@
       },
       {
         "id": "myCode.editor.workingLineBackground",
-        "description": "Subtle background for uncommitted code owned by you.",
+        "description": "%color.workingLineBackground.description%",
         "defaults": {
           "dark": "#D299221A",
           "light": "#9A67001A",
@@ -206,7 +206,7 @@
       "activitybar": [
         {
           "id": "myCode",
-          "title": "MY CODE",
+          "title": "%viewContainer.myCode.title%",
           "icon": "media/my-code.svg"
         }
       ]
@@ -215,16 +215,16 @@
       "myCode": [
         {
           "id": "myCode.explorer",
-          "name": "MY CHANGES"
+          "name": "%view.myChanges.name%"
         },
         {
           "id": "myCode.pastActivity",
-          "name": "PAST ACTIVITY",
+          "name": "%view.pastActivity.name%",
           "visibility": "collapsed"
         },
         {
           "id": "myCode.history",
-          "name": "FILE HISTORY",
+          "name": "%view.fileHistory.name%",
           "type": "webview"
         }
       ]
@@ -232,7 +232,7 @@
     "viewsWelcome": [
       {
         "view": "myCode.explorer",
-        "contents": "Your changed files appear here.\n[Refresh What Did I Write?](command:myCode.refresh)\nOpen a changed file and hover one of your marked lines to see file and line history."
+        "contents": "%viewWelcome.myChanges.contents%"
       }
     ],
     "menus": {
@@ -430,5 +430,6 @@
     "esbuild": "^0.24.0",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
-  }
+  },
+  "l10n": "./l10n"
 }

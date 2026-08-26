@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as vscode from 'vscode';
 
@@ -50,7 +50,8 @@ const mocks = vi.hoisted(() => {
     public iconPath: ThemeIcon | undefined;
     public constructor(public readonly label: string, public readonly collapsibleState: number) {}
   }
-  return { EventEmitter, Uri, ThemeColor, ThemeIcon, FileDecoration, TreeItem };
+  const translate = vi.fn((message: string) => message);
+  return { EventEmitter, Uri, ThemeColor, ThemeIcon, FileDecoration, TreeItem, translate };
 });
 
 vi.mock('vscode', () => ({
@@ -60,7 +61,9 @@ vi.mock('vscode', () => ({
   ThemeIcon: mocks.ThemeIcon,
   FileDecoration: mocks.FileDecoration,
   TreeItem: mocks.TreeItem,
-  TreeItemCollapsibleState: { None: 0, Collapsed: 1, Expanded: 2 }
+  TreeItemCollapsibleState: { None: 0, Collapsed: 1, Expanded: 2 },
+  env: { language: 'en' },
+  l10n: { t: mocks.translate }
 }));
 const ROOT = join(process.cwd(), 'repo');
 
@@ -70,6 +73,8 @@ import type { FileRecord, RepositorySnapshot } from '../../src/core/model.js';
 import type { RepositoryRegistry } from '../../src/extension/repositoryRegistry.js';
 
 describe('MyCodeDecorationProvider', () => {
+  beforeEach(() => mocks.translate.mockImplementation((message: string) => message));
+
   it('decorates files and collapsed parent folders directly from the snapshot', () => {
     const registry = fakeRegistry(snapshot(ROOT, [
       file('src/added.ts', 'added'),
@@ -89,6 +94,17 @@ describe('MyCodeDecorationProvider', () => {
     expect(onlyAdded).toMatchObject({ badge: undefined, color: { id: 'gitDecoration.addedResourceForeground' }, propagate: true });
     expect(added).toMatchObject({ badge: 'A', tooltip: 'Added by you', color: { id: 'gitDecoration.addedResourceForeground' }, propagate: true });
     expect(modified).toMatchObject({ badge: 'M', tooltip: 'Modified by you', color: { id: 'gitDecoration.modifiedResourceForeground' }, propagate: true });
+    provider.dispose();
+  });
+
+  it('localizes Explorer ownership tooltips', () => {
+    mocks.translate.mockImplementation((message: string) => ({
+      'Added by you': '내가 추가함',
+      'Modified by you': '내가 수정함'
+    })[message] ?? message);
+    const provider = new MyCodeDecorationProvider(fakeRegistry(snapshot(ROOT, [file('added.ts', 'added')])));
+
+    expect(provider.provideFileDecoration(uri(join(ROOT, 'added.ts')))).toMatchObject({ tooltip: '내가 추가함' });
     provider.dispose();
   });
 

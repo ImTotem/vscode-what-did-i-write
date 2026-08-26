@@ -7,6 +7,7 @@ import type { CommitSummary, GitIdentity, OwnedRange } from '../core/model.js';
 import type { RegisteredRepository, RepositoryRegistry } from '../extension/repositoryRegistry.js';
 import type { WorkingChange } from '../git/parsers.js';
 import type { FileHistoryEntry } from '../git/repository.js';
+import { formatDateTime, formatRelativeDate, localize } from '../localization.js';
 import { revisionUri } from './gitContentProvider.js';
 import type { HistoryTreeNode } from './myCodeTree.js';
 
@@ -108,8 +109,8 @@ export function commitQuickPickItems(
     .map(({ commit, path, parentPath }) => ({
       itemType: 'commit' as const,
       label: commit.subject,
-      description: `${relativeDate(commit.authoredAt, now)} · ${commit.hash.slice(0, 7)}`,
-      detail: `${commit.authorName} <${commit.authorEmail}> · ${new Date(commit.authoredAt * 1_000).toLocaleString()} · ${path}`,
+      description: `${formatRelativeDate(commit.authoredAt, now)} · ${commit.hash.slice(0, 7)}`,
+      detail: `${commit.authorName} <${commit.authorEmail}> · ${formatDateTime(commit.authoredAt)} · ${path}`,
       commit,
       path,
       parentPath
@@ -200,7 +201,7 @@ export class HistoryController {
         id: `commit:${item.commit.hash}:${encodeURIComponent(item.path)}`,
         kind: 'commit',
         title: item.commit.subject,
-        relativeDate: relativeDate(item.commit.authoredAt, this.now()),
+        relativeDate: formatRelativeDate(item.commit.authoredAt, this.now()),
         authoredAt: item.commit.authoredAt,
         latest: index === 0,
         commit: item.commit,
@@ -210,7 +211,7 @@ export class HistoryController {
     const workingEntry: WorkingTimelineEntry[] = working === undefined ? [] : [{
       id: 'working',
       kind: 'working',
-      title: 'Current changes',
+      title: localize('Current changes'),
       detail: working.detail ?? working.workingPath,
       headPath: working.headPath,
       workingPath: working.workingPath,
@@ -254,7 +255,7 @@ export class HistoryController {
         'vscode.diff',
         before,
         after,
-        `${basename(entry.workingPath)}${suffix} ${separator} Working changes`,
+        `${basename(entry.workingPath)}${suffix} ${separator} ${localize('Working changes')}`,
         { preview: true, preserveFocus: false, viewColumn: vscode.ViewColumn.Beside }
       );
       if (line !== undefined) revealLine(line, before, after);
@@ -288,7 +289,7 @@ export class HistoryController {
       ...commitQuickPickItems(history, target.identity, target.path, this.now())
     ];
     const selected = await vscode.window.showQuickPick(items, {
-      placeHolder: `What Did I Write? history for ${target.path}`,
+      placeHolder: localize('What Did I Write? history for {path}', { path: target.path }),
       onDidSelectItem: (item) => this.openHistoryItem(target, item as HistoryQuickPickItem, 'preview')
     });
     if (selected === undefined) return;
@@ -316,7 +317,7 @@ export class HistoryController {
     ];
     const commitLine = (headLine ?? line + 1) - 1;
     const selected = await vscode.window.showQuickPick(items, {
-      placeHolder: `What Did I Write? line history for ${target.path}:${line + 1}`,
+      placeHolder: localize('What Did I Write? line history for {path}:{line}', { path: target.path, line: line + 1 }),
       onDidSelectItem: (item) => this.openHistoryItem(target, item as HistoryQuickPickItem, 'preview', line, commitLine)
     });
     if (selected === undefined) return;
@@ -358,7 +359,7 @@ export class HistoryController {
       : `${target.headPath} → ${target.workingPath}`;
     const location = target.line === undefined ? displayPath : `${displayPath}:${target.line + 1}`;
     await vscode.commands.executeCommand(
-      'vscode.diff', before, after, `${location} — Current changes`, diffOptions(mode)
+      'vscode.diff', before, after, `${location} — ${localize('Current changes')}`, diffOptions(mode)
     );
     if (target.line !== undefined) revealLine(target.line, before, after);
   }
@@ -462,7 +463,7 @@ async function currentChangeItem(
   const exists = await workspacePathExists(join(root, workingPath), fallbackExists);
   return {
     itemType: 'working',
-    label: 'Current changes',
+    label: localize('Current changes'),
     description: matching.map(({ status }) => status).join(', '),
     detail: rename?.originalPath === undefined
       ? workingPath
@@ -477,19 +478,6 @@ async function currentChangeItem(
 function userCommits(history: readonly CommitSummary[], identity: GitIdentity): CommitSummary[] {
   return history.filter((commit) => matchesIdentity(identity, commit.authorName, commit.authorEmail))
     .sort((left, right) => right.authoredAt - left.authoredAt);
-}
-
-function relativeDate(authoredAt: number, now: number): string {
-  const elapsedSeconds = Math.round((authoredAt * 1_000 - now) / 1_000);
-  const units: readonly [Intl.RelativeTimeFormatUnit, number][] = [
-    ['year', 31_536_000], ['month', 2_592_000], ['week', 604_800],
-    ['day', 86_400], ['hour', 3_600], ['minute', 60]
-  ];
-  const formatter = new Intl.RelativeTimeFormat('en', { numeric: 'always' });
-  for (const [unit, seconds] of units) {
-    if (Math.abs(elapsedSeconds) >= seconds) return formatter.format(Math.round(elapsedSeconds / seconds), unit);
-  }
-  return formatter.format(elapsedSeconds, 'second');
 }
 
 function sourcePath(input: unknown): string | undefined {

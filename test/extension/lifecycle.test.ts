@@ -13,7 +13,7 @@ import {
   type RepositoryAccess
 } from '../../src/extension/repositoryRegistry.js';
 import { RefreshController, type TimerScheduler } from '../../src/ui/refreshController.js';
-import { StatusController } from '../../src/ui/statusController.js';
+import { StatusController, type StatusControllerActions } from '../../src/ui/statusController.js';
 
 describe('RepositoryRegistry', () => {
   it('de-duplicates repository roots and disposes the final folder lifetime', async () => {
@@ -357,6 +357,28 @@ describe('RefreshController', () => {
 });
 
 describe('StatusController', () => {
+  it('localizes status bar state through its injected UI localizer', async () => {
+    const root = join(process.cwd(), 'repository');
+    const analyzer = fakeAnalyzer(root);
+    const registry = await registryWith(root, fakeRepository(root), analyzer);
+    const status = { text: '', show: vi.fn() };
+    const actions = {
+      showWarning: vi.fn(async () => undefined),
+      showOutput: vi.fn(),
+      retryIdentity: vi.fn(),
+      localize: (message: string) => message === 'What Did I Write?: Scanning'
+        ? 'What Did I Write?: 분석 중'
+        : message
+    } as StatusControllerActions;
+    const controller = new StatusController(registry, status, actions);
+
+    analyzer.publish(snapshot(root, { scanning: true }));
+
+    expect(status.text).toBe('$(sync~spin) What Did I Write?: 분석 중');
+    controller.dispose();
+    registry.dispose();
+  });
+
   it('distinguishes discovery, initialization, and initialization errors from identity', async () => {
     const root = join(process.cwd(), 'repository');
     const discovery = deferred<RepositoryAccess>();

@@ -4,6 +4,7 @@ import * as vscode from 'vscode';
 
 import { hasConfiguredIdentity } from '../core/identity.js';
 import type { FileRecord } from '../core/model.js';
+import { localize } from '../localization.js';
 import type { AnalyzerAccess, RepositoryRegistry } from '../extension/repositoryRegistry.js';
 
 type CurrentKind = Extract<FileRecord['kind'], 'added' | 'modified'>;
@@ -79,7 +80,7 @@ export class MyCodeDecorationProvider implements vscode.FileDecorationProvider, 
 function fileDecoration(kind: CurrentKind): vscode.FileDecoration {
   return decoration(
     kind === 'added' ? 'A' : 'M',
-    kind === 'added' ? 'Added by you' : 'Modified by you',
+    localize(kind === 'added' ? 'Added by you' : 'Modified by you'),
     colorFor(kind)
   );
 }
@@ -87,7 +88,7 @@ function fileDecoration(kind: CurrentKind): vscode.FileDecoration {
 function folderDecoration(kind: CurrentKind): vscode.FileDecoration {
   return decoration(
     undefined,
-    kind === 'added' ? 'Contains code added by you' : 'Contains code modified by you',
+    localize(kind === 'added' ? 'Contains code added by you' : 'Contains code modified by you'),
     colorFor(kind)
   );
 }

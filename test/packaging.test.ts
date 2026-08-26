@@ -51,6 +51,10 @@ describe('release package contract', () => {
   it('includes the Activity Bar and both gutter SVG assets in the actual VSIX file list', async () => {
     const files = await listFiles({ cwd: process.cwd() });
 
-    expect(files).toEqual(expect.arrayContaining(['media/my-code.svg', 'media/owned-committed.svg', 'media/owned-working.svg']));
+    expect(files).toEqual(expect.arrayContaining([
+      'media/my-code.svg', 'media/owned-committed.svg', 'media/owned-working.svg',
+      'package.nls.json', 'package.nls.ko.json',
+      'l10n/bundle.l10n.json', 'l10n/bundle.l10n.ko.json'
+    ]));
   });
 });
