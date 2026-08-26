@@ -50,6 +50,8 @@ interface Candidate {
   binary: boolean;
   ranges: readonly OwnedRange[];
   resolvedGeneration?: number;
+  failedGeneration?: number;
+  failure?: unknown;
 }
 
 interface MutableCandidate {
@@ -63,6 +65,8 @@ interface MutableCandidate {
   binary: boolean;
   ranges: readonly OwnedRange[];
   resolvedGeneration?: number;
+  failedGeneration?: number;
+  failure?: unknown;
 }
 
 export type AnalysisErrorReporter = (
@@ -211,11 +215,12 @@ export class RepositoryAnalyzer {
         : new Set(paths.map(normalizeRelativePath));
       for (const [path, candidate] of candidates) {
         const previous = this.candidates.get(path);
-        if (previous?.resolvedGeneration === undefined) continue;
+        if (previous?.resolvedGeneration === undefined && previous?.failedGeneration === undefined) continue;
         candidate.binary = previous.binary;
         candidate.ranges = previous.ranges;
         if (
-          invalidatedPaths !== undefined
+          previous.resolvedGeneration !== undefined
+          && invalidatedPaths !== undefined
           && !invalidatedPaths.has(path)
           && previous.exists === candidate.exists
           && previous.working === candidate.working
@@ -284,6 +289,7 @@ export class RepositoryAnalyzer {
     const candidate = this.candidates.get(normalizedPath);
     if (candidate === undefined) return Promise.resolve(undefined);
     if (candidate.resolvedGeneration === this.generation) return Promise.resolve(toFileRecord(candidate));
+    if (candidate.failedGeneration === this.generation) return Promise.reject(candidate.failure);
 
     const key = `${this.generation}\0${normalizedPath}`;
     const existing = this.inFlight.get(key);
@@ -334,7 +340,11 @@ export class RepositoryAnalyzer {
       this.activeJobs += 1;
       void this.analyzeCandidate(job.candidate, job.generation)
         .then(job.resolve, (error: unknown) => {
-          this.onError?.(error, 'blame', job.candidate.relativePath);
+          if (job.generation === this.generation) {
+            job.candidate.failedGeneration = job.generation;
+            job.candidate.failure = error;
+            this.onError?.(error, 'blame', job.candidate.relativePath);
+          }
           job.reject(error);
         })
         .finally(() => {
@@ -490,6 +500,8 @@ export class RepositoryAnalyzer {
       candidate.exists = false;
       candidate.binary = false;
       candidate.ranges = [];
+      candidate.failedGeneration = undefined;
+      candidate.failure = undefined;
       candidate.resolvedGeneration = generation;
       this.publish(this.isScanning(generation));
       return toFileRecord(candidate);
@@ -501,6 +513,8 @@ export class RepositoryAnalyzer {
       if (generation !== this.generation) return this.getFile(candidate.relativePath);
       candidate.binary = true;
       candidate.ranges = [];
+      candidate.failedGeneration = undefined;
+      candidate.failure = undefined;
       candidate.resolvedGeneration = generation;
       this.publish(this.isScanning(generation));
       return toFileRecord(candidate);
@@ -531,6 +545,8 @@ export class RepositoryAnalyzer {
     if (generation !== this.generation) return this.getFile(candidate.relativePath);
     candidate.binary = blameReportedBinary;
     candidate.ranges = ranges;
+    candidate.failedGeneration = undefined;
+    candidate.failure = undefined;
     candidate.resolvedGeneration = generation;
     this.publish(this.isScanning(generation));
     return toFileRecord(candidate);

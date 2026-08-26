@@ -199,11 +199,19 @@ export class EditorOwnershipController implements vscode.Disposable {
     const run = async (attempt: number): Promise<void> => {
       let succeeded = false;
       let retry = false;
+      let analyzerReported = false;
       try {
         await repository.analyzer.refresh('working-tree', [path]);
+        if (this.disposed || this.pendingSaveRefreshes.get(key) !== token) return;
+        try {
+          await repository.analyzer.ensureFile(path, 'active-editor');
+        } catch (error) {
+          analyzerReported = repository.analyzer.reportsErrors === true;
+          throw error;
+        }
         succeeded = true;
       } catch (error) {
-        this.options.onError?.(error, operation, path);
+        if (!analyzerReported) this.options.onError?.(error, operation, path);
         retry = attempt < maxRetries;
       } finally {
         if (this.disposed || this.pendingSaveRefreshes.get(key) !== token) return;

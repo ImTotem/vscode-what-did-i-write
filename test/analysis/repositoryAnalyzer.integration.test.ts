@@ -436,6 +436,71 @@ describe('RepositoryAnalyzer', () => {
     expect(analyzer.getFile('retained.ts')?.ranges).toEqual(lastValid);
   });
 
+  it('latches an unexpected blame failure across publication feedback until a new generation retries', async () => {
+    const root = await createTemporaryDirectory();
+    const storagePath = await createTemporaryDirectory();
+    await writeFile(join(root, 'latched.ts'), 'first\nsecond\n');
+    const recoveredCommit: CommitSummary = {
+      ...userCommit,
+      hash: '4'.repeat(40),
+      subject: 'recovered ownership'
+    };
+    let mode: 'initial' | 'failing' | 'recovered' = 'initial';
+    let blameCalls = 0;
+    const error = new Error('persistent blame parse failure');
+    const repository = new ControlledRepository(root, ['latched.ts'], async () => {
+      blameCalls += 1;
+      if (mode === 'initial') return [ownedLine(userCommit)];
+      if (mode === 'failing') throw error;
+      return [{ line: 1, commit: recoveredCommit, uncommitted: false }];
+    });
+    const onError = vi.fn();
+    const analyzer = new RepositoryAnalyzer(repository, new CacheStore(storagePath), onError);
+    await analyzer.initialize();
+    await analyzer.ensureFile('latched.ts', 'active-editor');
+    await waitUntil(() => !analyzer.getSnapshot().scanning);
+    const lastValid = analyzer.getFile('latched.ts')?.ranges;
+
+    let feedbackRequests = 0;
+    const feedback = analyzer.onDidChange(() => {
+      if (feedbackRequests >= 4) return;
+      feedbackRequests += 1;
+      void analyzer.ensureFile('latched.ts', 'active-editor').catch(() => undefined);
+    });
+    mode = 'failing';
+    await analyzer.refresh('working-tree', ['latched.ts']);
+    await waitUntil(() => onError.mock.calls.length > 0);
+    for (let turn = 0; turn < 8; turn += 1) await nextTurn();
+    await waitUntil(() => !analyzer.getSnapshot().scanning);
+    const sameGeneration = await Promise.allSettled([
+      analyzer.ensureFile('latched.ts', 'active-editor'),
+      analyzer.ensureFile('latched.ts', 'explorer'),
+      analyzer.ensureFile('latched.ts', 'active-editor')
+    ]);
+    for (let turn = 0; turn < 4; turn += 1) await nextTurn();
+
+    expect(sameGeneration.every(({ status }) => status === 'rejected')).toBe(true);
+    expect(blameCalls).toBe(2);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(error, 'blame', 'latched.ts');
+    expect(analyzer.getFile('latched.ts')?.ranges).toEqual(lastValid);
+
+    mode = 'recovered';
+    await analyzer.refresh('manual', ['latched.ts']);
+    await analyzer.ensureFile('latched.ts', 'active-editor');
+    await waitUntil(() => !analyzer.getSnapshot().scanning);
+    feedback.dispose();
+
+    expect(blameCalls).toBe(3);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(analyzer.getFile('latched.ts')?.ranges).toEqual([{
+      start: 1,
+      endExclusive: 2,
+      commit: recoveredCommit,
+      uncommitted: false
+    }]);
+  });
+
   it('settles scanning immediately when the index has no candidate files', async () => {
     const root = await createTemporaryDirectory();
     const storagePath = await createTemporaryDirectory();

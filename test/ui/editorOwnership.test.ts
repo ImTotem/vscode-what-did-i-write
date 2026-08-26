@@ -1,6 +1,18 @@
+import { join, resolve, sep } from 'node:path';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import type * as vscode from 'vscode';
+
+import { CacheStore } from '../../src/analysis/cacheStore.js';
+import {
+  RepositoryAnalyzer,
+  type AnalyzerFileSystem,
+  type RepositoryAccess as AnalyzerRepositoryAccess
+} from '../../src/analysis/repositoryAnalyzer.js';
+import type { FileRecord, GitIdentity } from '../../src/core/model.js';
+import type { BlameLine, WorkingChange } from '../../src/git/parsers.js';
+import type { UserIndex } from '../../src/git/repository.js';
 
 const mocks = vi.hoisted(() => {
   class Position {
@@ -81,7 +93,6 @@ import {
   commandUri,
   toDecorationOptions
 } from '../../src/ui/editorOwnership.js';
-import type { FileRecord } from '../../src/core/model.js';
 import type { RepositoryRegistry } from '../../src/extension/repositoryRegistry.js';
 
 const committed = {
@@ -183,6 +194,98 @@ describe('EditorOwnershipController', () => {
     await flush();
     expect(editor.setDecorations.mock.calls.slice(-1)[0]?.[1]).toEqual([expect.objectContaining({ range: expect.objectContaining({ start: expect.objectContaining({ line: 2 }) }) })]);
     controller.dispose();
+  });
+
+  it('keeps copied ownership clear until a production analyzer replacement settles', async () => {
+    const root = resolve('/repo');
+    const replacement = deferred<BlameLine[]>();
+    let blameCalls = 0;
+    const repository = analyzerRepository(root, async () => {
+      blameCalls += 1;
+      if (blameCalls === 1) return [{ line: 0, commit: committed, uncommitted: false }];
+      return replacement.promise;
+    });
+    const analyzer = new RepositoryAnalyzer(
+      repository,
+      new CacheStore(undefined),
+      undefined,
+      memoryFileSystem('first\nsecond\n')
+    );
+    await analyzer.initialize();
+    await analyzer.ensureFile('current.ts', 'active-editor');
+    await waitFor(() => !analyzer.getSnapshot().scanning);
+    const registry = registryForAnalyzer(root, analyzer);
+    const editor = editorFor(documentFor(join(root, 'current.ts'), 2));
+    setVisibleEditors([editor]);
+    const controller = new EditorOwnershipController(registry);
+    await controller.refreshVisibleEditors();
+    editor.setDecorations.mockClear();
+
+    setDirty(editor.document, true);
+    for (const listener of mocks.documentListeners) listener({ document: editor.document });
+    setDirty(editor.document, false);
+    for (const listener of mocks.saveListeners) listener(editor.document);
+    await waitFor(() => blameCalls === 2);
+    await flushTurns();
+
+    expect(editor.setDecorations.mock.calls.every(([, options]) =>
+      Array.isArray(options) && options.length === 0
+    )).toBe(true);
+
+    replacement.resolve([{ line: 1, commit: committed, uncommitted: false }]);
+    await waitFor(() => hasDecorationAtLine(editor, 1));
+
+    expect(hasDecorationAtLine(editor, 0)).toBe(false);
+    controller.dispose();
+    analyzer.dispose();
+  });
+
+  it('keeps a failed production replacement clear and retries only once', async () => {
+    const root = resolve('/repo');
+    const failure = new Error('persistent replacement blame failure');
+    let blameCalls = 0;
+    const repository = analyzerRepository(root, async () => {
+      blameCalls += 1;
+      if (blameCalls === 1) return [{ line: 0, commit: committed, uncommitted: false }];
+      throw failure;
+    });
+    const analyzerError = vi.fn();
+    const analyzer = new RepositoryAnalyzer(
+      repository,
+      new CacheStore(undefined),
+      analyzerError,
+      memoryFileSystem('first\nsecond\n')
+    );
+    await analyzer.initialize();
+    await analyzer.ensureFile('current.ts', 'active-editor');
+    await waitFor(() => !analyzer.getSnapshot().scanning);
+    const registry = registryForAnalyzer(root, analyzer);
+    const editor = editorFor(documentFor(join(root, 'current.ts'), 2));
+    setVisibleEditors([editor]);
+    const controllerError = vi.fn();
+    const controller = new EditorOwnershipController(registry, {
+      onError: controllerError,
+      scheduleRetry: (callback) => callback()
+    });
+    await controller.refreshVisibleEditors();
+    editor.setDecorations.mockClear();
+
+    setDirty(editor.document, true);
+    for (const listener of mocks.documentListeners) listener({ document: editor.document });
+    setDirty(editor.document, false);
+    for (const listener of mocks.saveListeners) listener(editor.document);
+    await waitFor(() => analyzerError.mock.calls.length > 0);
+    await waitFor(() => !analyzer.getSnapshot().scanning);
+    await flushTurns();
+
+    expect(blameCalls).toBe(3);
+    expect(analyzerError).toHaveBeenCalledTimes(2);
+    expect(controllerError).not.toHaveBeenCalled();
+    expect(editor.setDecorations.mock.calls.every(([, options]) =>
+      Array.isArray(options) && options.length === 0
+    )).toBe(true);
+    controller.dispose();
+    analyzer.dispose();
   });
 
   it('keeps save B gated when superseded save A settles first', async () => {
@@ -405,6 +508,66 @@ function fakeRegistry(current: FileRecord, ensureResult: Promise<FileRecord | un
   };
 }
 
+function analyzerRepository(
+  root: string,
+  runBlame: (path: string) => Promise<BlameLine[]>
+): AnalyzerRepositoryAccess {
+  return {
+    root,
+    getGlobalIdentity: async (): Promise<GitIdentity> => ({ name: 'Me', email: 'me@example.com' }),
+    getHead: async () => 'a'.repeat(40),
+    getUserIndex: async (): Promise<UserIndex> => ({
+      commits: [committed],
+      entries: [{ commit: committed, changes: [{ status: 'M', path: 'current.ts' }] }]
+    }),
+    getWorkingChanges: async (): Promise<WorkingChange[]> => [],
+    blame: runBlame
+  };
+}
+
+function memoryFileSystem(contents: string): AnalyzerFileSystem {
+  const bytes = Buffer.from(contents);
+  return {
+    stat: async () => ({ isFile: () => true }),
+    open: async () => {
+      let cursor = 0;
+      return {
+        read: async (buffer, offset, length, position) => {
+          const start = position ?? cursor;
+          const bytesRead = Math.max(0, Math.min(length, bytes.length - start));
+          bytes.copy(buffer, offset, start, start + bytesRead);
+          cursor = start + bytesRead;
+          return { bytesRead };
+        },
+        close: async () => undefined
+      };
+    }
+  };
+}
+
+function registryForAnalyzer(root: string, analyzer: RepositoryAnalyzer): RepositoryRegistry {
+  const entry = {
+    root,
+    state: 'ready' as const,
+    ready: true,
+    analyzer,
+    workspaceFolders: [{ fsPath: root }]
+  };
+  return {
+    findByUri: (uri: { fsPath: string }) => uri.fsPath.startsWith(`${root}${sep}`) ? entry : undefined,
+    onDidChange: (listener: () => void) => analyzer.onDidChange(() => listener())
+  } as unknown as RepositoryRegistry;
+}
+
+function hasDecorationAtLine(
+  editor: vscode.TextEditor & { setDecorations: ReturnType<typeof vi.fn> },
+  line: number
+): boolean {
+  return editor.setDecorations.mock.calls.some(([, options]) => Array.isArray(options) && options.some(
+    (option: { range?: { start?: { line?: number } } }) => option.range?.start?.line === line
+  ));
+}
+
 function deferred<T>() {
   let resolvePromise: ((value: T) => void) | undefined;
   let rejectPromise: ((reason: unknown) => void) | undefined;
@@ -417,4 +580,19 @@ function deferred<T>() {
 async function flush(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
+}
+
+async function flushTurns(): Promise<void> {
+  for (let turn = 0; turn < 4; turn += 1) {
+    await flush();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error('timed out waiting for editor ownership state');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
 }
