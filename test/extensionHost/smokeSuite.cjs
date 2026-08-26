@@ -1,8 +1,18 @@
 const assert = require('node:assert/strict');
 
-const vscode = require('vscode');
+function requiredCommandIds(packageJson) {
+  const contributed = packageJson?.contributes?.commands ?? [];
+  return [
+    ...contributed
+      .map(({ command }) => command)
+      .filter((command) => typeof command === 'string'),
+    'myCode.openCommitDiff',
+    'myCode.openWorkingTreeDiff'
+  ];
+}
 
 async function run() {
+  const vscode = require('vscode');
   const extension = vscode.extensions.getExtension('local-only.what-did-i-write');
   assert.ok(extension, 'local-only.what-did-i-write must be discoverable in the Extension Host');
 
@@ -10,7 +20,7 @@ async function run() {
   assert.equal(extension.isActive, true, 'local-only.what-did-i-write must activate');
 
   const commands = await vscode.commands.getCommands(true);
-  const requiredCommands = ['myCode.refresh', 'myCode.focusFileHistory', 'myCode.focusLineHistory', 'myCode.expandAll', 'myCode.collapseAll', 'myCode.hideDecorations', 'myCode.showDecorations', 'myCode.openToSide', 'myCode.revealInExplorer', 'myCode.revealInOs', 'myCode.copyPath', 'myCode.copyRelativePath', 'myCode.cut', 'myCode.copy', 'myCode.paste', 'myCode.newFile', 'myCode.newFolder', 'myCode.rename', 'myCode.delete'];
+  const requiredCommands = requiredCommandIds(extension.packageJSON);
   for (const command of requiredCommands) {
     assert.ok(commands.includes(command), `${command} must be registered after activation`);
   }
@@ -49,4 +59,4 @@ async function run() {
   await vscode.commands.executeCommand('myCode.pastActivity.focus');
 }
 
-module.exports = { run };
+module.exports = { requiredCommandIds, run };

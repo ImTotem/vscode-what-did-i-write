@@ -38,6 +38,8 @@ const mocks = vi.hoisted(() => {
     }
 
     public static parse(value: string): Uri {
+      if (value === 'file:' || value === 'file://') return new Uri('');
+      if (value.startsWith('file:/relative')) return new Uri(decodeURIComponent(value.slice('file:/'.length)));
       if (!value.startsWith('file://')) throw new Error('unsupported URI');
       return new Uri(resolve(decodeURIComponent(value.slice('file://'.length))));
     }
@@ -162,6 +164,20 @@ describe('MyCodeDragAndDropController', () => {
 
     expect(actions.copyExternal).toHaveBeenCalledWith([external], freshTarget);
     expect(actions.copyOrMove).not.toHaveBeenCalled();
+  });
+
+  it('rejects empty and relative file URI paths before normalizing them', async () => {
+    const target = folderNode('received');
+    const transfer = new mocks.DataTransfer();
+    transfer.set('text/uri-list', new mocks.DataTransferItem([
+      'file:',
+      'file:/relative/asset.txt'
+    ].join('\r\n')));
+    provider.replace([target]);
+
+    await controller.handleDrop(target, transfer as unknown as vscode.DataTransfer, token());
+
+    expect(actions.copyExternal).not.toHaveBeenCalled();
   });
 
   it('keeps past rows immutable as both drag sources and drop targets', async () => {

@@ -1,4 +1,4 @@
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 
 import * as vscode from 'vscode';
 
@@ -86,7 +86,9 @@ async function filePaths(item: vscode.DataTransferItem): Promise<readonly string
     if (value === '' || value.startsWith('#')) continue;
     try {
       const uri = vscode.Uri.parse(value);
-      if (uri.scheme === 'file') paths.push(resolve(uri.fsPath));
+      if (uri.scheme === 'file' && uri.fsPath.trim() !== '' && isAbsolute(uri.fsPath)) {
+        paths.push(resolve(uri.fsPath));
+      }
     } catch {
       // Ignore malformed or unsupported external drag entries.
     }

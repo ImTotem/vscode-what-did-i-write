@@ -390,6 +390,150 @@ describe('MyCodeFileActions conflicts and clipboard state', () => {
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 
+  it('rejects empty and relative external paths before normalization', async () => {
+    const destination = folderNode('dest');
+    const boundary = fakeBoundary([[join(ROOT, 'dest'), 'directory']]);
+    const { actions } = actionHarness({ boundary });
+
+    await actions.copyExternal(['', 'relative/asset.txt'], destination);
+
+    expect(boundary.copies).toEqual([]);
+    expect(boundary.warnings).toEqual([
+      'External drag paths must be absolute and cannot use symbolic links or junctions.'
+    ]);
+  });
+
+  it('rejects an external source whose kind changes before the write', async () => {
+    const source = resolve(ROOT, '..', 'outside', 'asset.txt');
+    const destination = folderNode('dest');
+    const boundary = fakeBoundary([
+      [source, 'file'],
+      [join(ROOT, 'dest'), 'directory']
+    ]);
+    const originalKind = boundary.kind.bind(boundary);
+    let sourceReads = 0;
+    boundary.kind = async (path) => sameTestPath(path, source)
+      ? (++sourceReads === 1 ? 'file' : 'directory')
+      : originalKind(path);
+    const { actions } = actionHarness({ boundary });
+
+    await actions.copyExternal([source], destination);
+
+    expect(boundary.copies).toEqual([]);
+    expect(boundary.confirmations).toEqual([]);
+    expect(boundary.warnings).toContain('The external source changed before it could be copied.');
+  });
+
+  it('rejects an external source that becomes a symbolic link before the write', async () => {
+    const source = resolve(ROOT, '..', 'outside', 'asset.txt');
+    const destination = folderNode('dest');
+    const boundary = fakeBoundary([
+      [source, 'file'],
+      [join(ROOT, 'dest'), 'directory']
+    ]);
+    let sourceChecks = 0;
+    boundary.isSymbolicLink = async (path) =>
+      sameTestPath(path, source) && ++sourceChecks > 1;
+    const { actions } = actionHarness({ boundary });
+
+    await actions.copyExternal([source], destination);
+
+    expect(boundary.copies).toEqual([]);
+    expect(boundary.warnings).toContain(
+      'External drag paths cannot use symbolic links or junctions.'
+    );
+  });
+
+  it('rejects an external source whose canonical identity changes before the write', async () => {
+    const source = resolve(ROOT, '..', 'outside', 'asset.txt');
+    const replacement = resolve(ROOT, '..', 'outside', 'replacement.txt');
+    const destination = folderNode('dest');
+    const boundary = fakeBoundary([
+      [source, 'file'],
+      [join(ROOT, 'dest'), 'directory']
+    ]);
+    const originalRealPath = boundary.realPath.bind(boundary);
+    let sourceReads = 0;
+    boundary.realPath = async (path) => sameTestPath(path, source)
+      ? (++sourceReads === 1 ? source : replacement)
+      : originalRealPath(path);
+    const { actions } = actionHarness({ boundary });
+
+    await actions.copyExternal([source], destination);
+
+    expect(boundary.copies).toEqual([]);
+    expect(boundary.warnings).toContain('The external source changed before it could be copied.');
+  });
+
+  it('rejects a destination whose canonical root and directory change before the write', async () => {
+    const source = resolve(ROOT, '..', 'outside', 'asset.txt');
+    const destinationPath = join(ROOT, 'dest');
+    const shiftedRoot = join(ROOT, 'shifted-root');
+    const boundary = fakeBoundary([
+      [source, 'file'],
+      [destinationPath, 'directory']
+    ]);
+    const originalRealPath = boundary.realPath.bind(boundary);
+    let rootReads = 0;
+    let destinationReads = 0;
+    boundary.realPath = async (path) => {
+      if (sameTestPath(path, ROOT)) return ++rootReads === 1 ? ROOT : shiftedRoot;
+      if (sameTestPath(path, destinationPath)) {
+        return ++destinationReads === 1 ? destinationPath : join(shiftedRoot, 'dest');
+      }
+      return originalRealPath(path);
+    };
+    const { actions } = actionHarness({ boundary });
+
+    await actions.copyExternal([source], folderNode('dest'));
+
+    expect(boundary.copies).toEqual([]);
+    expect(boundary.warnings).toContain(
+      'The destination changed before the external copy could be written.'
+    );
+  });
+
+  it('rejects a late external-copy collision without overwriting it', async () => {
+    const source = resolve(ROOT, '..', 'outside', 'asset.txt');
+    const destinationPath = join(ROOT, 'dest');
+    const target = join(destinationPath, 'asset.txt');
+    const boundary = fakeBoundary([
+      [source, 'file'],
+      [destinationPath, 'directory']
+    ]);
+    const originalKind = boundary.kind.bind(boundary);
+    let targetReads = 0;
+    boundary.kind = async (path) => sameTestPath(path, target)
+      ? (++targetReads === 1 ? undefined : 'file')
+      : originalKind(path);
+    const { actions } = actionHarness({ boundary });
+
+    await actions.copyExternal([source], folderNode('dest'));
+
+    expect(boundary.copies).toEqual([]);
+    expect(boundary.warnings).toContain('The destination now exists: ' + target);
+  });
+
+  it('reports an unexpected external-copy failure exactly once', async () => {
+    const source = resolve(ROOT, '..', 'outside', 'asset.txt');
+    const destinationPath = join(ROOT, 'dest');
+    const boundary = fakeBoundary([
+      [source, 'file'],
+      [destinationPath, 'directory']
+    ]);
+    const failure = new Error('copy failed');
+    boundary.copy = async () => { throw failure; };
+    const { actions, onError } = actionHarness({ boundary });
+
+    await actions.copyExternal([source], folderNode('dest'));
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(failure, 'external copy', source);
+    expect(boundary.errors).toEqual([
+      'Could not external copy 1 item. See What Did I Write? output for details.'
+    ]);
+  });
+
   it('rejects copying an external directory into one of its descendants', async () => {
     const source = join(ROOT, 'assets');
     const destination = folderNode('assets', ROOT);
@@ -609,6 +753,10 @@ function fakeBoundary(initial: ReadonlyArray<readonly [string, FileActionKind]> 
       entries.delete(normalized);
     }
   };
+}
+
+function sameTestPath(left: string, right: string): boolean {
+  return resolve(left).toLocaleLowerCase() === resolve(right).toLocaleLowerCase();
 }
 
 function actionHarness(options: {

@@ -14,7 +14,7 @@ export type HistoryTimelineViewState =
 type TimelineHistoryAccess = Pick<HistoryController, 'getTimeline' | 'openTimelineEntry'>;
 
 export class HistoryTimelineViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
-  private readonly subscriptions: vscode.Disposable[] = [];
+  private readonly viewSubscriptions: vscode.Disposable[] = [];
   private view: vscode.WebviewView | undefined;
   private target: unknown;
   private line: number | undefined;
@@ -29,11 +29,16 @@ export class HistoryTimelineViewProvider implements vscode.WebviewViewProvider, 
 
   public resolveWebviewView(view: vscode.WebviewView): void {
     if (this.disposed) return;
+    this.detachView();
     this.view = view;
     view.webview.options = { enableScripts: true };
-    this.subscriptions.push(view.webview.onDidReceiveMessage((message: unknown) => {
+    const messageSubscription = view.webview.onDidReceiveMessage((message: unknown) => {
       void this.acceptMessage(message);
-    }));
+    });
+    const disposeSubscription = view.onDidDispose(() => {
+      this.detachView(view);
+    });
+    this.viewSubscriptions.push(messageSubscription, disposeSubscription);
     this.render(this.model === undefined ? { kind: 'idle' } : { kind: 'ready', model: this.model });
   }
 
@@ -57,8 +62,8 @@ export class HistoryTimelineViewProvider implements vscode.WebviewViewProvider, 
     if (this.disposed || this.target === undefined) return;
     const generation = this.generation + 1;
     this.generation = generation;
-    if (this.model === undefined) this.render({ kind: 'loading' });
     try {
+      if (this.model === undefined) this.render({ kind: 'loading' });
       const model = await this.history.getTimeline(this.target, this.line);
       if (!this.isCurrent(generation)) return;
       this.model = model;
@@ -81,9 +86,7 @@ export class HistoryTimelineViewProvider implements vscode.WebviewViewProvider, 
     if (this.disposed) return;
     this.disposed = true;
     this.generation += 1;
-    for (const subscription of this.subscriptions) subscription.dispose();
-    this.subscriptions.length = 0;
-    this.view = undefined;
+    this.detachView();
     this.model = undefined;
   }
 
@@ -99,6 +102,12 @@ export class HistoryTimelineViewProvider implements vscode.WebviewViewProvider, 
         this.render({ kind: 'error', message: errorMessage(error) });
       }
     }
+  }
+
+  private detachView(expected?: vscode.WebviewView): void {
+    if (expected !== undefined && this.view !== expected) return;
+    this.view = undefined;
+    for (const subscription of this.viewSubscriptions.splice(0)) subscription.dispose();
   }
 
   private isCurrent(generation: number): boolean {

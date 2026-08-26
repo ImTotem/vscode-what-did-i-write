@@ -1,3 +1,5 @@
+import { join } from 'node:path';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import type * as vscode from 'vscode';
@@ -144,6 +146,8 @@ describe('extension activation', () => {
     const refreshCurrent = vi.spyOn(MyCodeTreeProvider.prototype, 'refresh').mockResolvedValue(undefined);
     const refreshPast = vi.spyOn(PastActivityTreeProvider.prototype, 'refresh').mockResolvedValue(undefined);
     const resolveNode = vi.spyOn(MyCodeTreeProvider.prototype, 'resolveNode');
+    const resolvePastNode = vi.spyOn(PastActivityTreeProvider.prototype, 'resolveNode');
+    const focusHistory = vi.spyOn(HistoryTimelineViewProvider.prototype, 'focus').mockResolvedValue(undefined);
     const rename = vi.spyOn(MyCodeFileActions.prototype, 'rename').mockResolvedValue(undefined);
     const expandAll = vi.spyOn(MyCodeViewController.prototype, 'expandAll').mockResolvedValue(undefined);
     const collapseAll = vi.spyOn(MyCodeViewController.prototype, 'collapseAll').mockResolvedValue(undefined);
@@ -208,6 +212,27 @@ describe('extension activation', () => {
     await Promise.resolve(focusLineHandler?.('/repo/source.ts', 4));
     expect(mocks.executeCommand).toHaveBeenCalledWith('myCode.history.focus');
 
+    focusHistory.mockClear();
+    const stalePast = { id: 'past|/repo|deleted/stale.ts', kind: 'past', root: '/stale', relativePath: 'stale.ts' };
+    const freshPast = { ...stalePast, root: '/repo', relativePath: 'deleted/fresh.ts' };
+    resolvePastNode.mockReturnValue(freshPast as never);
+    await Promise.resolve(mocks.commandHandlers.get('myCode.showFileHistory')?.(stalePast));
+    expect(resolvePastNode).toHaveBeenCalledWith(stalePast.id);
+    expect(focusHistory).toHaveBeenCalledWith(join('/repo', 'deleted/fresh.ts'), undefined);
+
+    focusHistory.mockClear();
+    const staleHistoryFile = { id: 'file|/repo|stale-history.ts', kind: 'file' };
+    const freshHistoryFile = {
+      id: staleHistoryFile.id,
+      kind: 'file',
+      root: '/repo',
+      file: { relativePath: 'fresh-history.ts' }
+    };
+    resolveNode.mockReturnValue(freshHistoryFile as never);
+    await Promise.resolve(mocks.commandHandlers.get('myCode.showFileHistory')?.(staleHistoryFile));
+    expect(resolveNode).toHaveBeenCalledWith(staleHistoryFile.id);
+    expect(focusHistory).toHaveBeenCalledWith(freshHistoryFile, undefined);
+
     await Promise.resolve(mocks.commandHandlers.get('myCode.expandAll')?.());
     await Promise.resolve(mocks.commandHandlers.get('myCode.collapseAll')?.());
     await Promise.resolve(mocks.commandHandlers.get('myCode.hideDecorations')?.());
@@ -253,6 +278,8 @@ describe('extension activation', () => {
     refreshCurrent.mockRestore();
     refreshPast.mockRestore();
     resolveNode.mockRestore();
+    resolvePastNode.mockRestore();
+    focusHistory.mockRestore();
     rename.mockRestore();
     expandAll.mockRestore();
     collapseAll.mockRestore();

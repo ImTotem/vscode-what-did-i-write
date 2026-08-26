@@ -1,3 +1,5 @@
+import { join } from 'node:path';
+
 import * as vscode from 'vscode';
 
 import { CacheStore } from './analysis/cacheStore.js';
@@ -107,6 +109,34 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     await action(node);
   };
+  const withHistoryTarget = async (
+    target: unknown,
+    action: (resolved: unknown) => Promise<void>
+  ): Promise<void> => {
+    if (typeof target !== 'object' || target === null || !('id' in target)) {
+      await action(target);
+      return;
+    }
+    const id = (target as { readonly id?: unknown }).id;
+    if (typeof id !== 'string') {
+      await action(target);
+      return;
+    }
+    if (id.startsWith('past|')) {
+      const resolved = pastActivityProvider.resolveNode(id);
+      if (resolved !== undefined) {
+        await action(join(resolved.root, resolved.relativePath));
+        return;
+      }
+    } else {
+      const resolved = treeProvider.resolveNode(id);
+      if (resolved !== undefined) {
+        await action(resolved);
+        return;
+      }
+    }
+    await vscode.window.showWarningMessage('That history item is no longer available. Refresh and try again.');
+  };
   const runUiCommand = async (operation: string, action: () => Promise<void>): Promise<void> => {
     try {
       await action();
@@ -186,7 +216,8 @@ export function activate(context: vscode.ExtensionContext): void {
         line ?? vscode.window.activeTextEditor?.selection.active.line
       ))),
     vscode.commands.registerCommand('myCode.showFileHistory', (target?: unknown) =>
-      runHistoryCommand('file-history', target, () => focusHistory(target))),
+      runHistoryCommand('file-history', target, () =>
+        withHistoryTarget(target, (resolved) => focusHistory(resolved)))),
     vscode.commands.registerCommand('myCode.showLineHistory', (target?: unknown, line?: number) =>
       runHistoryCommand('line-history', target, () => focusHistory(
         target,

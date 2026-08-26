@@ -143,6 +143,36 @@ describe('HistoryTimelineViewProvider', () => {
     expect(view.webview.html).toContain('cannot open &lt;diff&gt;');
     provider.dispose();
   });
+  it('detaches a disposed view and safely refreshes, follows, and resolves a replacement', async () => {
+    const newer = { ...timelineModel(), relativePath: 'src/newer.h', sourcePath: 'C:/repo/src/newer.h' };
+    const history = {
+      getTimeline: vi.fn()
+        .mockResolvedValueOnce(timelineModel())
+        .mockResolvedValueOnce(timelineModel())
+        .mockResolvedValueOnce(newer),
+      openTimelineEntry: vi.fn(async () => undefined)
+    };
+    const provider = new HistoryTimelineViewProvider(history);
+    const first = fakeView();
+    provider.resolveWebviewView(first.value);
+    await provider.focus('C:/repo/src/time.h');
+
+    first.dispose();
+    await expect(provider.refresh()).resolves.toBeUndefined();
+    provider.followEditor(editor('file', 'C:/repo/src/newer.h'));
+    await flush();
+
+    const second = fakeView();
+    provider.resolveWebviewView(second.value);
+    expect(second.webview.html).toContain('src/newer.h');
+    first.receive({ type: 'select', id: 'commit:newest' });
+    await flush();
+    expect(history.openTimelineEntry).not.toHaveBeenCalled();
+    second.receive({ type: 'select', id: 'commit:newest' });
+    await flush();
+    expect(history.openTimelineEntry).toHaveBeenCalledTimes(1);
+    provider.dispose();
+  });
 });
 
 function timelineModel(): HistoryTimelineModel {
@@ -182,8 +212,15 @@ function timelineModel(): HistoryTimelineModel {
 
 function fakeView() {
   let listener: ((message: unknown) => unknown) | undefined;
+  let disposeListener: (() => unknown) | undefined;
+  let disposed = false;
+  let html = '';
   const webview = {
-    html: '',
+    get html() { return html; },
+    set html(value: string) {
+      if (disposed) throw new Error('disposed webview cannot render');
+      html = value;
+    },
     options: {} as vscode.WebviewOptions,
     cspSource: 'vscode-resource:',
     onDidReceiveMessage: (next: (message: unknown) => unknown) => {
@@ -193,8 +230,18 @@ function fakeView() {
   };
   return {
     webview,
-    value: { webview } as unknown as vscode.WebviewView,
-    receive: (message: unknown) => listener?.(message)
+    value: {
+      webview,
+      onDidDispose: (next: () => unknown) => {
+        disposeListener = next;
+        return { dispose: () => { disposeListener = undefined; } };
+      }
+    } as unknown as vscode.WebviewView,
+    receive: (message: unknown) => listener?.(message),
+    dispose: () => {
+      disposed = true;
+      disposeListener?.();
+    }
   };
 }
 

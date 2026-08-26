@@ -240,9 +240,17 @@ export class MyCodeFileActions {
   ): Promise<void> {
     const destination = await this.resolveDestination(destinationNode);
     if (destination === undefined) return;
+    const candidates: string[] = [];
+    for (const path of new Set(paths)) {
+      if (path.trim() === '' || !isAbsolute(path)) {
+        await this.boundary.warn('External drag paths must be absolute and cannot use symbolic links or junctions.');
+        return;
+      }
+      candidates.push(resolve(path));
+    }
     const sources: ExternalSource[] = [];
-    for (const candidate of [...new Set(paths.map((path) => resolve(path)))]) {
-      if (!isAbsolute(candidate) || await this.hasSymbolicLink(candidate)) {
+    for (const candidate of [...new Set(candidates)]) {
+      if (await this.hasSymbolicLink(candidate)) {
         await this.boundary.warn('External drag paths must be absolute and cannot use symbolic links or junctions.');
         return;
       }
@@ -292,6 +300,14 @@ export class MyCodeFileActions {
     for (const plan of plans) {
       const currentDestination = await this.resolveDestination(destinationNode);
       if (currentDestination === undefined) continue;
+      if (
+        !samePath(currentDestination.root, destination.root)
+        || !samePath(currentDestination.canonicalRoot, destination.canonicalRoot)
+        || !samePath(currentDestination.canonicalPath, destination.canonicalPath)
+      ) {
+        await this.boundary.warn('The destination changed before the external copy could be written.');
+        continue;
+      }
       if (await this.hasSymbolicLink(plan.source.path)) {
         await this.boundary.warn('External drag paths cannot use symbolic links or junctions.');
         continue;
@@ -300,6 +316,10 @@ export class MyCodeFileActions {
       const currentKind = await this.boundary.kind(plan.source.path);
       if (currentCanonical === undefined || currentKind === undefined) {
         await this.boundary.warn('Missing external paths cannot be copied into What Did I Write?.');
+        continue;
+      }
+      if (currentKind !== plan.source.kind || !samePath(currentCanonical, plan.source.canonicalPath)) {
+        await this.boundary.warn('The external source changed before it could be copied.');
         continue;
       }
       if (currentKind === 'directory' && pathContains(currentCanonical, currentDestination.canonicalPath)) {
