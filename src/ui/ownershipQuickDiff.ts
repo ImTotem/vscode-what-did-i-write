@@ -28,6 +28,7 @@ interface TrackedOriginal extends OwnershipOriginalDocument {
   observedFingerprint: string;
   materializedFingerprint: string;
   notifiedFingerprint?: string;
+  materializationGeneration: number;
 }
 
 export function ownershipOriginalUri(root: string, path: string): vscode.Uri {
@@ -148,41 +149,74 @@ vscode.QuickDiffProvider, vscode.TextDocumentContentProvider, vscode.Disposable 
     const entry = this.findRepository(descriptor.root);
     if (!this.isRepositoryActive(entry)) return cached ?? '';
     const sourceUri = vscode.Uri.file(join(entry.root, descriptor.path));
-    const document = await vscode.workspace.openTextDocument(sourceUri);
-    if (!this.isOperationCurrent(generation, token) || !this.isRepositoryActive(entry)) return cached ?? '';
-    const documentVersion = document.version;
     const tracked = this.ensureTrackedOriginal(uri, sourceUri, entry, descriptor.path);
+    const materialization = ++tracked.materializationGeneration;
+    const requestedFingerprint = tracked.notifiedFingerprint ?? tracked.observedFingerprint;
+    let document: vscode.TextDocument;
+    try {
+      document = await vscode.workspace.openTextDocument(sourceUri);
+    } catch (error) {
+      if (this.canSettleMaterialization(tracked, materialization, generation, entry)) {
+        this.clearMaterializationNotification(tracked, requestedFingerprint);
+        this.onError?.(error, 'quick-diff-content', descriptor.path);
+      }
+      return this.cachedContents.get(key) ?? cached ?? '';
+    }
+    if (!this.isLatestMaterialization(tracked, materialization)) {
+      return this.cachedContents.get(key) ?? cached ?? document.getText();
+    }
+    if (!this.isOperationCurrent(generation) || !this.isRepositoryActive(entry)) {
+      return this.cachedContents.get(key) ?? cached ?? document.getText();
+    }
+    if (isCancellationRequested(token)) {
+      this.retryMaterialization(tracked, materialization, generation, entry, requestedFingerprint);
+      return this.cachedContents.get(key) ?? cached ?? document.getText();
+    }
+    const documentVersion = document.version;
     if (!this.snapshotState.isDocumentSnapshotCurrent(document)) {
-      tracked.notifiedFingerprint = undefined;
-      return cached ?? document.getText();
+      this.retryMaterialization(tracked, materialization, generation, entry, requestedFingerprint);
+      return this.cachedContents.get(key) ?? cached ?? document.getText();
     }
 
     let record: FileRecord | undefined;
     try {
       record = await entry.analyzer.ensureFile(descriptor.path, 'active-editor');
     } catch (error) {
-      if (this.isOperationCurrent(generation, token)) {
-        tracked.notifiedFingerprint = undefined;
+      if (this.canSettleMaterialization(tracked, materialization, generation, entry)) {
+        this.clearMaterializationNotification(tracked, requestedFingerprint);
         if (entry.analyzer.reportsErrors !== true) {
           this.onError?.(error, 'quick-diff-content', descriptor.path);
         }
       }
-      return cached ?? document.getText();
+      return this.cachedContents.get(key) ?? cached ?? document.getText();
     }
-    if (!this.isOperationCurrent(generation, token)
-      || !this.isRepositoryActive(entry)
+    if (!this.isLatestMaterialization(tracked, materialization)) {
+      return this.cachedContents.get(key) ?? cached ?? document.getText();
+    }
+    if (!this.isOperationCurrent(generation) || !this.isRepositoryActive(entry)) {
+      return this.cachedContents.get(key) ?? cached ?? document.getText();
+    }
+    if (isCancellationRequested(token)
       || document.version !== documentVersion
       || !this.snapshotState.isDocumentSnapshotCurrent(document)) {
-      if (this.isOperationCurrent(generation, token)) tracked.notifiedFingerprint = undefined;
-      return cached ?? document.getText();
+      this.retryMaterialization(tracked, materialization, generation, entry, requestedFingerprint);
+      return this.cachedContents.get(key) ?? cached ?? document.getText();
+    }
+
+    const fingerprint = recordFingerprint(record);
+    const currentFingerprint = recordFingerprint(
+      entry.analyzer.getSnapshot().files.find(({ relativePath }) => relativePath === descriptor.path)
+    );
+    tracked.observedFingerprint = currentFingerprint;
+    if (fingerprint !== currentFingerprint) {
+      this.retryMaterialization(tracked, materialization, generation, entry, requestedFingerprint);
+      return this.cachedContents.get(key) ?? cached ?? document.getText();
     }
 
     const contents = record === undefined || record.binary
       ? document.getText()
       : omitOwnedLines(document.getText(), record.ranges);
-    const fingerprint = recordFingerprint(record);
     this.cachedContents.set(key, contents);
-    tracked.observedFingerprint = fingerprint;
     tracked.materializedFingerprint = fingerprint;
     tracked.notifiedFingerprint = undefined;
     return contents;
@@ -238,6 +272,46 @@ vscode.QuickDiffProvider, vscode.TextDocumentContentProvider, vscode.Disposable 
     tracked.notifiedFingerprint = tracked.observedFingerprint;
     this.changeEmitter.fire(tracked.uri);
   }
+  private isLatestMaterialization(tracked: TrackedOriginal, materialization: number): boolean {
+    return this.trackedOriginals.get(tracked.uri.toString()) === tracked
+      && tracked.materializationGeneration === materialization;
+  }
+
+  private canSettleMaterialization(
+    tracked: TrackedOriginal,
+    materialization: number,
+    generation: number,
+    entry: RegisteredRepository
+  ): boolean {
+    return this.isLatestMaterialization(tracked, materialization)
+      && this.isOperationCurrent(generation)
+      && this.isRepositoryActive(entry);
+  }
+
+  private clearMaterializationNotification(
+    tracked: TrackedOriginal,
+    requestedFingerprint: string
+  ): void {
+    if (tracked.notifiedFingerprint === requestedFingerprint) {
+      tracked.notifiedFingerprint = undefined;
+    }
+  }
+
+  private retryMaterialization(
+    tracked: TrackedOriginal,
+    materialization: number,
+    generation: number,
+    entry: RegisteredRepository,
+    requestedFingerprint: string
+  ): void {
+    if (!this.canSettleMaterialization(tracked, materialization, generation, entry)) return;
+    this.clearMaterializationNotification(tracked, requestedFingerprint);
+    queueMicrotask(() => {
+      if (!this.canSettleMaterialization(tracked, materialization, generation, entry)) return;
+      this.requestRefresh(tracked);
+    });
+  }
+
 
   private trackOriginal(uri: vscode.Uri, entry: RegisteredRepository, record: FileRecord): TrackedOriginal {
     return this.ensureTrackedOriginal(
@@ -270,7 +344,8 @@ vscode.QuickDiffProvider, vscode.TextDocumentContentProvider, vscode.Disposable 
       root: entry.root,
       path,
       observedFingerprint,
-      materializedFingerprint: UNMATERIALIZED_FINGERPRINT
+      materializedFingerprint: UNMATERIALIZED_FINGERPRINT,
+      materializationGeneration: 0
     };
     this.trackedOriginals.set(key, tracked);
     return tracked;
@@ -297,7 +372,6 @@ vscode.QuickDiffProvider, vscode.TextDocumentContentProvider, vscode.Disposable 
       if (activeRoots.has(key)) continue;
       sourceControl.dispose();
       this.sourceControls.delete(key);
-      this.generation += 1;
     }
   }
 
@@ -320,6 +394,10 @@ vscode.QuickDiffProvider, vscode.TextDocumentContentProvider, vscode.Disposable 
   private findRepository(root: string): RegisteredRepository | undefined {
     return this.registry.repositories.find((entry) => normalizedRoot(entry.root) === normalizedRoot(root));
   }
+}
+
+function isCancellationRequested(token?: Pick<vscode.CancellationToken, 'isCancellationRequested'>): boolean {
+  return token?.isCancellationRequested === true;
 }
 
 function fallbackSnapshotState(

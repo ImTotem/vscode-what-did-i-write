@@ -49,7 +49,12 @@ const mocks = vi.hoisted(() => {
     dispose: ReturnType<typeof vi.fn>;
   }> = [];
   const documents = new Map<string, { uri: Uri; isDirty: boolean; version: number; getText(): string }>();
-  return { EventEmitter, Uri, sourceControls, documents };
+  const openTextDocument = vi.fn(async (uri: Uri) => {
+    const document = documents.get(uri.fsPath);
+    if (document === undefined) throw new Error(`missing document: ${uri.fsPath}`);
+    return document;
+  });
+  return { EventEmitter, Uri, sourceControls, documents, openTextDocument };
 });
 
 vi.mock('vscode', () => ({
@@ -69,11 +74,7 @@ vi.mock('vscode', () => ({
     }
   },
   workspace: {
-    openTextDocument: async (uri: InstanceType<typeof mocks.Uri>) => {
-      const document = mocks.documents.get(uri.fsPath);
-      if (document === undefined) throw new Error(`missing document: ${uri.fsPath}`);
-      return document;
-    }
+    openTextDocument: mocks.openTextDocument
   }
 }));
 
@@ -100,6 +101,11 @@ describe('OwnershipQuickDiffController', () => {
   beforeEach(() => {
     mocks.sourceControls.splice(0);
     mocks.documents.clear();
+    mocks.openTextDocument.mockReset().mockImplementation(async (uri: InstanceType<typeof mocks.Uri>) => {
+      const document = mocks.documents.get(uri.fsPath);
+      if (document === undefined) throw new Error(`missing document: ${uri.fsPath}`);
+      return document;
+    });
   });
 
   it('registers a native quick diff source for each repository and removes authored lines from its original document', async () => {
@@ -295,6 +301,183 @@ describe('OwnershipQuickDiffController', () => {
     controller.dispose();
   });
 
+  it('keeps the newest materialization when an older analyzer request finishes last', async () => {
+    const root = resolve('fixture/overlap');
+    const sourcePath = resolve(root, 'current.ts');
+    const first = ownedRecord('current.ts', 0);
+    const second = ownedRecord('current.ts', 1);
+    const latest = ownedRecord('current.ts', 2);
+    const fixture = mutableRegistry(root, first);
+    const document = {
+      uri: mocks.Uri.file(sourcePath),
+      isDirty: false,
+      version: 1,
+      getText: () => 'zero\none\ntwo\nthree\n'
+    };
+    mocks.documents.set(sourcePath, document);
+    const controller = new OwnershipQuickDiffController(fixture.registry, snapshotState(true).access);
+    await controller.setEnabled(true);
+    const original = await controller.provideOriginalResource(
+      document.uri as unknown as vscode.Uri,
+      cancellation()
+    );
+    await expect(controller.provideTextDocumentContent(original as vscode.Uri)).resolves.toBe(
+      'one\ntwo\nthree\n'
+    );
+    const pendingSecond = deferred<TestRecord | undefined>();
+    const pendingLatest = deferred<TestRecord | undefined>();
+    fixture.ensureFile
+      .mockReturnValueOnce(pendingSecond.promise)
+      .mockReturnValueOnce(pendingLatest.promise);
+    const refreshed: Promise<string>[] = [];
+    controller.onDidChange((uri) => refreshed.push(controller.provideTextDocumentContent(uri)));
+
+    fixture.setRecord(second);
+    fixture.emit();
+    await flush();
+    fixture.setRecord(latest);
+    fixture.emit();
+    await flush();
+    expect(refreshed).toHaveLength(2);
+
+    pendingLatest.resolve(latest);
+    await flush();
+    pendingSecond.resolve(second);
+
+    await expect(Promise.all(refreshed)).resolves.toEqual([
+      'zero\none\nthree\n',
+      'zero\none\nthree\n'
+    ]);
+    await expect(controller.provideTextDocumentContent(original as vscode.Uri)).resolves.toBe(
+      'zero\none\nthree\n'
+    );
+    controller.dispose();
+  });
+
+  it('retries a notified fingerprint when VS Code cancels its content request', async () => {
+    const root = resolve('fixture/cancelled-notification');
+    const sourcePath = resolve(root, 'current.ts');
+    const first = ownedRecord('current.ts', 0);
+    const next = ownedRecord('current.ts', 1);
+    const fixture = mutableRegistry(root, first);
+    const document = {
+      uri: mocks.Uri.file(sourcePath),
+      isDirty: false,
+      version: 1,
+      getText: () => 'zero\none\ntwo\n'
+    };
+    mocks.documents.set(sourcePath, document);
+    const controller = new OwnershipQuickDiffController(fixture.registry, snapshotState(true).access);
+    await controller.setEnabled(true);
+    const original = await controller.provideOriginalResource(
+      document.uri as unknown as vscode.Uri,
+      cancellation()
+    );
+    await controller.provideTextDocumentContent(original as vscode.Uri);
+    const pending = deferred<TestRecord | undefined>();
+    fixture.ensureFile.mockReturnValueOnce(pending.promise);
+    const token = { isCancellationRequested: false };
+    const refreshed: Promise<string>[] = [];
+    controller.onDidChange((uri) => refreshed.push(controller.provideTextDocumentContent(
+      uri,
+      refreshed.length === 0 ? token as vscode.CancellationToken : cancellation()
+    )));
+
+    fixture.setRecord(next);
+    fixture.emit();
+    await flush();
+    token.isCancellationRequested = true;
+    pending.resolve(next);
+    await flush();
+    await flush();
+
+    expect(refreshed).toHaveLength(2);
+    await expect(refreshed[1]).resolves.toBe('zero\ntwo\n');
+    controller.dispose();
+  });
+
+  it('keeps an in-flight repository current when an unrelated root is removed', async () => {
+    const removedRoot = resolve('fixture/multi/a');
+    const activeRoot = resolve('fixture/multi/b');
+    const sourcePath = resolve(activeRoot, 'current.ts');
+    const first = ownedRecord('current.ts', 0);
+    const latest = ownedRecord('current.ts', 2);
+    const fixture = multiRootRegistry([
+      [removedRoot, ownedRecord('a.ts', 0)],
+      [activeRoot, first]
+    ]);
+    const document = {
+      uri: mocks.Uri.file(sourcePath),
+      isDirty: false,
+      version: 1,
+      getText: () => 'zero\none\ntwo\n'
+    };
+    mocks.documents.set(sourcePath, document);
+    const controller = new OwnershipQuickDiffController(fixture.registry, snapshotState(true).access);
+    await controller.setEnabled(true);
+    const original = await controller.provideOriginalResource(
+      document.uri as unknown as vscode.Uri,
+      cancellation()
+    );
+    await controller.provideTextDocumentContent(original as vscode.Uri);
+    const pending = deferred<TestRecord | undefined>();
+    fixture.ensureFile(activeRoot).mockReturnValueOnce(pending.promise);
+    const refreshed: Promise<string>[] = [];
+    controller.onDidChange((uri) => refreshed.push(controller.provideTextDocumentContent(uri)));
+
+    fixture.setRecord(activeRoot, latest);
+    fixture.emit();
+    await flush();
+    fixture.remove(removedRoot);
+    pending.resolve(latest);
+
+    await expect(refreshed[0]).resolves.toBe('zero\none\n');
+    controller.dispose();
+  });
+
+  it('reports source-open failures and allows an unchanged fingerprint to retry', async () => {
+    const root = resolve('fixture/open-failure');
+    const sourcePath = resolve(root, 'current.ts');
+    const first = ownedRecord('current.ts', 0);
+    const next = ownedRecord('current.ts', 1);
+    const fixture = mutableRegistry(root, first);
+    const document = {
+      uri: mocks.Uri.file(sourcePath),
+      isDirty: false,
+      version: 1,
+      getText: () => 'zero\none\ntwo\n'
+    };
+    mocks.documents.set(sourcePath, document);
+    const report = vi.fn();
+    const controller = new OwnershipQuickDiffController(
+      fixture.registry,
+      snapshotState(true).access,
+      report
+    );
+    await controller.setEnabled(true);
+    const original = await controller.provideOriginalResource(
+      document.uri as unknown as vscode.Uri,
+      cancellation()
+    );
+    await controller.provideTextDocumentContent(original as vscode.Uri);
+    const failure = new Error('source was renamed');
+    mocks.openTextDocument.mockRejectedValueOnce(failure);
+    const refreshed: Promise<string>[] = [];
+    controller.onDidChange((uri) => refreshed.push(controller.provideTextDocumentContent(uri)));
+
+    fixture.setRecord(next);
+    fixture.emit();
+    await flush();
+    await expect(refreshed[0]).resolves.toBe('one\ntwo\n');
+    expect(report).toHaveBeenCalledWith(failure, 'quick-diff-content', 'current.ts');
+
+    fixture.emit();
+    await flush();
+    expect(refreshed).toHaveLength(2);
+    await expect(refreshed[1]).resolves.toBe('zero\ntwo\n');
+    controller.dispose();
+  });
+
   it('suppresses missing-identity and binary resources and disposes removed repositories', async () => {
     const root = resolve('fixture/lifecycle');
     const fixture = mutableRegistry(root, {
@@ -416,6 +599,55 @@ function mutableRegistry(root: string, initialRecord: TestRecord | undefined) {
     setIdentity: (next: { name: string; email: string }) => { identity = next; },
     remove: () => {
       repositories = [];
+      emit();
+    }
+  };
+}
+
+function multiRootRegistry(
+  initial: readonly (readonly [root: string, record: TestRecord | undefined])[]
+) {
+  const listeners = new Set<() => void>();
+  const records = new Map(initial);
+  const ensureFiles = new Map<string, ReturnType<typeof vi.fn>>();
+  let repositories = initial.map(([root]) => {
+    const ensureFile = vi.fn(async () => records.get(root));
+    ensureFiles.set(root, ensureFile);
+    return {
+      root,
+      ready: true,
+      state: 'ready',
+      repository: {},
+      workspaceFolders: [],
+      analyzer: {
+        getSnapshot: () => ({
+          root,
+          head: 'abc',
+          identity: { name: 'Me', email: 'me@example.com' },
+          files: records.get(root) === undefined ? [] : [records.get(root)],
+          scanning: false,
+          generatedAt: 1
+        }),
+        ensureFile
+      }
+    } as unknown as RegisteredRepository;
+  });
+  const registry = {
+    get repositories() { return repositories; },
+    findByUri: (uri: { fsPath: string }) => repositories.find((entry) => uri.fsPath.startsWith(entry.root)),
+    onDidChange: (listener: () => void) => {
+      listeners.add(listener);
+      return { dispose: () => listeners.delete(listener) };
+    }
+  } as unknown as RepositoryRegistry;
+  const emit = () => { for (const listener of listeners) listener(); };
+  return {
+    registry,
+    emit,
+    ensureFile: (root: string) => ensureFiles.get(root) as ReturnType<typeof vi.fn>,
+    setRecord: (root: string, record: TestRecord | undefined) => records.set(root, record),
+    remove: (root: string) => {
+      repositories = repositories.filter((entry) => entry.root !== root);
       emit();
     }
   };
