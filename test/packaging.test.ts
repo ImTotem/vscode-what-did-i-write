@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 import { listFiles } from '@vscode/vsce';
@@ -46,6 +46,28 @@ describe('release package contract', () => {
     expect(ignored).toContain('**/*.map');
     expect(ignored).toContain('PROJECT_GOAL.md');
     expect(ignored).toContain('vitest.config.mts');
+  });
+
+  it('publishes a tested versioned VSIX to GitHub Releases from matching version tags', () => {
+    const workflowPath = '.github/workflows/release.yml';
+
+    expect(existsSync(workflowPath)).toBe(true);
+
+    const workflow = read(workflowPath);
+    expect(workflow).toContain("- 'v*'");
+    expect(workflow).toContain('runs-on: ubuntu-latest');
+    expect(workflow).toContain('contents: write');
+    expect(workflow).toContain('node-version: 22');
+    expect(workflow).toContain('npm ci');
+    expect(workflow).toContain('npm run check');
+    expect(workflow).toContain('npm run test:run');
+    expect(workflow).toContain('npm run build');
+    expect(workflow).toContain('package.json version');
+    expect(workflow).toContain('npm run package -- --out');
+    expect(workflow).toContain('gh release view');
+    expect(workflow).toContain('gh release create');
+    expect(workflow).toContain('gh release upload');
+    expect(workflow).toContain('--clobber');
   });
 
   it('includes the Activity Bar and both gutter SVG assets in the actual VSIX file list', async () => {

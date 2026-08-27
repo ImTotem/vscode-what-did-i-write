@@ -1,0 +1,73 @@
+name: Release VSIX
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Test, package, and release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npm run check
+
+      - name: Run tests
+        run: npm run test:run
+
+      - name: Build extension
+        run: npm run build
+
+      - name: Verify tag matches package.json version
+        id: release
+        shell: bash
+        run: |
+          package_version="$(node -p "require('./package.json').version")"
+          expected_tag="v${package_version}"
+
+          if [[ "${GITHUB_REF_NAME}" != "${expected_tag}" ]]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match package.json version ${package_version}."
+            exit 1
+          fi
+
+          echo "vsix=what-did-i-write-${package_version}.vsix" >> "${GITHUB_OUTPUT}"
+
+      - name: Package VSIX
+        run: npm run package -- --out "${{ steps.release.outputs.vsix }}"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VSIX_PATH: ${{ steps.release.outputs.vsix }}
+        shell: bash
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" "${VSIX_PATH}" --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" "${VSIX_PATH}" \
+              --verify-tag \
+              --generate-notes \
+              --title "What Did I Write? ${GITHUB_REF_NAME}"
+          fi
