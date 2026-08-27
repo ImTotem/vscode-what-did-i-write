@@ -13,9 +13,9 @@ const manifest = JSON.parse(readFileSync('package.json', 'utf8')) as {
   readonly extensionKind?: readonly string[];
   readonly activationEvents?: readonly string[];
   readonly contributes?: {
-    readonly commands?: readonly { readonly command: string; readonly title: string; readonly icon?: string }[];
+    readonly commands?: readonly { readonly command: string; readonly title: string; readonly category?: string; readonly icon?: string }[];
     readonly menus?: {
-      readonly 'view/item'?: readonly { readonly command: string; readonly when: string }[];
+      readonly 'view/item/context'?: readonly { readonly command: string; readonly when: string }[];
       readonly 'view/title'?: readonly { readonly command: string; readonly when: string; readonly group?: string }[];
     };
     readonly viewsContainers?: {
@@ -117,25 +117,28 @@ describe('extension manifest', () => {
       expect.objectContaining({ command: 'myCode.refresh', when: 'view == myCode.explorer' }),
       expect.objectContaining({ command: 'myCode.expandAll', when: 'view == myCode.explorer && !myCode.treeAllExpanded' }),
       expect.objectContaining({ command: 'myCode.collapseAll', when: 'view == myCode.explorer && myCode.treeAllExpanded' }),
-      expect.objectContaining({ command: 'myCode.hideDecorations', when: 'view == myCode.explorer && myCode.visualsEnabled' })
+      expect.objectContaining({ command: 'myCode.hideDecorations', when: 'view == myCode.explorer && myCode.visualsEnabled' }),
+      expect.objectContaining({ command: 'myCode.toggleLineBackground', when: 'view == myCode.explorer' })
     ]));
     const commands = manifest.contributes?.commands ?? [];
     expect(commands.filter(({ command }) => command.startsWith('myCode.')).every(({ icon }) => icon !== undefined)).toBe(true);
   });
 
   it('routes file history from current and past MY CODE tree items', () => {
-    expect(manifest.contributes?.menus?.['view/item']).toEqual(expect.arrayContaining([
+    expect(manifest.contributes?.menus?.['view/item/context']).toEqual(expect.arrayContaining([
       { command: 'myCode.showFileHistory', when: 'view == myCode.explorer && viewItem == myCode.file' },
       { command: 'myCode.showFileHistory', when: 'view == myCode.pastActivity && viewItem == myCode.pastFile' }
     ]));
   });
 
-  it('contributes every approved Explorer action with What Did I Write? palette branding and an icon', () => {
+  it('uses short tooltip labels while keeping Command Palette branding in the category', () => {
     const commands = manifest.contributes?.commands ?? [];
     const required = ['expandAll', 'collapseAll', 'hideDecorations', 'showDecorations', 'openToSide', 'revealInExplorer', 'revealInOs', 'copyPath', 'copyRelativePath', 'copyHistoricalPath', 'copyHistoricalRelativePath', 'cut', 'copy', 'paste', 'newFile', 'newFolder', 'rename', 'delete'].map((id) => `myCode.${id}`);
     expect(commands.map(({ command }) => command)).toEqual(expect.arrayContaining(required));
     for (const command of commands.filter(({ command }) => command.startsWith('myCode.'))) {
-      expect(english(command.title)).toMatch(/^What Did I Write\?: /);
+      expect(english(command.title)).not.toMatch(/^What Did I Write\?: /);
+      expect(english(command.title)).toBeTruthy();
+      expect(english(command.category)).toBe('What Did I Write?');
       expect(command.icon).toBeTruthy();
     }
   });
@@ -146,9 +149,10 @@ describe('extension manifest', () => {
       { command: 'myCode.expandAll', when: 'view == myCode.explorer && !myCode.treeAllExpanded', group: 'navigation@2' },
       { command: 'myCode.collapseAll', when: 'view == myCode.explorer && myCode.treeAllExpanded', group: 'navigation@2' },
       { command: 'myCode.hideDecorations', when: 'view == myCode.explorer && myCode.visualsEnabled', group: 'navigation@3' },
-      { command: 'myCode.showDecorations', when: 'view == myCode.explorer && !myCode.visualsEnabled', group: 'navigation@3' }
+      { command: 'myCode.showDecorations', when: 'view == myCode.explorer && !myCode.visualsEnabled', group: 'navigation@3' },
+      { command: 'myCode.toggleLineBackground', when: 'view == myCode.explorer', group: 'navigation@4' }
     ]));
-    const items = manifest.contributes?.menus?.['view/item'] ?? [];
+    const items = manifest.contributes?.menus?.['view/item/context'] ?? [];
     const commandsFor = (contextValue: string) => items.filter(({ when }) => when.includes('viewItem == ' + contextValue)).map(({ command }) => command);
     expect(commandsFor('myCode.file')).toEqual(expect.arrayContaining(['myCode.openFile', 'myCode.openToSide', 'myCode.showFileHistory', 'myCode.revealInExplorer', 'myCode.revealInOs', 'myCode.copyPath', 'myCode.copyRelativePath', 'myCode.cut', 'myCode.copy', 'myCode.paste', 'myCode.rename', 'myCode.delete']));
     expect(commandsFor('myCode.folder')).toEqual(expect.arrayContaining(['myCode.revealInExplorer', 'myCode.revealInOs', 'myCode.copyPath', 'myCode.copyRelativePath', 'myCode.newFile', 'myCode.newFolder', 'myCode.cut', 'myCode.copy', 'myCode.paste', 'myCode.rename', 'myCode.delete']));

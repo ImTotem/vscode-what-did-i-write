@@ -17,14 +17,24 @@ const mocks = vi.hoisted(() => {
   }
 
   const executeCommand = vi.fn(async (..._args: unknown[]) => undefined);
-  const configuration = { visualsEnabled: true, updates: [] as unknown[][], update: vi.fn() };
+  const configuration = {
+    visualsEnabled: true,
+    updates: [] as unknown[][],
+    update: vi.fn(),
+    scmWorkspaceValue: 'gutter' as string | undefined,
+    scmUpdates: [] as unknown[][],
+    scmUpdate: vi.fn()
+  };
   return { EventEmitter, executeCommand, configuration };
 });
 
 vi.mock('vscode', () => ({
   commands: { executeCommand: mocks.executeCommand },
   workspace: {
-    getConfiguration: () => ({
+    getConfiguration: (section: string) => section === 'scm' ? ({
+      inspect: () => ({ workspaceValue: mocks.configuration.scmWorkspaceValue }),
+      update: (...args: unknown[]) => mocks.configuration.scmUpdate(...args)
+    }) : ({
       get: <T>(key: string, fallback: T) => key === 'visuals.enabled'
         ? mocks.configuration.visualsEnabled as T
         : fallback,
@@ -54,6 +64,28 @@ describe('MyCodeViewController', () => {
     expect(fixture.view.reveal).toHaveBeenNthCalledWith(1, fixture.nodes[0], { expand: true, select: false, focus: false });
     expect(fixture.view.reveal).toHaveBeenNthCalledWith(2, fixture.nodes[1], { expand: true, select: false, focus: false });
     expect(mocks.executeCommand).toHaveBeenCalledWith('setContext', 'myCode.treeAllExpanded', true);
+    controller.dispose();
+  });
+
+  it('reveals sibling folders in parallel after their parent is available', async () => {
+    const fixture = treeFixture(['root', 'folder-a', 'folder-b']);
+    const firstSibling = deferred<void>();
+    const secondSibling = deferred<void>();
+    fixture.view.reveal
+      .mockResolvedValueOnce(undefined)
+      .mockReturnValueOnce(firstSibling.promise)
+      .mockReturnValueOnce(secondSibling.promise);
+    const controller = new MyCodeViewController(fixture.provider, fixture.view);
+    await flush();
+
+    const expansion = controller.expandAll();
+    await flush();
+
+    expect(fixture.view.reveal).toHaveBeenCalledTimes(3);
+    firstSibling.resolve();
+    secondSibling.resolve();
+    await expansion;
+    expect(mocks.executeCommand.mock.calls.at(-1)).toEqual(['setContext', 'myCode.treeAllExpanded', true]);
     controller.dispose();
   });
 
@@ -196,6 +228,110 @@ describe('VisualModeController', () => {
     mocks.configuration.updates.splice(0);
     mocks.configuration.update.mockReset();
     mocks.configuration.update.mockImplementation(async (...args: unknown[]) => { mocks.configuration.updates.push(args); });
+    mocks.configuration.scmWorkspaceValue = 'gutter';
+    mocks.configuration.scmUpdates.splice(0);
+    mocks.configuration.scmUpdate.mockReset();
+    mocks.configuration.scmUpdate.mockImplementation(async (...args: unknown[]) => {
+      mocks.configuration.scmUpdates.push(args);
+      mocks.configuration.scmWorkspaceValue = args[1] as string | undefined;
+    });
+  });
+
+  it('hides built-in SCM editor markers while ON and restores the exact Workspace value when OFF', async () => {
+    const decorations = { setEnabled: vi.fn() };
+    const editors = { setEnabled: vi.fn(async () => undefined) };
+    const state = memoryState();
+    const controller = new VisualModeController(decorations, editors, state);
+    await flush();
+
+    expect(mocks.configuration.scmUpdates).toEqual([['diffDecorations', 'none', 2]]);
+
+    await controller.setEnabled(false);
+
+    expect(mocks.configuration.scmUpdates.at(-1)).toEqual(['diffDecorations', 'gutter', 2]);
+    expect(decorations.setEnabled.mock.calls.at(-1)).toEqual([false]);
+    expect(editors.setEnabled.mock.calls.at(-1)).toEqual([false]);
+    expect(mocks.executeCommand.mock.calls.at(-1)).toEqual(['setContext', 'myCode.visualsEnabled', false]);
+  });
+
+  it('restores an absent SCM Workspace override and clears the persisted snapshot on shutdown', async () => {
+    mocks.configuration.scmWorkspaceValue = undefined;
+    const state = memoryState();
+    const controller = new VisualModeController(
+      { setEnabled: vi.fn() },
+      { setEnabled: vi.fn(async () => undefined) },
+      state
+    );
+    await flush();
+
+    await controller.shutdown();
+
+    expect(mocks.configuration.scmUpdates).toEqual([
+      ['diffDecorations', 'none', 2],
+      ['diffDecorations', undefined, 2]
+    ]);
+    expect(state.get('myCode.visuals.previousScmDiffDecorations')).toBeUndefined();
+  });
+
+  it('does not restore a stale crash snapshot over a newer SCM setting when starting OFF', async () => {
+    mocks.configuration.visualsEnabled = false;
+    mocks.configuration.scmWorkspaceValue = 'overview';
+    const state = memoryState();
+    await state.update('myCode.visuals.previousScmDiffDecorations', {
+      hasWorkspaceValue: true,
+      value: 'gutter'
+    });
+    new VisualModeController(
+      { setEnabled: vi.fn() },
+      { setEnabled: vi.fn(async () => undefined) },
+      state
+    );
+    await flush();
+
+    expect(mocks.configuration.scmWorkspaceValue).toBe('overview');
+    expect(mocks.configuration.scmUpdates).toEqual([]);
+    expect(state.get('myCode.visuals.previousScmDiffDecorations')).toBeUndefined();
+  });
+
+  it('keeps SCM hidden when a newer ON overtakes an in-flight OFF repaint', async () => {
+    const offRepaint = deferred<void>();
+    const state = memoryState();
+    const editors = { setEnabled: vi.fn((enabled: boolean) => enabled ? Promise.resolve() : offRepaint.promise) };
+    const controller = new VisualModeController({ setEnabled: vi.fn() }, editors, state);
+    await controller.setEnabled(true);
+    mocks.configuration.scmUpdates.splice(0);
+
+    const off = controller.setEnabled(false);
+    await flush();
+    const on = controller.setEnabled(true);
+    await on;
+    offRepaint.resolve();
+    await off;
+
+    expect(mocks.configuration.scmWorkspaceValue).toBe('none');
+    expect(state.get('myCode.visuals.previousScmDiffDecorations')).toEqual({
+      hasWorkspaceValue: true,
+      value: 'gutter'
+    });
+  });
+
+  it('preserves an external SCM Workspace change made while visuals are ON', async () => {
+    const state = memoryState();
+    const controller = new VisualModeController(
+      { setEnabled: vi.fn() },
+      { setEnabled: vi.fn(async () => undefined) },
+      state
+    );
+    await controller.setEnabled(true);
+
+    mocks.configuration.scmWorkspaceValue = 'overview';
+    await controller.acceptScmConfigurationChange();
+    expect(mocks.configuration.scmWorkspaceValue).toBe('none');
+
+    await controller.setEnabled(false);
+
+    expect(mocks.configuration.scmWorkspaceValue).toBe('overview');
+    expect(state.get('myCode.visuals.previousScmDiffDecorations')).toBeUndefined();
   });
 
   it('persists a toggle at Workspace scope and applies it to both decoration layers', async () => {
@@ -246,8 +382,8 @@ describe('VisualModeController', () => {
     await toggle;
     await flush();
 
-    expect(decorations.setEnabled.mock.calls).toEqual([[true], [false]]);
-    expect(editors.setEnabled.mock.calls).toEqual([[true], [false]]);
+    expect(decorations.setEnabled.mock.calls.at(-1)).toEqual([false]);
+    expect(editors.setEnabled.mock.calls.at(-1)).toEqual([false]);
     expect(mocks.executeCommand.mock.calls.at(-1)).toEqual(['setContext', 'myCode.visualsEnabled', false]);
   });
 
@@ -333,7 +469,7 @@ function treeFixture(ids: readonly string[]) {
   } as unknown as vscode.TreeView<MyCodeNode> & { reveal: ReturnType<typeof vi.fn> };
   const provider = {
     expandableNodes: () => nodes,
-    getParent: (node: MyCodeNode) => node.id === 'folder' ? nodes[0] : undefined,
+    getParent: (node: MyCodeNode) => node.id === 'root' ? undefined : nodes[0],
     onDidChangeTreeData: rebuildEmitter.event
   };
   return {
@@ -362,5 +498,17 @@ function deferred<T>() {
     promise,
     resolve: (value: T) => resolvePromise?.(value),
     reject: (reason: unknown) => rejectPromise?.(reason)
+  };
+}
+
+function memoryState(): vscode.Memento {
+  const values = new Map<string, unknown>();
+  return {
+    keys: () => [...values.keys()],
+    get: <T>(key: string, fallback?: T) => values.has(key) ? values.get(key) as T : fallback as T,
+    update: async (key: string, value: unknown) => {
+      if (value === undefined) values.delete(key);
+      else values.set(key, value);
+    }
   };
 }

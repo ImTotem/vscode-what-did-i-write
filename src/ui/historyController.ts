@@ -235,11 +235,19 @@ export class HistoryController {
   public async openTimelineEntry(model: HistoryTimelineModel, id: string): Promise<void> {
     const entry = model.entries.find((candidate) => candidate.id === id);
     if (entry === undefined) return;
+    const sourceUri = vscode.Uri.file(model.sourcePath);
+    const activeEditor = vscode.window.activeTextEditor;
+    const sourceEditor = activeEditor?.document.uri.toString() === sourceUri.toString()
+      ? activeEditor
+      : vscode.window.visibleTextEditors
+        .find(({ document }) => document.uri.toString() === sourceUri.toString());
+    const viewColumn = sourceEditor?.viewColumn ?? activeEditor?.viewColumn;
+    const sameGroup = viewColumn === undefined ? {} : { viewColumn };
     if (model.sourceExists) {
       await vscode.commands.executeCommand(
         'vscode.open',
-        vscode.Uri.file(model.sourcePath),
-        { preview: false, preserveFocus: true, viewColumn: vscode.ViewColumn.One }
+        sourceUri,
+        { preview: false, preserveFocus: true, ...sameGroup }
       );
     }
 
@@ -256,7 +264,7 @@ export class HistoryController {
         before,
         after,
         `${basename(entry.workingPath)}${suffix} ${separator} ${localize('Working changes')}`,
-        { preview: true, preserveFocus: false, viewColumn: vscode.ViewColumn.Beside }
+        { preview: false, preserveFocus: false, ...sameGroup }
       );
       if (line !== undefined) revealLine(line, before, after);
       return;
@@ -270,7 +278,7 @@ export class HistoryController {
       before,
       after,
       `${basename(entry.path)}${suffix} ${separator} ${entry.commit.hash.slice(0, 7)}`,
-      { preview: true, preserveFocus: false, viewColumn: vscode.ViewColumn.Beside }
+      { preview: false, preserveFocus: false, ...sameGroup }
     );
     if (line !== undefined) revealLine(line, before, after);
   }

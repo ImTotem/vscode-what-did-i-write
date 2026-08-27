@@ -132,7 +132,7 @@ vi.mock('vscode', () => ({
   }
 }));
 
-import { activate } from '../../src/extension.js';
+import { activate, deactivate } from '../../src/extension.js';
 import { RefreshController } from '../../src/ui/refreshController.js';
 import { EditorOwnershipController } from '../../src/ui/editorOwnership.js';
 import { HistoryTimelineViewProvider } from '../../src/ui/historyTimeline.js';
@@ -158,8 +158,10 @@ describe('extension activation', () => {
     const rename = vi.spyOn(MyCodeFileActions.prototype, 'rename').mockResolvedValue(undefined);
     const expandAll = vi.spyOn(MyCodeViewController.prototype, 'expandAll').mockResolvedValue(undefined);
     const collapseAll = vi.spyOn(MyCodeViewController.prototype, 'collapseAll').mockResolvedValue(undefined);
-    const toggleVisuals = vi.spyOn(VisualModeController.prototype, 'toggle').mockResolvedValue(undefined);
+    const toggleVisuals = vi.spyOn(VisualModeController.prototype, 'setEnabled').mockResolvedValue(undefined);
     const acceptVisualConfiguration = vi.spyOn(VisualModeController.prototype, 'acceptConfigurationChange').mockResolvedValue(undefined);
+    const acceptScmConfiguration = vi.spyOn(VisualModeController.prototype, 'acceptScmConfigurationChange').mockResolvedValue(undefined);
+    const shutdownVisuals = vi.spyOn(VisualModeController.prototype, 'shutdown').mockResolvedValue(undefined);
     const acceptBackgroundConfiguration = vi.spyOn(
       EditorOwnershipController.prototype,
       'acceptLineBackgroundConfigurationChange'
@@ -250,7 +252,7 @@ describe('extension activation', () => {
     await Promise.resolve(mocks.commandHandlers.get('myCode.hideDecorations')?.());
     expect(expandAll).toHaveBeenCalledTimes(1);
     expect(collapseAll).toHaveBeenCalledTimes(1);
-    expect(toggleVisuals).toHaveBeenCalledTimes(1);
+    expect(toggleVisuals).toHaveBeenCalledWith(false);
 
     expect(mocks.configurationListeners).toHaveLength(1);
     await Promise.resolve(mocks.configurationListeners[0]?.({
@@ -261,6 +263,10 @@ describe('extension activation', () => {
       affectsConfiguration: (section) => section === 'myCode.editor.lineBackground'
     }));
     expect(acceptBackgroundConfiguration).toHaveBeenCalledTimes(1);
+    await Promise.resolve(mocks.configurationListeners[0]?.({
+      affectsConfiguration: (section) => section === 'scm.diffDecorations'
+    }));
+    expect(acceptScmConfiguration).toHaveBeenCalledTimes(1);
 
     const stale = { id: '["file","repo","stale.ts"]' };
     const fresh = { id: stale.id, kind: 'file', root: '/repo', file: { relativePath: 'fresh.ts' } };
@@ -306,6 +312,10 @@ describe('extension activation', () => {
     toggleVisuals.mockRestore();
     acceptVisualConfiguration.mockRestore();
     acceptBackgroundConfiguration.mockRestore();
+    await deactivate();
+    expect(shutdownVisuals).toHaveBeenCalledTimes(1);
+    acceptScmConfiguration.mockRestore();
+    shutdownVisuals.mockRestore();
   });
 });
 

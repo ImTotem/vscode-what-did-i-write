@@ -18,6 +18,8 @@ import { MyCodeViewController, VisualModeController } from './ui/myCodeViewContr
 import { RefreshController } from './ui/refreshController.js';
 import { StatusController } from './ui/statusController.js';
 
+let activeVisualModeController: VisualModeController | undefined;
+
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel('What Did I Write?');
   const statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
@@ -61,7 +63,8 @@ export function activate(context: vscode.ExtensionContext): void {
     dragAndDropController
   });
   const viewController = new MyCodeViewController(treeProvider, myChangesView);
-  const visualModeController = new VisualModeController(decorationProvider, editorOwnership);
+  const visualModeController = new VisualModeController(decorationProvider, editorOwnership, context.workspaceState);
+  activeVisualModeController = visualModeController;
   statusController = new StatusController(registry, statusItem, {
     showWarning: (message, ...actions) => vscode.window.showWarningMessage(message, ...actions),
     showOutput: () => output.show(),
@@ -178,9 +181,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('myCode.collapseAll', () =>
       runUiCommand('collapse MY CHANGES', () => viewController.collapseAll())),
     vscode.commands.registerCommand('myCode.hideDecorations', () =>
-      runUiCommand('hide decorations', () => visualModeController.toggle())),
+      runUiCommand('hide decorations', () => visualModeController.setEnabled(false))),
     vscode.commands.registerCommand('myCode.showDecorations', () =>
-      runUiCommand('show decorations', () => visualModeController.toggle())),
+      runUiCommand('show decorations', () => visualModeController.setEnabled(true))),
     vscode.commands.registerCommand('myCode.openFile', (target: unknown) =>
       withCurrentNode(target, (node) => fileActions.open(node))),
     vscode.commands.registerCommand('myCode.openToSide', (target: unknown) =>
@@ -256,6 +259,9 @@ export function activate(context: vscode.ExtensionContext): void {
           () => editorOwnership.acceptLineBackgroundConfigurationChange()
         );
       }
+      if (event.affectsConfiguration('scm.diffDecorations')) {
+        void runUiCommand('update SCM decorations', () => visualModeController.acceptScmConfigurationChange());
+      }
     }),
     vscode.window.onDidChangeWindowState(({ focused }) => refreshController.setFocused(focused)),
     vscode.window.onDidChangeActiveTextEditor((editor) => historyTimeline.followEditor(editor))
@@ -269,7 +275,11 @@ export function activate(context: vscode.ExtensionContext): void {
     .catch((error: unknown) => reportError(error, 'start', 'workspace'));
 }
 
-export function deactivate(): void {}
+export async function deactivate(): Promise<void> {
+  const controller = activeVisualModeController;
+  activeVisualModeController = undefined;
+  await controller?.shutdown();
+}
 
 
 function isMissingGit(error: unknown): boolean {

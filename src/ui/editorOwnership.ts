@@ -70,7 +70,7 @@ function compactOwnershipHover(
   zeroBasedLine: number,
   commandFactory: CommandFactory
 ): vscode.MarkdownString {
-  hover.appendMarkdown('**' + escapeMarkdown(localize('Your code')) + '**');
+  hover.appendMarkdown('**' + escapeMarkdown(localize('Line {line} · Your code', { line: zeroBasedLine + 1 })) + '**');
   if (range.commit === undefined) {
     hover.appendMarkdown('\n\n_' + escapeMarkdown(localize('Uncommitted changes')) + '_');
   } else {
@@ -113,6 +113,7 @@ export class EditorOwnershipController implements vscode.Disposable {
   private enabled = true;
   private lineBackgroundEnabled: boolean;
   private decorationRevision = 0;
+  private backgroundOperation: Promise<void> | undefined;
 
   public constructor(
     private readonly registry: RepositoryRegistry,
@@ -164,12 +165,21 @@ export class EditorOwnershipController implements vscode.Disposable {
   }
 
   public async toggleLineBackground(): Promise<void> {
-    const configuration = vscode.workspace.getConfiguration('myCode');
-    const enabled = configuration.get<boolean>('editor.lineBackground', false);
-    await configuration.update('editor.lineBackground', !enabled, vscode.ConfigurationTarget.Workspace);
-    await this.applyLineBackground(
-      configuration.get<boolean>('editor.lineBackground', !enabled)
-    );
+    const previous = this.backgroundOperation;
+    const operation = (previous ?? Promise.resolve()).catch(() => undefined).then(async () => {
+      const configuration = vscode.workspace.getConfiguration('myCode');
+      const enabled = configuration.get<boolean>('editor.lineBackground', false);
+      await configuration.update('editor.lineBackground', !enabled, vscode.ConfigurationTarget.Workspace);
+      await this.applyLineBackground(
+        configuration.get<boolean>('editor.lineBackground', !enabled)
+      );
+    });
+    this.backgroundOperation = operation;
+    try {
+      await operation;
+    } finally {
+      if (this.backgroundOperation === operation) this.backgroundOperation = undefined;
+    }
   }
 
   public async acceptLineBackgroundConfigurationChange(): Promise<void> {

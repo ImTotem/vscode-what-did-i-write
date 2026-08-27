@@ -121,6 +121,7 @@ describe('toDecorationOptions', () => {
     expect(result[1]?.range).toEqual({ start: { line: 2, character: 0 }, end: { line: 2, character: 0 } });
     expect(result[2]?.range).toEqual({ start: { line: 2, character: 0 }, end: { line: 2, character: 0 } });
     const hover = result[0]?.hoverMessage as unknown as { value: string; isTrusted: unknown };
+    expect(hover.value).toContain('Line 2');
     expect(hover.value).toContain('Your code');
     expect(hover.value).toContain('Line history');
     expect(hover.value).toContain('File history');

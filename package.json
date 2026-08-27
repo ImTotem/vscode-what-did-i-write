@@ -30,139 +30,166 @@
       {
         "command": "myCode.refresh",
         "title": "%command.refresh%",
-        "icon": "$(refresh)"
+        "icon": "$(refresh)",
+        "category": "%command.category%"
       },
       {
         "command": "myCode.showOutput",
         "title": "%command.showOutput%",
-        "icon": "$(output)"
+        "icon": "$(output)",
+        "category": "%command.category%"
       },
       {
         "command": "myCode.retryIdentity",
         "title": "%command.retryIdentity%",
-        "icon": "$(debug-restart)"
+        "icon": "$(debug-restart)",
+        "category": "%command.category%"
       },
       {
         "command": "myCode.openFile",
         "title": "%command.openFile%",
-        "icon": "$(go-to-file)"
+        "icon": "$(go-to-file)",
+        "category": "%command.category%"
       },
       {
         "command": "myCode.focusFileHistory",
         "title": "%command.focusFileHistory%",
-        "icon": "$(history)"
+        "icon": "$(history)",
+        "category": "%command.category%"
       },
       {
         "command": "myCode.focusLineHistory",
         "title": "%command.focusLineHistory%",
-        "icon": "$(list-tree)"
+        "icon": "$(list-tree)",
+        "category": "%command.category%"
       },
       {
         "command": "myCode.showFileHistory",
         "title": "%command.showFileHistory%",
-        "icon": "$(history)"
+        "icon": "$(history)",
+        "category": "%command.category%"
       },
       {
         "command": "myCode.showLineHistory",
         "title": "%command.showLineHistory%",
-        "icon": "$(list-tree)"
+        "icon": "$(list-tree)",
+        "category": "%command.category%"
       },
       {
         "command": "myCode.toggleLineBackground",
         "title": "%command.toggleLineBackground%",
-        "icon": "$(color-mode)"
+        "icon": "$(color-mode)",
+        "category": "%command.category%"
       },
       {
         "command": "myCode.expandAll",
         "title": "%command.expandAll%",
-        "icon": "$(expand-all)"
+        "icon": "$(expand-all)",
+        "category": "%command.category%"
       },
       {
         "command": "myCode.collapseAll",
         "title": "%command.collapseAll%",
-        "icon": "$(collapse-all)"
+        "icon": "$(collapse-all)",
+        "category": "%command.category%"
       },
       {
         "command": "myCode.hideDecorations",
         "title": "%command.hideDecorations%",
         "icon": "$(eye-closed)",
-        "enablement": "myCode.visualsEnabled"
+        "enablement": "myCode.visualsEnabled",
+        "category": "%command.category%"
       },
       {
         "command": "myCode.showDecorations",
         "title": "%command.showDecorations%",
         "icon": "$(eye)",
-        "enablement": "!myCode.visualsEnabled"
+        "enablement": "!myCode.visualsEnabled",
+        "category": "%command.category%"
       },
       {
         "command": "myCode.openToSide",
         "title": "%command.openToSide%",
-        "icon": "$(split-horizontal)"
+        "icon": "$(split-horizontal)",
+        "category": "%command.category%"
       },
       {
         "command": "myCode.revealInExplorer",
         "title": "%command.revealInExplorer%",
-        "icon": "$(folder-opened)"
+        "icon": "$(folder-opened)",
+        "category": "%command.category%"
       },
       {
         "command": "myCode.revealInOs",
         "title": "%command.revealInOs%",
-        "icon": "$(folder-library)"
+        "icon": "$(folder-library)",
+        "category": "%command.category%"
       },
       {
         "command": "myCode.copyPath",
         "title": "%command.copyPath%",
-        "icon": "$(copy)"
+        "icon": "$(copy)",
+        "category": "%command.category%"
       },
       {
         "command": "myCode.copyRelativePath",
         "title": "%command.copyRelativePath%",
-        "icon": "$(copy)"
+        "icon": "$(copy)",
+        "category": "%command.category%"
       },
       {
         "command": "myCode.copyHistoricalPath",
         "title": "%command.copyHistoricalPath%",
-        "icon": "$(copy)"
+        "icon": "$(copy)",
+        "category": "%command.category%"
       },
       {
         "command": "myCode.copyHistoricalRelativePath",
         "title": "%command.copyHistoricalRelativePath%",
-        "icon": "$(copy)"
+        "icon": "$(copy)",
+        "category": "%command.category%"
       },
       {
         "command": "myCode.cut",
         "title": "%command.cut%",
-        "icon": "$(cut)"
+        "icon": "$(cut)",
+        "category": "%command.category%"
       },
       {
         "command": "myCode.copy",
         "title": "%command.copy%",
-        "icon": "$(copy)"
+        "icon": "$(copy)",
+        "category": "%command.category%"
       },
       {
         "command": "myCode.paste",
         "title": "%command.paste%",
-        "icon": "$(clippy)"
+        "icon": "$(clippy)",
+        "category": "%command.category%"
       },
       {
         "command": "myCode.newFile",
         "title": "%command.newFile%",
-        "icon": "$(new-file)"
+        "icon": "$(new-file)",
+        "category": "%command.category%"
       },
       {
         "command": "myCode.newFolder",
         "title": "%command.newFolder%",
-        "icon": "$(new-folder)"
+        "icon": "$(new-folder)",
+        "category": "%command.category%"
       },
       {
         "command": "myCode.rename",
         "title": "%command.rename%",
-        "icon": "$(edit)"
+        "icon": "$(edit)",
+        "category": "%command.category%"
       },
       {
         "command": "myCode.delete",
         "title": "%command.delete%",
-        "icon": "$(trash)"
+        "icon": "$(trash)",
+        "category": "%command.category%"
       }
     ],
     "configuration": {
@@ -261,9 +288,14 @@
           "command": "myCode.showDecorations",
           "when": "view == myCode.explorer && !myCode.visualsEnabled",
           "group": "navigation@3"
+        },
+        {
+          "command": "myCode.toggleLineBackground",
+          "when": "view == myCode.explorer",
+          "group": "navigation@4"
         }
       ],
-      "view/item": [
+      "view/item/context": [
         {
           "command": "myCode.openFile",
           "when": "view == myCode.explorer && viewItem == myCode.file"
@@ -403,12 +435,6 @@
         {
           "command": "myCode.copyHistoricalRelativePath",
           "when": "view == myCode.pastActivity && viewItem == myCode.pastFile"
-        }
-      ],
-      "editor/title": [
-        {
-          "command": "myCode.toggleLineBackground",
-          "group": "navigation"
         }
       ]
     }

@@ -103,6 +103,7 @@
   "Uncommitted changes": "Uncommitted changes",
   "Unknown time": "Unknown time",
   "update line background": "update line background",
+  "update SCM decorations": "update SCM decorations",
   "update visual settings": "update visual settings",
   "VS Code rejected the workspace edit.": "VS Code rejected the workspace edit.",
   "What Did I Write? could not find a global Git identity. Configure user.name or user.email, then retry.": "What Did I Write? could not find a global Git identity. Configure user.name or user.email, then retry.",
@@ -121,5 +122,6 @@
   "Your commit": "Your commit",
   "Your uncommitted work": "Your uncommitted work",
   "{operation} refresh": "{operation} refresh",
-  "{path} has no commits by your Git identity.": "{path} has no commits by your Git identity."
+  "{path} has no commits by your Git identity.": "{path} has no commits by your Git identity.",
+  "Line {line} · Your code": "Line {line} · Your code"
 }

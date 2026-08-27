@@ -44,15 +44,17 @@ const mocks = vi.hoisted(() => {
 
   const executeCommand = vi.fn(async (..._args: unknown[]) => undefined);
   const showQuickPick = vi.fn(async (_items: unknown, _options?: vscode.QuickPickOptions) => undefined as unknown);
+  const visibleTextEditors: vscode.TextEditor[] = [];
   const activeTextEditor = {
     document: { uri: Uri.from({ scheme: 'my-code-git', path: '/revision' }) },
     selection: undefined as Selection | undefined,
+    viewColumn: 2,
     revealRange: vi.fn()
   };
 
   const language = { value: 'en' };
   const translate = vi.fn((message: string) => message);
-  return { Uri, Position, Range, Selection, executeCommand, showQuickPick, activeTextEditor, language, translate };
+  return { Uri, Position, Range, Selection, executeCommand, showQuickPick, activeTextEditor, visibleTextEditors, language, translate };
 });
 
 vi.mock('vscode', () => ({
@@ -65,6 +67,7 @@ vi.mock('vscode', () => ({
   commands: { executeCommand: mocks.executeCommand },
   window: {
     activeTextEditor: mocks.activeTextEditor,
+    visibleTextEditors: mocks.visibleTextEditors,
     showQuickPick: mocks.showQuickPick
   },
   workspace: { fs: undefined },
@@ -95,6 +98,9 @@ afterEach(() => {
   mocks.showQuickPick.mockReset();
   mocks.activeTextEditor.revealRange.mockReset();
   mocks.activeTextEditor.selection = undefined;
+  mocks.visibleTextEditors.splice(0);
+  mocks.activeTextEditor.document.uri = mocks.Uri.from({ scheme: 'my-code-git', path: '/revision' });
+  mocks.activeTextEditor.viewColumn = 2;
   mocks.language.value = 'en';
   mocks.translate.mockImplementation((message: string) => message);
 });
@@ -244,7 +250,7 @@ describe('history timeline model', () => {
     expect(repository.getFileHistoryEntries).not.toHaveBeenCalled();
   });
 
-  it('pins the source, opens a short reusable diff beside it, and rejects unknown ids', async () => {
+  it('keeps the source pinned and opens a short pinned diff in the same editor group', async () => {
     const repository = {
       getFileHistoryEntries: vi.fn(async () => [{ commit: mine, path: 'src/time.h', parentPath: 'src/time.h' }]),
       getFileHistory: vi.fn(async () => []),
@@ -258,6 +264,12 @@ describe('history timeline model', () => {
     if (model === undefined || commitEntry === undefined) throw new Error('timeline model missing');
     mocks.executeCommand.mockClear();
 
+    mocks.activeTextEditor.document.uri = mocks.Uri.file(source);
+    mocks.activeTextEditor.viewColumn = 3;
+    mocks.visibleTextEditors.splice(0, mocks.visibleTextEditors.length, {
+      document: { uri: mocks.Uri.file(source) }, viewColumn: 2
+    } as unknown as vscode.TextEditor);
+
     await controller.openTimelineEntry(model, 'unknown');
     expect(mocks.executeCommand).not.toHaveBeenCalled();
     await controller.openTimelineEntry(model, commitEntry.id);
@@ -266,7 +278,7 @@ describe('history timeline model', () => {
       1,
       'vscode.open',
       mocks.Uri.file(source),
-      { preview: false, preserveFocus: true, viewColumn: 1 }
+      { preview: false, preserveFocus: true, viewColumn: 3 }
     );
     expect(mocks.executeCommand).toHaveBeenNthCalledWith(
       2,
@@ -274,7 +286,7 @@ describe('history timeline model', () => {
       expectRevision('bbbbbbb22222222^', 'src/time.h'),
       expectRevision('bbbbbbb22222222', 'src/time.h'),
       'time.h ' + String.fromCharCode(0xb7) + ' bbbbbbb',
-      { preview: true, preserveFocus: false, viewColumn: -2 }
+      { preview: false, preserveFocus: false, viewColumn: 3 }
     );
   });
 });
