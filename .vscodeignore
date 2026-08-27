@@ -2,6 +2,8 @@
 .github
 .vscode
 .worktrees
+.codex-remote-attachments/**
+.codex-*.patch
 .superpowers/**
 docs/**
 src/**

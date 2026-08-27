@@ -42,6 +42,8 @@ describe('release package contract', () => {
     expect(ignored).toContain('src/**');
     expect(ignored).toContain('test/**');
     expect(ignored).toContain('docs/**');
+    expect(ignored).toContain('.codex-remote-attachments/**');
+    expect(ignored).toContain('.codex-*.patch');
     expect(ignored).toContain('.superpowers/**');
     expect(ignored).toContain('**/*.map');
     expect(ignored).toContain('PROJECT_GOAL.md');
@@ -78,5 +80,6 @@ describe('release package contract', () => {
       'package.nls.json', 'package.nls.ko.json',
       'l10n/bundle.l10n.json', 'l10n/bundle.l10n.ko.json'
     ]));
+    expect(files.some((file) => file.startsWith('.codex-remote-attachments/'))).toBe(false);
   });
 });
