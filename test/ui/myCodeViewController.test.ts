@@ -237,39 +237,40 @@ describe('VisualModeController', () => {
     });
   });
 
-  it('hides built-in SCM editor markers while ON and restores the exact Workspace value when OFF', async () => {
+  it('toggles file, background, and native quick diff visuals without changing built-in SCM settings', async () => {
     const decorations = { setEnabled: vi.fn() };
     const editors = { setEnabled: vi.fn(async () => undefined) };
+    const quickDiff = { setEnabled: vi.fn(async () => undefined) };
     const state = memoryState();
-    const controller = new VisualModeController(decorations, editors, state);
+    const controller = new VisualModeController(decorations, editors, state, quickDiff);
     await flush();
 
-    expect(mocks.configuration.scmUpdates).toEqual([['diffDecorations', 'none', 2]]);
+    expect(mocks.configuration.scmUpdates).toEqual([]);
+    expect(quickDiff.setEnabled).toHaveBeenCalledWith(true);
 
     await controller.setEnabled(false);
 
-    expect(mocks.configuration.scmUpdates.at(-1)).toEqual(['diffDecorations', 'gutter', 2]);
+    expect(mocks.configuration.scmUpdates).toEqual([]);
     expect(decorations.setEnabled.mock.calls.at(-1)).toEqual([false]);
     expect(editors.setEnabled.mock.calls.at(-1)).toEqual([false]);
+    expect(quickDiff.setEnabled.mock.calls.at(-1)).toEqual([false]);
     expect(mocks.executeCommand.mock.calls.at(-1)).toEqual(['setContext', 'myCode.visualsEnabled', false]);
   });
 
-  it('restores an absent SCM Workspace override and clears the persisted snapshot on shutdown', async () => {
-    mocks.configuration.scmWorkspaceValue = undefined;
+  it('restores a legacy SCM setting snapshot once after upgrading from custom gutter mode', async () => {
+    mocks.configuration.scmWorkspaceValue = 'none';
     const state = memoryState();
-    const controller = new VisualModeController(
+    await state.update('myCode.visuals.previousScmDiffDecorations', {
+      hasWorkspaceValue: false
+    });
+    new VisualModeController(
       { setEnabled: vi.fn() },
       { setEnabled: vi.fn(async () => undefined) },
       state
     );
     await flush();
 
-    await controller.shutdown();
-
-    expect(mocks.configuration.scmUpdates).toEqual([
-      ['diffDecorations', 'none', 2],
-      ['diffDecorations', undefined, 2]
-    ]);
+    expect(mocks.configuration.scmUpdates).toEqual([['diffDecorations', undefined, 2]]);
     expect(state.get('myCode.visuals.previousScmDiffDecorations')).toBeUndefined();
   });
 
@@ -293,13 +294,13 @@ describe('VisualModeController', () => {
     expect(state.get('myCode.visuals.previousScmDiffDecorations')).toBeUndefined();
   });
 
-  it('keeps SCM hidden when a newer ON overtakes an in-flight OFF repaint', async () => {
+  it('keeps native quick diff enabled when a newer ON overtakes an in-flight OFF repaint', async () => {
     const offRepaint = deferred<void>();
     const state = memoryState();
     const editors = { setEnabled: vi.fn((enabled: boolean) => enabled ? Promise.resolve() : offRepaint.promise) };
-    const controller = new VisualModeController({ setEnabled: vi.fn() }, editors, state);
+    const quickDiff = { setEnabled: vi.fn(async () => undefined) };
+    const controller = new VisualModeController({ setEnabled: vi.fn() }, editors, state, quickDiff);
     await controller.setEnabled(true);
-    mocks.configuration.scmUpdates.splice(0);
 
     const off = controller.setEnabled(false);
     await flush();
@@ -308,39 +309,20 @@ describe('VisualModeController', () => {
     offRepaint.resolve();
     await off;
 
-    expect(mocks.configuration.scmWorkspaceValue).toBe('none');
-    expect(state.get('myCode.visuals.previousScmDiffDecorations')).toEqual({
-      hasWorkspaceValue: true,
-      value: 'gutter'
-    });
-  });
-
-  it('preserves an external SCM Workspace change made while visuals are ON', async () => {
-    const state = memoryState();
-    const controller = new VisualModeController(
-      { setEnabled: vi.fn() },
-      { setEnabled: vi.fn(async () => undefined) },
-      state
-    );
-    await controller.setEnabled(true);
-
-    mocks.configuration.scmWorkspaceValue = 'overview';
-    await controller.acceptScmConfigurationChange();
-    expect(mocks.configuration.scmWorkspaceValue).toBe('none');
-
-    await controller.setEnabled(false);
-
-    expect(mocks.configuration.scmWorkspaceValue).toBe('overview');
+    expect(quickDiff.setEnabled.mock.calls.at(-1)).toEqual([true]);
+    expect(mocks.configuration.scmUpdates).toEqual([]);
     expect(state.get('myCode.visuals.previousScmDiffDecorations')).toBeUndefined();
   });
 
-  it('persists a toggle at Workspace scope and applies it to both decoration layers', async () => {
+  it('persists a toggle at Workspace scope and applies it to every visual layer', async () => {
     const decorations = { setEnabled: vi.fn() };
     const editors = { setEnabled: vi.fn(async () => undefined) };
-    const controller = new VisualModeController(decorations, editors);
+    const quickDiff = { setEnabled: vi.fn(async () => undefined) };
+    const controller = new VisualModeController(decorations, editors, undefined, quickDiff);
     await flush();
     decorations.setEnabled.mockClear();
     editors.setEnabled.mockClear();
+    quickDiff.setEnabled.mockClear();
     mocks.executeCommand.mockClear();
 
     await controller.toggle();
@@ -348,22 +330,26 @@ describe('VisualModeController', () => {
     expect(mocks.configuration.updates).toEqual([['visuals.enabled', false, 2]]);
     expect(decorations.setEnabled).toHaveBeenCalledWith(false);
     expect(editors.setEnabled).toHaveBeenCalledWith(false);
+    expect(quickDiff.setEnabled).toHaveBeenCalledWith(false);
     expect(mocks.executeCommand).toHaveBeenCalledWith('setContext', 'myCode.visualsEnabled', false);
   });
 
   it('applies external configuration changes through the same decoration path', async () => {
     const decorations = { setEnabled: vi.fn() };
     const editors = { setEnabled: vi.fn(async () => undefined) };
-    const controller = new VisualModeController(decorations, editors);
+    const quickDiff = { setEnabled: vi.fn(async () => undefined) };
+    const controller = new VisualModeController(decorations, editors, undefined, quickDiff);
     await flush();
     decorations.setEnabled.mockClear();
     editors.setEnabled.mockClear();
+    quickDiff.setEnabled.mockClear();
     mocks.configuration.visualsEnabled = false;
 
     await controller.acceptConfigurationChange();
 
     expect(decorations.setEnabled).toHaveBeenCalledWith(false);
     expect(editors.setEnabled).toHaveBeenCalledWith(false);
+    expect(quickDiff.setEnabled).toHaveBeenCalledWith(false);
   });
 
 

@@ -1,4 +1,4 @@
-import { isAbsolute, join, relative, sep } from 'node:path';
+import { isAbsolute, relative, sep } from 'node:path';
 
 import * as vscode from 'vscode';
 
@@ -76,8 +76,8 @@ export class EditorOwnershipController implements vscode.Disposable {
     private readonly options: EditorOwnershipOptions = {}
   ) {
     this.lineBackgroundEnabled = this.readLineBackground();
-    this.committedDecoration = this.createDecoration('gitDecoration.addedResourceForeground');
-    this.workingDecoration = this.createDecoration('gitDecoration.modifiedResourceForeground');
+    this.committedDecoration = this.createDecoration(true);
+    this.workingDecoration = this.createDecoration(false);
     this.subscriptions = [
       registry.onDidChange(() => this.scheduleRefresh()),
       vscode.window.onDidChangeActiveTextEditor(() => this.scheduleRefresh()),
@@ -158,8 +158,8 @@ export class EditorOwnershipController implements vscode.Disposable {
     this.decorationRevision += 1;
     this.committedDecoration.dispose();
     this.workingDecoration.dispose();
-    this.committedDecoration = this.createDecoration('gitDecoration.addedResourceForeground');
-    this.workingDecoration = this.createDecoration('gitDecoration.modifiedResourceForeground');
+    this.committedDecoration = this.createDecoration(true);
+    this.workingDecoration = this.createDecoration(false);
     if (this.enabled) await this.refreshVisibleEditors();
   }
 
@@ -329,19 +329,13 @@ export class EditorOwnershipController implements vscode.Disposable {
     this.rendered.set(editor, fingerprint);
   }
 
-  private createDecoration(colorId: 'gitDecoration.addedResourceForeground' | 'gitDecoration.modifiedResourceForeground'):
+  private createDecoration(committed: boolean):
   vscode.TextEditorDecorationType {
-    const committed = colorId === 'gitDecoration.addedResourceForeground';
-    const icon = committed ? 'owned-committed.svg' : 'owned-working.svg';
     const backgroundColor = committed
       ? 'myCode.editor.committedLineBackground'
       : 'myCode.editor.workingLineBackground';
     return vscode.window.createTextEditorDecorationType({
       isWholeLine: true,
-      gutterIconPath: join(__dirname, '..', 'media', icon),
-      gutterIconSize: 'contain',
-      overviewRulerColor: new vscode.ThemeColor(colorId),
-      overviewRulerLane: vscode.OverviewRulerLane.Full,
       ...(this.lineBackgroundEnabled ? { backgroundColor: new vscode.ThemeColor(backgroundColor) } : {})
     });
   }

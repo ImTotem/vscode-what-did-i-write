@@ -37,6 +37,10 @@ describe('README accuracy', () => {
     expect(readme).toContain('FILE HISTORY');
     expect(readme).toContain('newest commit at the top');
     expect(readme).toContain('gutter marker');
+    expect(readme).toContain('native Quick Diff');
+    expect(readme).toContain('expands on hover');
+    expect(readme).toContain('click it to open VS Code\'s native inline diff');
+    expect(readme).not.toContain('compact ownership card');
     expect(readme).toContain('reusable preview diff');
     expect(readme).toContain('folder hierarchy');
     expect(readme).not.toContain('History picker');

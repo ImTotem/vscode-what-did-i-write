@@ -58,11 +58,11 @@ without reading every timestamp. Clicking a commit keeps the source pinned and u
 one reusable preview diff beside it.
 
 When you open a candidate text file, What Did I Write? keeps the complete current file
-visible and marks your lines in the glyph gutter and overview ruler. It no
-longer draws a border inside the code content. The stable VS Code extension API
-does not expose direct minimap decorations, so the overview ruler beside the
-minimap is used instead. Hover a gutter marker to see a compact ownership card,
-then choose line or file history.
+visible and provides a native Quick Diff original with your authored lines removed.
+VS Code renders the resulting gutter marker; it expands on hover, and you can
+click it to open VS Code's native inline diff. Rendering follows VS Code's
+`scm.diffDecorations` setting. The built-in Git quick-diff source remains available.
+Use **FILE HISTORY** or the Line History and File History commands for commit history.
 Binary files may be listed, but are never line-decorated.
 
 ## Where features live
@@ -71,8 +71,8 @@ Binary files may be listed, but are never line-decorated.
 | --- | --- |
 | Activity Bar → **MY CODE** | Only your current and past changed files. |
 | **MY CHANGES** title bar | Refresh, Expand All / Collapse All, and Hide / Show My Code Decorations. |
-| Editor glyph gutter / overview ruler | Committed and working ownership markers outside the code content. |
-| Editor gutter hover | Current ownership plus Line History and File History actions. |
+| Editor native Quick Diff gutter / overview ruler | VS Code-native markers for lines attributed to you. |
+| Editor gutter hover / click | The marker expands on hover; click it for the native inline diff. Use **FILE HISTORY** for commit history. |
 | **FILE HISTORY** | Newest-first commit rail; click an entry to update the reusable preview diff beside the source. |
 | Command Palette | Every What Did I Write? command, including Retry and Show Output. |
 
@@ -97,7 +97,7 @@ URI drops copy in only after containment and name-conflict checks.
 The setting `myCode.visuals.enabled` defaults to `true`; turn it off to hide
 ownership colors and markers while keeping analysis and views active. The
 setting `myCode.editor.lineBackground` defaults to `false`. Enable it if
-you want a subtle whole-line background in addition to the gutter and ruler.
+you want a subtle whole-line background in addition to native Quick Diff markers.
 
 ## Multi-root workspaces and refresh
 
@@ -170,7 +170,7 @@ git add upstream.ts; git commit -m 'other change'
 Open this extension project in VS Code, press `F5` to start an **Extension
 Development Host**, and then open `$fixture` in that host. `mine.ts` should be
 shown as `A`; `upstream.ts` should not be shown as yours. Add an uncommitted
-line to `mine.ts`, save it, and verify its line decoration and hover appear.
+line to `mine.ts`, save it, and verify its native Quick Diff gutter marker appears and opens on click.
 
 When the `code` executable is installed, live Extension Host activation and
 registration of `myCode.refresh` are required release gates. If VS Code cannot

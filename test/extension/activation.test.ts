@@ -167,7 +167,6 @@ describe('extension activation', () => {
     const collapseAll = vi.spyOn(MyCodeViewController.prototype, 'collapseAll').mockResolvedValue(undefined);
     const toggleVisuals = vi.spyOn(VisualModeController.prototype, 'setEnabled').mockResolvedValue(undefined);
     const acceptVisualConfiguration = vi.spyOn(VisualModeController.prototype, 'acceptConfigurationChange').mockResolvedValue(undefined);
-    const acceptScmConfiguration = vi.spyOn(VisualModeController.prototype, 'acceptScmConfigurationChange').mockResolvedValue(undefined);
     const shutdownVisuals = vi.spyOn(VisualModeController.prototype, 'shutdown').mockResolvedValue(undefined);
     const acceptBackgroundConfiguration = vi.spyOn(
       EditorOwnershipController.prototype,
@@ -207,12 +206,7 @@ describe('extension activation', () => {
       'myCode.rename',
       'myCode.delete'
     ]));
-    expect(mocks.codeActionProviders).toEqual([
-      expect.objectContaining({
-        selector: { scheme: 'file' },
-        metadata: { providedCodeActionKinds: [{ value: 'quickfix' }] }
-      })
-    ]);
+    expect(mocks.codeActionProviders).toEqual([]);
     expect(mocks.createdTreeViews).toHaveLength(1);
     expect(mocks.createdTreeViews[0]?.viewId).toBe('myCode.explorer');
     expect(mocks.createdTreeViews[0]?.options).toMatchObject({ canSelectMany: true });
@@ -221,7 +215,7 @@ describe('extension activation', () => {
     expect(mocks.treeDataProviderIds).toEqual(['myCode.pastActivity']);
     expect(mocks.webviewViewIds).toEqual(['myCode.history']);
     expect(mocks.decorationProviders).toHaveLength(1);
-    expect(mocks.contentProviderSchemes).toEqual(['my-code-git']);
+    expect(mocks.contentProviderSchemes).toEqual(['my-code-git', 'my-code-original']);
     expect(mocks.eventRegistrations.filter((name) => name === 'active-editor')).toHaveLength(2);
     expect(mocks.eventRegistrations).toEqual(expect.arrayContaining([
       'visible-editors', 'document-change', 'workspace-folders', 'create', 'delete', 'rename', 'configuration', 'window-state'
@@ -276,11 +270,6 @@ describe('extension activation', () => {
       affectsConfiguration: (section) => section === 'myCode.editor.lineBackground'
     }));
     expect(acceptBackgroundConfiguration).toHaveBeenCalledTimes(1);
-    await Promise.resolve(mocks.configurationListeners[0]?.({
-      affectsConfiguration: (section) => section === 'scm.diffDecorations'
-    }));
-    expect(acceptScmConfiguration).toHaveBeenCalledTimes(1);
-
     const stale = { id: '["file","repo","stale.ts"]' };
     const fresh = { id: stale.id, kind: 'file', root: '/repo', file: { relativePath: 'fresh.ts' } };
     resolveNode.mockReturnValue(fresh as never);
@@ -327,7 +316,6 @@ describe('extension activation', () => {
     acceptBackgroundConfiguration.mockRestore();
     await deactivate();
     expect(shutdownVisuals).toHaveBeenCalledTimes(1);
-    acceptScmConfiguration.mockRestore();
     shutdownVisuals.mockRestore();
   });
 });

@@ -42,7 +42,11 @@ The **MY CODE** icon is an independent Activity Bar destination next to Explorer
 - **PAST ACTIVITY** — a collapsed-by-default, newest-first list of paths you changed in the past.
 - **FILE HISTORY** — the selected file or line's working changes and matching commits.
 
-Open a candidate text file to see ownership markers in the glyph gutter and overview ruler. The full source stays visible and no border is drawn over the code. VS Code's stable extension API does not expose direct minimap decorations, so the overview ruler beside the minimap is used. Hover a gutter marker for a compact ownership card and direct Line History and File History actions. Binary files can be listed but are never line-decorated.
+Open a candidate text file to see VS Code's native Quick Diff gutter marker for your authored lines. The full source stays visible and no border is drawn over the code.
+What Did I Write? supplies a virtual original with your authored lines removed; VS Code renders the marker according to `scm.diffDecorations`.
+The marker expands on hover, and clicking it opens VS Code's native inline diff. The built-in Git quick-diff source remains available.
+Use **FILE HISTORY** or the Line History and File History commands for commit history.
+Binary files can be listed but are never line-decorated.
 
 The history timeline keeps current working changes at the top, then lists commits from newest to oldest. A labeled vertical rail makes the direction visible without reading timestamps. Clicking an entry keeps the source file pinned and opens or updates one reusable preview diff beside it.
 
@@ -53,8 +57,8 @@ The history timeline keeps current working changes at the top, then lists commit
 | Activity Bar → **MY CODE** | Only your current and past authored files. |
 | **MY CHANGES** title bar | Refresh, Expand All / Collapse All, and Hide / Show My Code Decorations. |
 | **MY CHANGES** context menu | Explorer-style open, reveal, path copy, create, cut/copy/paste, rename, and delete actions. |
-| Editor glyph gutter / overview ruler | Committed and working ownership markers outside the code content. |
-| Editor gutter hover | Ownership details plus direct Line History and File History actions. |
+| Editor native Quick Diff gutter / overview ruler | VS Code-native markers for lines attributed to you. |
+| Editor gutter hover / click | The marker expands on hover; click it for the native inline diff. Use **FILE HISTORY** for commit history. |
 | **FILE HISTORY** | Newest-first commit rail; click an entry to update the preview diff beside the source. |
 | Command Palette | Every What Did I Write? command, including Retry and Show Output. |
 
@@ -71,7 +75,7 @@ The history timeline keeps current working changes at the top, then lists commit
 
 Current file and folder rows support Explorer-style right-click actions. Internal drag/drop moves within a repository and copies across repositories; external file URI drops copy files only after containment and name-conflict checks. Past activity is intentionally read-only, apart from history and path-copy actions.
 
-`myCode.visuals.enabled` defaults to `true`. Turn it off to hide ownership colors and markers in Explorer and the editor while keeping analysis and all views active. `myCode.editor.lineBackground` defaults to `false`; enable it for a subtle whole-line background in addition to gutter and ruler markers.
+`myCode.visuals.enabled` defaults to `true`. Turn it off to hide ownership colors and native Quick Diff markers in Explorer and the editor while keeping analysis and all views active. `myCode.editor.lineBackground` defaults to `false`; enable it for a subtle whole-line background in addition to native Quick Diff markers.
 
 ## Multi-root workspaces and refresh
 
@@ -112,8 +116,8 @@ For manual acceptance, open this extension project in VS Code and press `F5` to 
 
 1. **MY CHANGES** contains only your current files in a collapsible folder tree.
 2. **PAST ACTIVITY** is newest-first and remains read-only.
-3. Gutter and overview-ruler markers appear without covering source code.
-4. Gutter hover opens direct line and file history actions.
+3. Native Quick Diff gutter and overview-ruler markers appear without covering source code.
+4. A gutter marker expands on hover and opens VS Code's native inline diff when clicked.
 5. Clicking a timeline commit keeps the source open and displays that commit's diff beside it.
 6. Hide My Code Decorations removes Explorer and editor ownership visuals without disabling the views.
 7. Switching VS Code between English and Korean changes the complete extension UI after reload.

@@ -608,29 +608,21 @@ describe('EditorOwnershipController', () => {
     controller.dispose();
   });
 
-  it('keeps ownership markers out of code content and uses the gutter plus full overview ruler', () => {
+  it('leaves the gutter and overview ruler to native quick diff decorations', () => {
     mocks.decorations.splice(0);
     const registry = fakeRegistry(record([]), Promise.resolve(undefined));
     const controller = new EditorOwnershipController(registry);
     const decorations = mocks.decorations.slice(-2);
     expect(decorations).toHaveLength(2);
-    expect(decorations[0]?.options).toMatchObject({
-      isWholeLine: true,
-      gutterIconPath: expect.stringContaining('owned-committed.svg'),
-      gutterIconSize: 'contain',
-      overviewRulerColor: { id: 'gitDecoration.addedResourceForeground' },
-      overviewRulerLane: 7
-    });
-    expect(decorations[0]?.options).not.toHaveProperty('borderWidth');
-    expect(decorations[0]?.options).not.toHaveProperty('borderColor');
-    expect(decorations[1]?.options).toMatchObject({
-      gutterIconPath: expect.stringContaining('owned-working.svg'),
-      gutterIconSize: 'contain',
-      overviewRulerColor: { id: 'gitDecoration.modifiedResourceForeground' },
-      overviewRulerLane: 7
-    });
-    expect(decorations[1]?.options).not.toHaveProperty('borderWidth');
-    expect(decorations[1]?.options).not.toHaveProperty('borderColor');
+    for (const decoration of decorations) {
+      expect(decoration.options).toMatchObject({ isWholeLine: true });
+      expect(decoration.options).not.toHaveProperty('gutterIconPath');
+      expect(decoration.options).not.toHaveProperty('gutterIconSize');
+      expect(decoration.options).not.toHaveProperty('overviewRulerColor');
+      expect(decoration.options).not.toHaveProperty('overviewRulerLane');
+      expect(decoration.options).not.toHaveProperty('borderWidth');
+      expect(decoration.options).not.toHaveProperty('borderColor');
+    }
     controller.dispose();
     expect(decorations.map(({ dispose }) => dispose.mock.calls.length)).toEqual([1, 1]);
     expect(mocks.closeListeners.size).toBe(0);

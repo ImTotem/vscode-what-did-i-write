@@ -15,7 +15,7 @@ import { MyCodeDragAndDropController } from './ui/myCodeDragAndDrop.js';
 import { MyCodeFileActions } from './ui/myCodeFileActions.js';
 import { MyCodeTreeProvider, PastActivityTreeProvider, type MyCodeNode, type PastActivityNode } from './ui/myCodeTree.js';
 import { MyCodeViewController, VisualModeController } from './ui/myCodeViewController.js';
-import { OwnershipCodeActionProvider } from './ui/ownershipCodeActions.js';
+import { OWNERSHIP_ORIGINAL_SCHEME, OwnershipQuickDiffController } from './ui/ownershipQuickDiff.js';
 import { RefreshController } from './ui/refreshController.js';
 import { StatusController } from './ui/statusController.js';
 
@@ -43,9 +43,10 @@ export function activate(context: vscode.ExtensionContext): void {
   const gitContentProvider = new GitContentProvider(registry, reportError);
   const historyController = new HistoryController(registry);
   const historyTimeline = new HistoryTimelineViewProvider(historyController, reportError);
-  const ownershipCodeActions = new OwnershipCodeActionProvider(
+  const ownershipQuickDiff = new OwnershipQuickDiffController(
     registry,
-    (document) => editorOwnership.isDocumentSnapshotCurrent(document)
+    (document) => editorOwnership.isDocumentSnapshotCurrent(document),
+    reportError
   );
   const refreshAllViews = async (): Promise<void> => {
     await refreshController.refreshAll();
@@ -68,7 +69,12 @@ export function activate(context: vscode.ExtensionContext): void {
     dragAndDropController
   });
   const viewController = new MyCodeViewController(treeProvider, myChangesView);
-  const visualModeController = new VisualModeController(decorationProvider, editorOwnership, context.workspaceState);
+  const visualModeController = new VisualModeController(
+    decorationProvider,
+    editorOwnership,
+    context.workspaceState,
+    ownershipQuickDiff
+  );
   activeVisualModeController = visualModeController;
   statusController = new StatusController(registry, statusItem, {
     showWarning: (message, ...actions) => vscode.window.showWarningMessage(message, ...actions),
@@ -167,6 +173,7 @@ export function activate(context: vscode.ExtensionContext): void {
     treeProvider,
     pastActivityProvider,
     editorOwnership,
+    ownershipQuickDiff,
     historyTimeline,
     myChangesView,
     viewController,
@@ -177,10 +184,8 @@ export function activate(context: vscode.ExtensionContext): void {
       webviewOptions: { retainContextWhenHidden: true }
     }),
     vscode.workspace.registerTextDocumentContentProvider(GIT_CONTENT_SCHEME, gitContentProvider),
-    vscode.languages.registerCodeActionsProvider(
-      { scheme: 'file' },
-      ownershipCodeActions,
-      { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }
+    vscode.workspace.registerTextDocumentContentProvider(
+      OWNERSHIP_ORIGINAL_SCHEME, ownershipQuickDiff
     ),
     vscode.commands.registerCommand('myCode.refresh', refreshAllViews),
     vscode.commands.registerCommand('myCode.showOutput', () => output.show()),
@@ -268,9 +273,6 @@ export function activate(context: vscode.ExtensionContext): void {
           'update line background',
           () => editorOwnership.acceptLineBackgroundConfigurationChange()
         );
-      }
-      if (event.affectsConfiguration('scm.diffDecorations')) {
-        void runUiCommand('update SCM decorations', () => visualModeController.acceptScmConfigurationChange());
       }
     }),
     vscode.window.onDidChangeWindowState(({ focused }) => refreshController.setFocused(focused)),
