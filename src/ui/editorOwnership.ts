@@ -99,6 +99,16 @@ export class EditorOwnershipController implements vscode.Disposable {
     await Promise.all(editors.map((editor) => this.refreshEditor(editor)));
   }
 
+  public isDocumentSnapshotCurrent(document: vscode.TextDocument): boolean {
+    const key = document.uri.toString();
+    return !this.disposed
+      && this.enabled
+      && !document.isDirty
+      && !this.dirtyDocumentUris.has(key)
+      && !this.pendingSaveRefreshes.has(key)
+      && !this.suppressedDocumentUris.has(key);
+  }
+
   public async setEnabled(enabled: boolean): Promise<void> {
     if (this.disposed) return;
     if (this.enabled === enabled) {
@@ -183,10 +193,7 @@ export class EditorOwnershipController implements vscode.Disposable {
     const generation = (this.generations.get(key) ?? 0) + 1;
     this.generations.set(key, generation);
 
-    if (document.isDirty || this.dirtyDocumentUris.has(key) || this.pendingSaveRefreshes.has(key)
-      || this.suppressedDocumentUris.has(key)) {
-      return;
-    }
+    if (!this.isDocumentSnapshotCurrent(document)) return;
 
     const repository = this.registry.findByUri(document.uri);
     if (repository === undefined || repository.state !== 'ready') {

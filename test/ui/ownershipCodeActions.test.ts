@@ -66,6 +66,20 @@ describe('OwnershipCodeActionProvider', () => {
     expect(provider.provideCodeActions(document, rangeAt(1))).toEqual([]);
     mocks.visualsEnabled.value = true;
   });
+
+  it('does not offer actions from a stale ownership snapshot while the editor is dirty or save analysis is pending', () => {
+    let snapshotCurrent = false;
+    const provider = new OwnershipCodeActionProvider(
+      registryFor(record([{ start: 1, endExclusive: 2, uncommitted: false }])),
+      () => snapshotCurrent
+    );
+    const document = documentFor(SOURCE);
+
+    expect(provider.provideCodeActions(document, rangeAt(1))).toEqual([]);
+
+    snapshotCurrent = true;
+    expect(provider.provideCodeActions(document, rangeAt(1))).toHaveLength(2);
+  });
 });
 
 

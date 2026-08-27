@@ -7,7 +7,10 @@ import { localize } from '../localization.js';
 import type { RepositoryRegistry } from '../extension/repositoryRegistry.js';
 
 export class OwnershipCodeActionProvider implements vscode.CodeActionProvider {
-  public constructor(private readonly registry: RepositoryRegistry) {}
+  public constructor(
+    private readonly registry: RepositoryRegistry,
+    private readonly isDocumentSnapshotCurrent: (document: vscode.TextDocument) => boolean = (document) => !document.isDirty
+  ) {}
 
   public provideCodeActions(
     document: vscode.TextDocument,
@@ -15,6 +18,7 @@ export class OwnershipCodeActionProvider implements vscode.CodeActionProvider {
   ): vscode.CodeAction[] {
     const visualsEnabled = vscode.workspace.getConfiguration('myCode').get<boolean>('visuals.enabled', true);
     if (!visualsEnabled) return [];
+    if (!this.isDocumentSnapshotCurrent(document)) return [];
 
     const repository = this.registry.findByUri(document.uri);
     if (repository === undefined || repository.state !== 'ready') return [];

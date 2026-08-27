@@ -347,6 +347,7 @@ describe('EditorOwnershipController', () => {
     editor.setDecorations.mockClear();
     setDirty(editor.document, true);
     for (const listener of mocks.documentListeners) listener({ document: editor.document });
+    expect(controller.isDocumentSnapshotCurrent(editor.document)).toBe(false);
     registry.emit();
     for (const listener of mocks.visibleListeners) listener();
     await flush();
@@ -355,6 +356,7 @@ describe('EditorOwnershipController', () => {
 
     setDirty(editor.document, false);
     for (const listener of mocks.saveListeners) listener(editor.document);
+    expect(controller.isDocumentSnapshotCurrent(editor.document)).toBe(false);
     registry.emit();
     for (const listener of mocks.visibleListeners) listener();
     await flush();
@@ -364,6 +366,7 @@ describe('EditorOwnershipController', () => {
 
     analysis.resolve();
     await flush();
+    expect(controller.isDocumentSnapshotCurrent(editor.document)).toBe(true);
     expect(editor.setDecorations.mock.calls.slice(-1)[0]?.[1]).toEqual([expect.objectContaining({ range: expect.objectContaining({ start: expect.objectContaining({ line: 2 }) }) })]);
     controller.dispose();
   });

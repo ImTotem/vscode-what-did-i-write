@@ -43,7 +43,10 @@ export function activate(context: vscode.ExtensionContext): void {
   const gitContentProvider = new GitContentProvider(registry, reportError);
   const historyController = new HistoryController(registry);
   const historyTimeline = new HistoryTimelineViewProvider(historyController, reportError);
-  const ownershipCodeActions = new OwnershipCodeActionProvider(registry);
+  const ownershipCodeActions = new OwnershipCodeActionProvider(
+    registry,
+    (document) => editorOwnership.isDocumentSnapshotCurrent(document)
+  );
   const refreshAllViews = async (): Promise<void> => {
     await refreshController.refreshAll();
     await historyTimeline.refresh();
