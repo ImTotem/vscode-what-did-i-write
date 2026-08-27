@@ -12,6 +12,18 @@ describe('README accuracy', () => {
     expect(readme).toContain('What Did I Write?');
     expect(readme).toContain('output channel');
   });
+
+  it('credits Codex vibe coding at the top of every localized README', () => {
+    const root = readFileSync('README.md', 'utf8');
+    const english = readFileSync('docs/README.en.md', 'utf8');
+    const korean = readFileSync('docs/README.ko.md', 'utf8');
+
+    expect(root.split(/\r?\n/)[0]).toBe('<sub>Built entirely through vibe coding with Codex.</sub>');
+    expect(english.split(/\r?\n/)[0]).toBe('<sub>Built entirely through vibe coding with Codex.</sub>');
+    expect(korean.split(/\r?\n/)[0]).toBe(
+      '<sub>이 프로젝트는 Codex를 사용한 풀 바이브 코딩으로 제작되었습니다.</sub>'
+    );
+  });
   it('requires an explicit refresh after a global identity change', () => {
     const readme = readFileSync('README.md', 'utf8');
 

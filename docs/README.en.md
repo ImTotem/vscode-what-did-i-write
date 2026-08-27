@@ -1,3 +1,5 @@
+<sub>Built entirely through vibe coding with Codex.</sub>
+
 # What Did I Write?
 
 Find the files, lines, and commits you authored.
