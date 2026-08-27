@@ -32,6 +32,19 @@ const mocks = vi.hoisted(() => {
   class ThemeColor {
     public constructor(public readonly id: string) {}
   }
+  class EventEmitter<T> {
+    private readonly listeners = new Set<(value: T) => void>();
+    public readonly event = (listener: (value: T) => void) => {
+      this.listeners.add(listener);
+      return { dispose: () => this.listeners.delete(listener) };
+    };
+    public fire(value: T): void {
+      for (const listener of this.listeners) listener(value);
+    }
+    public dispose(): void {
+      this.listeners.clear();
+    }
+  }
   const decorations: Array<{ options: unknown; dispose: ReturnType<typeof vi.fn> }> = [];
   const activeListeners = new Set<() => void>();
   const visibleListeners = new Set<() => void>();
@@ -56,7 +69,7 @@ const mocks = vi.hoisted(() => {
     }
   };
   return {
-    Position, Range, MarkdownString, ThemeColor, decorations, activeListeners, visibleListeners,
+    Position, Range, MarkdownString, ThemeColor, EventEmitter, decorations, activeListeners, visibleListeners,
     documentListeners, saveListeners, closeListeners, configuration, window
   };
 });
@@ -66,6 +79,7 @@ vi.mock('vscode', () => ({
   Range: mocks.Range,
   MarkdownString: mocks.MarkdownString,
   ThemeColor: mocks.ThemeColor,
+  EventEmitter: mocks.EventEmitter,
   ConfigurationTarget: { Global: 1, Workspace: 2 },
   OverviewRulerLane: { Left: 1, Full: 7 },
   window: mocks.window,
@@ -342,6 +356,8 @@ describe('EditorOwnershipController', () => {
     const editor = editorFor(documentFor('/repo/current.ts', 3));
     setVisibleEditors([editor]);
     const controller = new EditorOwnershipController(registry);
+    const snapshotStates: boolean[] = [];
+    controller.onDidChangeSnapshotState(() => snapshotStates.push(controller.isDocumentSnapshotCurrent(editor.document)));
 
     await controller.refreshVisibleEditors();
     editor.setDecorations.mockClear();
@@ -368,6 +384,8 @@ describe('EditorOwnershipController', () => {
     await flush();
     expect(controller.isDocumentSnapshotCurrent(editor.document)).toBe(true);
     expect(editor.setDecorations.mock.calls.slice(-1)[0]?.[1]).toEqual([expect.objectContaining({ range: expect.objectContaining({ start: expect.objectContaining({ line: 2 }) }) })]);
+    expect(snapshotStates).toContain(false);
+    expect(snapshotStates.at(-1)).toBe(true);
     controller.dispose();
   });
 

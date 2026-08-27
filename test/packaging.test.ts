@@ -72,14 +72,16 @@ describe('release package contract', () => {
     expect(workflow).toContain('--clobber');
   });
 
-  it('includes the Activity Bar and both gutter SVG assets in the actual VSIX file list', async () => {
+  it('includes the Activity Bar and localization assets without retired custom gutter icons', async () => {
     const files = await listFiles({ cwd: process.cwd() });
 
     expect(files).toEqual(expect.arrayContaining([
-      'media/my-code.svg', 'media/owned-committed.svg', 'media/owned-working.svg',
+      'media/my-code.svg',
       'package.nls.json', 'package.nls.ko.json',
       'l10n/bundle.l10n.json', 'l10n/bundle.l10n.ko.json'
     ]));
+    expect(files).not.toContain('media/owned-committed.svg');
+    expect(files).not.toContain('media/owned-working.svg');
     expect(files.some((file) => file.startsWith('.codex-remote-attachments/'))).toBe(false);
   });
 });

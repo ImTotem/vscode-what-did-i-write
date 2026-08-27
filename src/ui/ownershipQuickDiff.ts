@@ -9,15 +9,25 @@ import type { RegisteredRepository, RepositoryRegistry } from '../extension/repo
 export const OWNERSHIP_ORIGINAL_SCHEME = 'my-code-original';
 
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
+const UNMATERIALIZED_FINGERPRINT = '\0unmaterialized';
 
 export interface OwnershipOriginalDocument {
   readonly root: string;
   readonly path: string;
 }
 
+export interface OwnershipSnapshotState {
+  isDocumentSnapshotCurrent(document: vscode.TextDocument): boolean;
+  isUriSnapshotCurrent(uri: vscode.Uri): boolean;
+  readonly onDidChangeSnapshotState: vscode.Event<vscode.Uri>;
+}
+
 interface TrackedOriginal extends OwnershipOriginalDocument {
   readonly uri: vscode.Uri;
-  fingerprint: string;
+  readonly sourceUri: vscode.Uri;
+  observedFingerprint: string;
+  materializedFingerprint: string;
+  notifiedFingerprint?: string;
 }
 
 export function ownershipOriginalUri(root: string, path: string): vscode.Uri {
@@ -61,27 +71,41 @@ vscode.QuickDiffProvider, vscode.TextDocumentContentProvider, vscode.Disposable 
   private readonly sourceControls = new Map<string, vscode.SourceControl>();
   private readonly trackedOriginals = new Map<string, TrackedOriginal>();
   private readonly cachedContents = new Map<string, string>();
-  private readonly registrySubscription: vscode.Disposable;
+  private readonly subscriptions: vscode.Disposable[];
+  private readonly snapshotState: OwnershipSnapshotState;
   private enabled = false;
   private disposed = false;
+  private generation = 0;
 
   public readonly onDidChange = this.changeEmitter.event;
 
   public constructor(
     private readonly registry: RepositoryRegistry,
-    private readonly isDocumentSnapshotCurrent: (document: vscode.TextDocument) => boolean,
+    snapshotState: OwnershipSnapshotState | ((document: vscode.TextDocument) => boolean),
     private readonly onError?: (error: unknown, operation: string, path: string) => void
   ) {
-    this.registrySubscription = registry.onDidChange(() => this.acceptRegistryChange());
+    this.snapshotState = typeof snapshotState === 'function'
+      ? fallbackSnapshotState(snapshotState)
+      : snapshotState;
+    this.subscriptions = [
+      registry.onDidChange(() => this.acceptRegistryChange()),
+      this.snapshotState.onDidChangeSnapshotState((uri) => this.acceptSnapshotStateChange(uri))
+    ];
     this.syncSourceControls();
   }
 
   public setEnabled(enabled: boolean): Promise<void> {
     if (this.disposed) return Promise.resolve();
+    if (this.enabled !== enabled) this.generation += 1;
     this.enabled = enabled;
     this.syncSourceControls();
     for (const sourceControl of this.sourceControls.values()) {
       sourceControl.quickDiffProvider = enabled ? this : undefined;
+    }
+    if (!enabled) {
+      for (const tracked of this.trackedOriginals.values()) tracked.notifiedFingerprint = undefined;
+    } else {
+      this.acceptRegistryChange();
     }
     return Promise.resolve();
   }
@@ -90,67 +114,86 @@ vscode.QuickDiffProvider, vscode.TextDocumentContentProvider, vscode.Disposable 
     uri: vscode.Uri,
     token: vscode.CancellationToken
   ): Promise<vscode.Uri | undefined> {
-    if (!this.enabled || uri.scheme !== 'file' || token.isCancellationRequested) return undefined;
+    const generation = this.generation;
+    if (!this.isOperationCurrent(generation, token) || uri.scheme !== 'file') return undefined;
     const entry = this.registry.findByUri(uri);
-    if (entry === undefined || !entry.ready) return undefined;
-    const snapshot = entry.analyzer.getSnapshot();
-    if (!hasConfiguredIdentity(snapshot.identity)) return undefined;
+    if (!this.isRepositoryActive(entry)) return undefined;
     const path = workspaceRelativePath(entry.root, uri.fsPath);
     if (path === undefined) return undefined;
     let record: FileRecord | undefined;
     try {
       record = await entry.analyzer.ensureFile(path, 'active-editor');
     } catch (error) {
-      this.onError?.(error, 'quick-diff', path);
+      if (this.isOperationCurrent(generation, token) && entry.analyzer.reportsErrors !== true) {
+        this.onError?.(error, 'quick-diff', path);
+      }
       return undefined;
     }
-    if (token.isCancellationRequested || record === undefined || record.binary || record.ranges.length === 0) {
-      return undefined;
-    }
+    if (!this.isOperationCurrent(generation, token) || !this.isRepositoryActive(entry)) return undefined;
+    if (record === undefined || record.binary || record.ranges.length === 0) return undefined;
     const original = ownershipOriginalUri(entry.root, record.relativePath);
-    this.trackedOriginals.set(original.toString(), {
-      uri: original,
-      root: entry.root,
-      path: record.relativePath,
-      fingerprint: recordFingerprint(record)
-    });
+    this.trackOriginal(original, entry, record);
     return original;
   }
 
-  public async provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
+  public async provideTextDocumentContent(
+    uri: vscode.Uri,
+    token?: vscode.CancellationToken
+  ): Promise<string> {
     const descriptor = parseOwnershipOriginalUri(uri);
-    const entry = this.findRepository(descriptor.root);
-    if (entry === undefined || !entry.ready) return '';
-    const source = vscode.Uri.file(join(entry.root, descriptor.path));
-    const document = await vscode.workspace.openTextDocument(source);
     const key = uri.toString();
     const cached = this.cachedContents.get(key);
-    if (!this.isDocumentSnapshotCurrent(document)) return cached ?? document.getText();
+    const generation = this.generation;
+    if (!this.isOperationCurrent(generation, token)) return cached ?? '';
+    const entry = this.findRepository(descriptor.root);
+    if (!this.isRepositoryActive(entry)) return cached ?? '';
+    const sourceUri = vscode.Uri.file(join(entry.root, descriptor.path));
+    const document = await vscode.workspace.openTextDocument(sourceUri);
+    if (!this.isOperationCurrent(generation, token) || !this.isRepositoryActive(entry)) return cached ?? '';
+    const documentVersion = document.version;
+    const tracked = this.ensureTrackedOriginal(uri, sourceUri, entry, descriptor.path);
+    if (!this.snapshotState.isDocumentSnapshotCurrent(document)) {
+      tracked.notifiedFingerprint = undefined;
+      return cached ?? document.getText();
+    }
 
     let record: FileRecord | undefined;
     try {
       record = await entry.analyzer.ensureFile(descriptor.path, 'active-editor');
     } catch (error) {
-      this.onError?.(error, 'quick-diff-content', descriptor.path);
+      if (this.isOperationCurrent(generation, token)) {
+        tracked.notifiedFingerprint = undefined;
+        if (entry.analyzer.reportsErrors !== true) {
+          this.onError?.(error, 'quick-diff-content', descriptor.path);
+        }
+      }
       return cached ?? document.getText();
     }
+    if (!this.isOperationCurrent(generation, token)
+      || !this.isRepositoryActive(entry)
+      || document.version !== documentVersion
+      || !this.snapshotState.isDocumentSnapshotCurrent(document)) {
+      if (this.isOperationCurrent(generation, token)) tracked.notifiedFingerprint = undefined;
+      return cached ?? document.getText();
+    }
+
     const contents = record === undefined || record.binary
       ? document.getText()
       : omitOwnedLines(document.getText(), record.ranges);
+    const fingerprint = recordFingerprint(record);
     this.cachedContents.set(key, contents);
-    this.trackedOriginals.set(key, {
-      uri,
-      root: entry.root,
-      path: descriptor.path,
-      fingerprint: recordFingerprint(record)
-    });
+    tracked.observedFingerprint = fingerprint;
+    tracked.materializedFingerprint = fingerprint;
+    tracked.notifiedFingerprint = undefined;
     return contents;
   }
 
   public dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.registrySubscription.dispose();
+    this.enabled = false;
+    this.generation += 1;
+    for (const subscription of this.subscriptions) subscription.dispose();
     for (const sourceControl of this.sourceControls.values()) sourceControl.dispose();
     this.sourceControls.clear();
     this.trackedOriginals.clear();
@@ -161,19 +204,82 @@ vscode.QuickDiffProvider, vscode.TextDocumentContentProvider, vscode.Disposable 
   private acceptRegistryChange(): void {
     if (this.disposed) return;
     this.syncSourceControls();
-    for (const tracked of this.trackedOriginals.values()) {
+    for (const [key, tracked] of this.trackedOriginals) {
       const entry = this.findRepository(tracked.root);
-      const record = entry?.analyzer.getSnapshot().files.find(({ relativePath }) => relativePath === tracked.path);
-      const fingerprint = recordFingerprint(record);
-      if (fingerprint === tracked.fingerprint) continue;
-      tracked.fingerprint = fingerprint;
-      this.changeEmitter.fire(tracked.uri);
+      if (!this.isRepositoryActive(entry)) {
+        this.trackedOriginals.delete(key);
+        this.cachedContents.delete(key);
+        continue;
+      }
+      const record = entry.analyzer.getSnapshot().files.find(({ relativePath }) => relativePath === tracked.path);
+      tracked.observedFingerprint = recordFingerprint(record);
+      this.requestRefresh(tracked);
     }
+  }
+
+  private acceptSnapshotStateChange(uri: vscode.Uri): void {
+    if (this.disposed || uri.scheme !== 'file') return;
+    const key = uri.toString();
+    for (const tracked of this.trackedOriginals.values()) {
+      if (tracked.sourceUri.toString() !== key) continue;
+      if (!this.snapshotState.isUriSnapshotCurrent(uri)) {
+        tracked.notifiedFingerprint = undefined;
+        continue;
+      }
+      this.requestRefresh(tracked);
+    }
+  }
+
+  private requestRefresh(tracked: TrackedOriginal): void {
+    if (!this.enabled || this.disposed) return;
+    if (tracked.observedFingerprint === tracked.materializedFingerprint) return;
+    if (tracked.notifiedFingerprint === tracked.observedFingerprint) return;
+    if (!this.snapshotState.isUriSnapshotCurrent(tracked.sourceUri)) return;
+    tracked.notifiedFingerprint = tracked.observedFingerprint;
+    this.changeEmitter.fire(tracked.uri);
+  }
+
+  private trackOriginal(uri: vscode.Uri, entry: RegisteredRepository, record: FileRecord): TrackedOriginal {
+    return this.ensureTrackedOriginal(
+      uri,
+      vscode.Uri.file(join(entry.root, record.relativePath)),
+      entry,
+      record.relativePath,
+      recordFingerprint(record)
+    );
+  }
+
+  private ensureTrackedOriginal(
+    uri: vscode.Uri,
+    sourceUri: vscode.Uri,
+    entry: RegisteredRepository,
+    path: string,
+    observedFingerprint = recordFingerprint(
+      entry.analyzer.getSnapshot().files.find(({ relativePath }) => relativePath === path)
+    )
+  ): TrackedOriginal {
+    const key = uri.toString();
+    const existing = this.trackedOriginals.get(key);
+    if (existing !== undefined) {
+      existing.observedFingerprint = observedFingerprint;
+      return existing;
+    }
+    const tracked: TrackedOriginal = {
+      uri,
+      sourceUri,
+      root: entry.root,
+      path,
+      observedFingerprint,
+      materializedFingerprint: UNMATERIALIZED_FINGERPRINT
+    };
+    this.trackedOriginals.set(key, tracked);
+    return tracked;
   }
 
   private syncSourceControls(): void {
     const activeRoots = new Set<string>();
     for (const entry of this.registry.repositories) {
+      if (!this.isRepositoryActive(entry)) continue;
       const key = normalizedRoot(entry.root);
       activeRoots.add(key);
       if (this.sourceControls.has(key)) continue;
@@ -191,12 +297,39 @@ vscode.QuickDiffProvider, vscode.TextDocumentContentProvider, vscode.Disposable 
       if (activeRoots.has(key)) continue;
       sourceControl.dispose();
       this.sourceControls.delete(key);
+      this.generation += 1;
     }
+  }
+
+  private isOperationCurrent(
+    generation: number,
+    token?: Pick<vscode.CancellationToken, 'isCancellationRequested'>
+  ): boolean {
+    return !this.disposed
+      && this.enabled
+      && this.generation === generation
+      && token?.isCancellationRequested !== true;
+  }
+
+  private isRepositoryActive(entry: RegisteredRepository | undefined): entry is RegisteredRepository {
+    if (entry === undefined || !entry.ready) return false;
+    if (this.findRepository(entry.root) !== entry) return false;
+    return hasConfiguredIdentity(entry.analyzer.getSnapshot().identity);
   }
 
   private findRepository(root: string): RegisteredRepository | undefined {
     return this.registry.repositories.find((entry) => normalizedRoot(entry.root) === normalizedRoot(root));
   }
+}
+
+function fallbackSnapshotState(
+  isDocumentSnapshotCurrent: (document: vscode.TextDocument) => boolean
+): OwnershipSnapshotState {
+  return {
+    isDocumentSnapshotCurrent,
+    isUriSnapshotCurrent: () => true,
+    onDidChangeSnapshotState: () => ({ dispose: () => undefined })
+  };
 }
 
 function validateDescriptor(value: unknown): OwnershipOriginalDocument {
@@ -220,7 +353,8 @@ function validateDescriptor(value: unknown): OwnershipOriginalDocument {
 function isUnsafeRelativePath(path: string): boolean {
   const normalized = path.replace(/\\/g, '/');
   return normalized.startsWith('/')
-    || /^[A-Za-z]:\//.test(normalized)
+    || /^[A-Za-z]:/.test(normalized)
+    || (process.platform === 'win32' && normalized.includes(':'))
     || normalized.split('/').some((segment) => segment === '..' || segment === '');
 }
 

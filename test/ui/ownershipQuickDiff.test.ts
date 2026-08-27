@@ -48,7 +48,7 @@ const mocks = vi.hoisted(() => {
     quickDiffProvider?: unknown;
     dispose: ReturnType<typeof vi.fn>;
   }> = [];
-  const documents = new Map<string, { uri: Uri; isDirty: boolean; getText(): string }>();
+  const documents = new Map<string, { uri: Uri; isDirty: boolean; version: number; getText(): string }>();
   return { EventEmitter, Uri, sourceControls, documents };
 });
 
@@ -118,6 +118,7 @@ describe('OwnershipQuickDiffController', () => {
     mocks.documents.set(sourcePath, {
       uri: sourceUri as unknown as InstanceType<typeof mocks.Uri>,
       isDirty: false,
+      version: 1,
       getText: () => 'kept\nauthored\nkept too\n'
     });
     const controller = new OwnershipQuickDiffController(registry, () => true);
@@ -163,6 +164,161 @@ describe('OwnershipQuickDiffController', () => {
     expect(mocks.sourceControls[0]?.dispose).not.toHaveBeenCalled();
     controller.dispose();
   });
+
+  it('does not publish ranges resolved after the document snapshot becomes stale', async () => {
+    const root = resolve('fixture/race');
+    const sourcePath = resolve(root, 'current.ts');
+    const record = ownedRecord('current.ts', 1);
+    const fixture = mutableRegistry(root, record);
+    let current = true;
+    const document = {
+      uri: mocks.Uri.file(sourcePath),
+      isDirty: false,
+      version: 1,
+      getText: () => 'zero\none\ntwo\n'
+    };
+    mocks.documents.set(sourcePath, document);
+    const controller = new OwnershipQuickDiffController(fixture.registry, () => current);
+    await controller.setEnabled(true);
+    const original = await controller.provideOriginalResource(
+      document.uri as unknown as vscode.Uri,
+      cancellation()
+    );
+    const pending = deferred<TestRecord | undefined>();
+    fixture.ensureFile.mockReturnValueOnce(pending.promise);
+
+    const content = controller.provideTextDocumentContent(original as vscode.Uri);
+    await flush();
+    current = false;
+    document.isDirty = true;
+    document.version += 1;
+    pending.resolve(record);
+
+    await expect(content).resolves.toBe('zero\none\ntwo\n');
+    controller.dispose();
+  });
+
+  it('replays a pending fingerprint only after editor analysis becomes current', async () => {
+    const root = resolve('fixture/replay');
+    const sourcePath = resolve(root, 'current.ts');
+    const fixture = mutableRegistry(root, ownedRecord('current.ts', 1));
+    const state = snapshotState(true);
+    const document = {
+      uri: mocks.Uri.file(sourcePath),
+      isDirty: false,
+      version: 1,
+      getText: () => 'zero\none\ntwo\n'
+    };
+    mocks.documents.set(sourcePath, document);
+    const controller = new OwnershipQuickDiffController(fixture.registry, state.access);
+    await controller.setEnabled(true);
+    const original = await controller.provideOriginalResource(
+      document.uri as unknown as vscode.Uri,
+      cancellation()
+    );
+    await expect(controller.provideTextDocumentContent(original as vscode.Uri)).resolves.toBe(
+      'zero\ntwo\n'
+    );
+    const refreshed: Promise<string>[] = [];
+    controller.onDidChange((uri) => {
+      refreshed.push(Promise.resolve(controller.provideTextDocumentContent(uri)));
+    });
+
+    state.setCurrent(false, document.uri as unknown as vscode.Uri);
+    fixture.setRecord(ownedRecord('current.ts', 2));
+    fixture.emit();
+    await flush();
+    expect(refreshed).toHaveLength(0);
+
+    state.setCurrent(true, document.uri as unknown as vscode.Uri);
+    await flush();
+    expect(refreshed).toHaveLength(1);
+    await expect(refreshed[0]).resolves.toBe('zero\none\n');
+    controller.dispose();
+  });
+
+  it('does not return or track an original resolved after visuals are disabled', async () => {
+    const root = resolve('fixture/disabled');
+    const record = ownedRecord('current.ts', 0);
+    const fixture = mutableRegistry(root, record);
+    const pending = deferred<TestRecord | undefined>();
+    fixture.ensureFile.mockReturnValueOnce(pending.promise);
+    const controller = new OwnershipQuickDiffController(fixture.registry, () => true);
+    await controller.setEnabled(true);
+
+    const original = controller.provideOriginalResource(
+      mocks.Uri.file(resolve(root, 'current.ts')) as unknown as vscode.Uri,
+      cancellation()
+    );
+    await flush();
+    await controller.setEnabled(false);
+    pending.resolve(record);
+
+    await expect(original).resolves.toBeUndefined();
+    controller.dispose();
+  });
+
+  it('does not materialize content completed after cancellation', async () => {
+    const root = resolve('fixture/cancelled');
+    const sourcePath = resolve(root, 'current.ts');
+    const record = ownedRecord('current.ts', 1);
+    const fixture = mutableRegistry(root, record);
+    const document = {
+      uri: mocks.Uri.file(sourcePath),
+      isDirty: false,
+      version: 1,
+      getText: () => 'zero\none\ntwo\n'
+    };
+    mocks.documents.set(sourcePath, document);
+    const controller = new OwnershipQuickDiffController(fixture.registry, () => true);
+    await controller.setEnabled(true);
+    const original = await controller.provideOriginalResource(
+      document.uri as unknown as vscode.Uri,
+      cancellation()
+    );
+    const pending = deferred<TestRecord | undefined>();
+    fixture.ensureFile.mockReturnValueOnce(pending.promise);
+    const token = { isCancellationRequested: false };
+
+    const content = controller.provideTextDocumentContent(
+      original as vscode.Uri,
+      token as vscode.CancellationToken
+    );
+    await flush();
+    token.isCancellationRequested = true;
+    pending.resolve(record);
+
+    await expect(content).resolves.toBe('zero\none\ntwo\n');
+    await expect(controller.provideTextDocumentContent(original as vscode.Uri)).resolves.toBe(
+      'zero\ntwo\n'
+    );
+    controller.dispose();
+  });
+
+  it('suppresses missing-identity and binary resources and disposes removed repositories', async () => {
+    const root = resolve('fixture/lifecycle');
+    const fixture = mutableRegistry(root, {
+      ...ownedRecord('current.bin', 0),
+      binary: true
+    });
+    const controller = new OwnershipQuickDiffController(fixture.registry, () => true);
+    await controller.setEnabled(true);
+    fixture.setIdentity({ name: '', email: '' });
+
+    await expect(controller.provideOriginalResource(
+      mocks.Uri.file(resolve(root, 'current.bin')) as unknown as vscode.Uri,
+      cancellation()
+    )).resolves.toBeUndefined();
+    fixture.remove();
+    expect(mocks.sourceControls[0]?.dispose).toHaveBeenCalledTimes(1);
+    controller.dispose();
+  });
+
+  it('rejects malformed virtual original URIs', () => {
+    expect(() => parseOwnershipOriginalUri(
+      mocks.Uri.from({ scheme: OWNERSHIP_ORIGINAL_SCHEME, path: '/not-base64!' }) as unknown as vscode.Uri
+    )).toThrow('Invalid ownership original URI payload');
+  });
 });
 
 function fakeRegistry(
@@ -197,4 +353,105 @@ function fakeRegistry(
       return { dispose: () => listeners.delete(listener) };
     }
   } as unknown as RepositoryRegistry;
+}
+
+type TestRecord = ReturnType<RegisteredRepository['analyzer']['getSnapshot']>['files'][number];
+
+function ownedRecord(path: string, line: number): TestRecord {
+  return {
+    relativePath: path,
+    kind: 'modified',
+    exists: true,
+    working: false,
+    binary: false,
+    ranges: [{ start: line, endExclusive: line + 1, uncommitted: false }],
+    history: []
+  };
+}
+
+function mutableRegistry(root: string, initialRecord: TestRecord | undefined) {
+  const listeners = new Set<() => void>();
+  let record = initialRecord;
+  let identity = { name: 'Me', email: 'me@example.com' };
+  let generatedAt = 1;
+  const ensureFile = vi.fn(async () => record);
+  const entry = {
+    root,
+    ready: true,
+    state: 'ready',
+    repository: {},
+    workspaceFolders: [],
+    analyzer: {
+      getSnapshot: () => ({
+        root,
+        head: 'abc',
+        identity,
+        files: record === undefined ? [] : [record],
+        scanning: false,
+        generatedAt
+      }),
+      ensureFile
+    }
+  } as unknown as RegisteredRepository;
+  let repositories: RegisteredRepository[] = [entry];
+  const registry = {
+    get repositories() { return repositories; },
+    findByUri: (uri: { fsPath: string }) => repositories.includes(entry) && uri.fsPath.startsWith(root)
+      ? entry
+      : undefined,
+    onDidChange: (listener: () => void) => {
+      listeners.add(listener);
+      return { dispose: () => listeners.delete(listener) };
+    }
+  } as unknown as RepositoryRegistry;
+  const emit = () => { for (const listener of listeners) listener(); };
+  return {
+    registry,
+    ensureFile,
+    emit,
+    setRecord: (next: TestRecord | undefined) => {
+      record = next;
+      generatedAt += 1;
+    },
+    setIdentity: (next: { name: string; email: string }) => { identity = next; },
+    remove: () => {
+      repositories = [];
+      emit();
+    }
+  };
+}
+
+function snapshotState(initial: boolean) {
+  let current = initial;
+  const emitter = new mocks.EventEmitter<vscode.Uri>();
+  return {
+    access: {
+      isDocumentSnapshotCurrent: () => current,
+      isUriSnapshotCurrent: () => current,
+      onDidChangeSnapshotState: emitter.event
+    },
+    setCurrent: (next: boolean, uri: vscode.Uri) => {
+      current = next;
+      emitter.fire(uri);
+    }
+  };
+}
+
+function cancellation(cancelled = false): vscode.CancellationToken {
+  return { isCancellationRequested: cancelled } as vscode.CancellationToken;
+}
+
+function deferred<T>() {
+  let resolvePromise: ((value: T) => void) | undefined;
+  const promise = new Promise<T>((resolve) => { resolvePromise = resolve; });
+  return {
+    promise,
+    resolve: (value: T) => resolvePromise?.(value)
+  };
+}
+
+async function flush(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
 }

@@ -276,7 +276,7 @@ export function renderTimelineHtml(
 function renderBody(state: HistoryTimelineViewState): string {
   switch (state.kind) {
     case 'idle':
-      return stateMessage('File history', localize('Open a file or choose history from a gutter marker.'));
+      return stateMessage('File history', localize('Open a file or run Show File History.'));
     case 'loading':
       return stateMessage('Loading history...', localize('Reading local Git history.'));
     case 'empty':

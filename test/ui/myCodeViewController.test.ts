@@ -435,6 +435,35 @@ describe('VisualModeController', () => {
     expect(editors.setEnabled.mock.calls).toEqual([[false], [true]]);
     expect(mocks.executeCommand).toHaveBeenCalledWith('setContext', 'myCode.visualsEnabled', true);
   });
+
+  it('keeps configured visuals OFF when legacy SCM restoration fails', async () => {
+    mocks.configuration.visualsEnabled = false;
+    mocks.configuration.scmWorkspaceValue = 'none';
+    const state = memoryState();
+    await state.update('myCode.visuals.previousScmDiffDecorations', {
+      hasWorkspaceValue: true,
+      value: 'gutter'
+    });
+    const failure = new Error('SCM update failed');
+    mocks.configuration.scmUpdate.mockRejectedValueOnce(failure);
+    const decorations = { setEnabled: vi.fn() };
+    const editors = { setEnabled: vi.fn(async () => undefined) };
+    const quickDiff = { setEnabled: vi.fn(async () => undefined) };
+    const onError = vi.fn();
+
+    new VisualModeController(decorations, editors, state, quickDiff, onError);
+    for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
+
+    expect(decorations.setEnabled.mock.calls.at(-1)).toEqual([false]);
+    expect(editors.setEnabled.mock.calls.at(-1)).toEqual([false]);
+    expect(quickDiff.setEnabled.mock.calls.at(-1)).toEqual([false]);
+    expect(mocks.executeCommand.mock.calls.at(-1)).toEqual(['setContext', 'myCode.visualsEnabled', false]);
+    expect(onError).toHaveBeenCalledWith(failure);
+    expect(state.get('myCode.visuals.previousScmDiffDecorations')).toEqual({
+      hasWorkspaceValue: true,
+      value: 'gutter'
+    });
+  });
 });
 
 function treeFixture(ids: readonly string[]) {

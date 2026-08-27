@@ -162,7 +162,8 @@ export class VisualModeController {
     private readonly decorations: Pick<MyCodeDecorationProvider, 'setEnabled'>,
     private readonly editors: Pick<EditorOwnershipController, 'setEnabled'>,
     private readonly state?: VisualState,
-    private readonly quickDiff?: { setEnabled(enabled: boolean): void | Promise<void> }
+    private readonly quickDiff?: { setEnabled(enabled: boolean): void | Promise<void> },
+    private readonly onError?: (error: unknown) => void
   ) {
     void this.acceptInitialConfiguration();
   }
@@ -204,7 +205,11 @@ export class VisualModeController {
     const previous = this.enabled;
     try {
       await this.restoreLegacyScmDecorations();
-      if (!this.isCurrentOperation(operation)) return;
+    } catch (error) {
+      this.onError?.(error);
+    }
+    if (!this.isCurrentOperation(operation)) return;
+    try {
       await this.apply(next, operation);
     } catch {
       if (this.isCurrentOperation(operation)) await this.restore(previous, operation);

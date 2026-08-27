@@ -45,7 +45,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const historyTimeline = new HistoryTimelineViewProvider(historyController, reportError);
   const ownershipQuickDiff = new OwnershipQuickDiffController(
     registry,
-    (document) => editorOwnership.isDocumentSnapshotCurrent(document),
+    editorOwnership,
     reportError
   );
   const refreshAllViews = async (): Promise<void> => {
@@ -73,7 +73,8 @@ export function activate(context: vscode.ExtensionContext): void {
     decorationProvider,
     editorOwnership,
     context.workspaceState,
-    ownershipQuickDiff
+    ownershipQuickDiff,
+    (error) => reportError(error, 'restore-scm-decorations', 'scm.diffDecorations')
   );
   activeVisualModeController = visualModeController;
   statusController = new StatusController(registry, statusItem, {

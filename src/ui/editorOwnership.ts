@@ -64,6 +64,7 @@ export class EditorOwnershipController implements vscode.Disposable {
   private readonly pendingSaveRefreshes = new Map<string, number>();
   private readonly saveRefreshGenerations = new Map<string, number>();
   private readonly subscriptions: vscode.Disposable[];
+  private readonly snapshotStateEmitter = new vscode.EventEmitter<vscode.Uri>();
   private scheduled = false;
   private disposed = false;
   private enabled = true;
@@ -87,6 +88,8 @@ export class EditorOwnershipController implements vscode.Disposable {
       vscode.workspace.onDidCloseTextDocument((document) => this.closeUri(document.uri))
     ];
   }
+  public readonly onDidChangeSnapshotState = this.snapshotStateEmitter.event;
+
 
   public async refreshVisibleEditors(): Promise<void> {
     if (this.disposed || !this.enabled) return;
@@ -100,10 +103,12 @@ export class EditorOwnershipController implements vscode.Disposable {
   }
 
   public isDocumentSnapshotCurrent(document: vscode.TextDocument): boolean {
-    const key = document.uri.toString();
-    return !this.disposed
-      && this.enabled
-      && !document.isDirty
+    return !document.isDirty && this.isUriSnapshotCurrent(document.uri);
+  }
+
+  public isUriSnapshotCurrent(uri: vscode.Uri): boolean {
+    const key = uri.toString();
+    return !this.disposed && this.enabled
       && !this.dirtyDocumentUris.has(key)
       && !this.pendingSaveRefreshes.has(key)
       && !this.suppressedDocumentUris.has(key);
@@ -117,6 +122,7 @@ export class EditorOwnershipController implements vscode.Disposable {
     }
 
     this.enabled = enabled;
+    for (const editor of vscode.window.visibleTextEditors) this.snapshotStateEmitter.fire(editor.document.uri);
     this.decorationRevision += 1;
     if (!enabled) {
       for (const editor of vscode.window.visibleTextEditors) {
@@ -167,6 +173,7 @@ export class EditorOwnershipController implements vscode.Disposable {
     if (this.disposed) return;
     this.disposed = true;
     for (const subscription of this.subscriptions) subscription.dispose();
+    this.snapshotStateEmitter.dispose();
     this.committedDecoration.dispose();
     this.workingDecoration.dispose();
     this.generations.clear();
@@ -237,6 +244,7 @@ export class EditorOwnershipController implements vscode.Disposable {
     if (document.isDirty) {
       this.dirtyDocumentUris.add(key);
       this.pendingSaveRefreshes.delete(key);
+      this.snapshotStateEmitter.fire(uri);
       return;
     }
     this.dirtyDocumentUris.delete(key);
@@ -271,6 +279,7 @@ export class EditorOwnershipController implements vscode.Disposable {
     this.saveRefreshGenerations.set(key, token);
     this.pendingSaveRefreshes.set(key, token);
     this.suppressedDocumentUris.add(key);
+    this.snapshotStateEmitter.fire(uri);
 
     const run = async (attempt: number): Promise<void> => {
       let succeeded = false;
@@ -301,6 +310,7 @@ export class EditorOwnershipController implements vscode.Disposable {
         this.pendingSaveRefreshes.delete(key);
         if (!succeeded) return;
         this.suppressedDocumentUris.delete(key);
+        this.snapshotStateEmitter.fire(uri);
         void this.refreshUri(uri);
       }
     };
