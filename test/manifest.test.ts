@@ -15,7 +15,7 @@ const manifest = JSON.parse(readFileSync('package.json', 'utf8')) as {
   readonly contributes?: {
     readonly commands?: readonly { readonly command: string; readonly title: string; readonly category?: string; readonly icon?: string }[];
     readonly menus?: {
-      readonly 'view/item/context'?: readonly { readonly command: string; readonly when: string }[];
+      readonly 'view/item/context'?: readonly { readonly command: string; readonly when: string; readonly group?: string }[];
       readonly 'view/title'?: readonly { readonly command: string; readonly when: string; readonly group?: string }[];
     };
     readonly viewsContainers?: {
@@ -126,8 +126,8 @@ describe('extension manifest', () => {
 
   it('routes file history from current and past MY CODE tree items', () => {
     expect(manifest.contributes?.menus?.['view/item/context']).toEqual(expect.arrayContaining([
-      { command: 'myCode.showFileHistory', when: 'view == myCode.explorer && viewItem == myCode.file' },
-      { command: 'myCode.showFileHistory', when: 'view == myCode.pastActivity && viewItem == myCode.pastFile' }
+      expect.objectContaining({ command: 'myCode.showFileHistory', when: 'view == myCode.explorer && viewItem == myCode.file' }),
+      expect.objectContaining({ command: 'myCode.showFileHistory', when: 'view == myCode.pastActivity && viewItem == myCode.pastFile' })
     ]));
   });
 
@@ -141,6 +141,29 @@ describe('extension manifest', () => {
       expect(english(command.category)).toBe('What Did I Write?');
       expect(command.icon).toBeTruthy();
     }
+  });
+
+  it('groups context actions like Explorer and exposes compact row-hover icons', () => {
+    const items = manifest.contributes?.menus?.['view/item/context'] ?? [];
+    const find = (command: string, contextValue: string, group: string) => items.find((item) =>
+      item.command === command
+      && item.when.includes(`viewItem == ${contextValue}`)
+      && item.group === group
+    );
+
+    expect(find('myCode.openFile', 'myCode.file', 'navigation@1')).toBeDefined();
+    expect(find('myCode.showFileHistory', 'myCode.file', '3_history@1')).toBeDefined();
+    expect(find('myCode.cut', 'myCode.file', '5_cutcopypaste@1')).toBeDefined();
+    expect(find('myCode.copyPath', 'myCode.file', '6_copypath@1')).toBeDefined();
+    expect(find('myCode.rename', 'myCode.file', '7_modification@1')).toBeDefined();
+
+    expect(find('myCode.openFile', 'myCode.file', 'inline@1')).toBeDefined();
+    expect(find('myCode.openToSide', 'myCode.file', 'inline@2')).toBeDefined();
+    expect(find('myCode.showFileHistory', 'myCode.file', 'inline@3')).toBeDefined();
+    expect(find('myCode.newFile', 'myCode.folder', 'inline@1')).toBeDefined();
+    expect(find('myCode.newFolder', 'myCode.folder', 'inline@2')).toBeDefined();
+    expect(find('myCode.newFile', 'myCode.repository', 'inline@1')).toBeDefined();
+    expect(find('myCode.newFolder', 'myCode.repository', 'inline@2')).toBeDefined();
   });
 
   it('uses conditional title slots and exposes mutations only on current non-synthetic rows', () => {
@@ -159,9 +182,9 @@ describe('extension manifest', () => {
     expect(commandsFor('myCode.repository')).toEqual(expect.arrayContaining(['myCode.revealInExplorer', 'myCode.revealInOs', 'myCode.copyPath', 'myCode.copyRelativePath', 'myCode.newFile', 'myCode.newFolder', 'myCode.cut', 'myCode.copy', 'myCode.paste']));
     expect(commandsFor('myCode.repository')).not.toEqual(expect.arrayContaining(['myCode.rename', 'myCode.delete']));
     expect(items.filter(({ when }) => when.includes('viewItem == myCode.pastFile'))).toEqual([
-      { command: 'myCode.showFileHistory', when: 'view == myCode.pastActivity && viewItem == myCode.pastFile' },
-      { command: 'myCode.copyHistoricalPath', when: 'view == myCode.pastActivity && viewItem == myCode.pastFile' },
-      { command: 'myCode.copyHistoricalRelativePath', when: 'view == myCode.pastActivity && viewItem == myCode.pastFile' }
+      { command: 'myCode.showFileHistory', when: 'view == myCode.pastActivity && viewItem == myCode.pastFile', group: 'navigation@1' },
+      { command: 'myCode.copyHistoricalPath', when: 'view == myCode.pastActivity && viewItem == myCode.pastFile', group: '6_copypath@1' },
+      { command: 'myCode.copyHistoricalRelativePath', when: 'view == myCode.pastActivity && viewItem == myCode.pastFile', group: '6_copypath@2' }
     ]);
-});
+  });
 });

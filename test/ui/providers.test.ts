@@ -108,6 +108,22 @@ describe('MyCodeDecorationProvider', () => {
     provider.dispose();
   });
 
+  it('invalidates Explorer colors only when the visible ownership state changes', () => {
+    const registry = fakeRegistry(snapshot(ROOT, [file('current.ts', 'modified')]));
+    const provider = new MyCodeDecorationProvider(registry);
+    const changes: unknown[] = [];
+    provider.onDidChangeFileDecorations((uri) => changes.push(uri));
+
+    registry.emit();
+    registry.publish(snapshot(ROOT, [file('current.ts', 'modified')], 2));
+    expect(changes).toEqual([]);
+
+    registry.publish(snapshot(ROOT, [file('current.ts', 'added')], 3));
+    expect(changes).toEqual([undefined]);
+
+    provider.dispose();
+  });
+
   it('lazily resolves an unresolved candidate and invalidates decorations after success or failure', async () => {
     const success = deferred<FileRecord | undefined>();
     const registry = fakeRegistry(snapshot(ROOT, [file('candidate.ts', 'past')]), success.promise);
@@ -193,7 +209,7 @@ describe('MyCodeDecorationProvider', () => {
 });
 
 describe('MyCodeTreeProvider', () => {
-  it('caches the current graph by snapshot generation and returns parents and expandable nodes', () => {
+  it('caches the current graph by visible projection and returns parents and expandable nodes', () => {
     const registry = fakeRegistry(snapshot(ROOT, [file('src/nested/current.ts', 'modified')]));
     const provider = new MyCodeTreeProvider(registry);
     const firstRoots = provider.getChildren();
@@ -209,7 +225,25 @@ describe('MyCodeTreeProvider', () => {
     expect(provider.expandableNodes()).toEqual([src, nested]);
 
     (registry.entry.analyzer as { getSnapshot: () => RepositorySnapshot }).getSnapshot = () => snapshot(ROOT, [file('src/nested/current.ts', 'modified')], 2);
-    expect(provider.getChildren()[0]).not.toBe(src);
+    expect(provider.getChildren()[0]).toBe(src);
+    provider.dispose();
+  });
+
+  it('keeps MY CHANGES stable when only the analyzer generation changes', () => {
+    const registry = fakeRegistry(snapshot(ROOT, [file('current.ts', 'modified')]));
+    const provider = new MyCodeTreeProvider(registry);
+    const first = provider.getChildren()[0];
+    const changes: unknown[] = [];
+    provider.onDidChangeTreeData((node) => changes.push(node));
+
+    registry.publish(snapshot(ROOT, [file('current.ts', 'modified')], 2));
+    expect(changes).toEqual([]);
+    expect(provider.getChildren()[0]).toBe(first);
+
+    registry.publish(snapshot(ROOT, [file('current.ts', 'added')], 3));
+    expect(changes).toEqual([undefined]);
+    const changed = provider.getChildren()[0] as MyCodeNode;
+    expect(provider.getTreeItem(changed).description).toBe('A');
     provider.dispose();
   });
 
@@ -261,11 +295,12 @@ function fakeRegistry(
   state: 'ready' | 'initializing' = 'ready'
 ) {
   const listeners = new Set<() => void>();
+  let snapshotValue = currentSnapshot;
   const entry = {
     root: currentSnapshot.root,
     state,
     analyzer: {
-      getSnapshot: () => currentSnapshot,
+      getSnapshot: () => snapshotValue,
       ensureFile: vi.fn(() => ensureFileResult ?? Promise.resolve(undefined))
     }
   };
@@ -276,8 +311,17 @@ function fakeRegistry(
     onDidChange: (listener: () => void) => {
       listeners.add(listener);
       return { dispose: () => listeners.delete(listener) };
+    },
+    emit: () => listeners.forEach((listener) => listener()),
+    publish: (nextSnapshot: RepositorySnapshot) => {
+      snapshotValue = nextSnapshot;
+      listeners.forEach((listener) => listener());
     }
-  } as unknown as RepositoryRegistry & { readonly entry: typeof entry };
+  } as unknown as RepositoryRegistry & {
+    readonly entry: typeof entry;
+    emit(): void;
+    publish(snapshot: RepositorySnapshot): void;
+  };
 }
 
 function snapshot(root: string, files: readonly FileRecord[], generatedAt = 1): RepositorySnapshot {
@@ -315,6 +359,24 @@ describe('PastActivityTreeProvider', () => {
     });
     expect(provider.getTreeItem(past).description).toContain('src');
     expect(provider.getChildren(past)).toEqual([]);
+    provider.dispose();
+  });
+
+  it('keeps PAST ACTIVITY stable until its visible timeline changes', () => {
+    const original = { ...file('old.ts', 'past', false), history: [{ hash: 'a', authorName: 'Me', authorEmail: 'me@example.com', authoredAt: 7, subject: 'Old' }] };
+    const registry = fakeRegistry(snapshot(ROOT, [original]));
+    const provider = new PastActivityTreeProvider(registry);
+    const changes: unknown[] = [];
+    provider.onDidChangeTreeData((node) => changes.push(node));
+    provider.getChildren();
+
+    registry.publish(snapshot(ROOT, [original], 2));
+    expect(changes).toEqual([]);
+
+    const updated = { ...original, history: [{ hash: 'b', authorName: 'Me', authorEmail: 'me@example.com', authoredAt: 8, subject: 'Updated' }] };
+    registry.publish(snapshot(ROOT, [updated], 3));
+
+    expect(changes).toEqual([undefined]);
     provider.dispose();
   });
 });

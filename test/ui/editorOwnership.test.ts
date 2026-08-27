@@ -109,30 +109,18 @@ const committed = {
 };
 
 describe('toDecorationOptions', () => {
-  it('maps end-exclusive ranges and attaches compact history actions to gutter decorations', () => {
+  it('maps end-exclusive ranges without attaching hover cards to code ranges', () => {
     const document = documentFor('/repo/src/a file.ts', 3);
     const result = toDecorationOptions(record([
       { start: 1, endExclusive: 3, commit: committed, uncommitted: false },
       { start: 2, endExclusive: 9, commit: undefined, uncommitted: true }
-    ]), document, document.uri.fsPath);
+    ]), document);
 
     expect(result).toHaveLength(3);
     expect(result[0]?.range).toEqual({ start: { line: 1, character: 0 }, end: { line: 1, character: 0 } });
     expect(result[1]?.range).toEqual({ start: { line: 2, character: 0 }, end: { line: 2, character: 0 } });
     expect(result[2]?.range).toEqual({ start: { line: 2, character: 0 }, end: { line: 2, character: 0 } });
-    const hover = result[0]?.hoverMessage as unknown as { value: string; isTrusted: unknown };
-    expect(hover.value).toContain('Line 2');
-    expect(hover.value).toContain('Your code');
-    expect(hover.value).toContain('Line history');
-    expect(hover.value).toContain('File history');
-    expect(hover.value).not.toContain('변경 흐름');
-    expect(hover.value).toContain('Fix markdown &lt;escaping&gt;');
-    expect(hover.value).toContain('myCode.focusLineHistory');
-    expect(hover.value).toContain('myCode.focusFileHistory');
-    expect(hover.value.match(/Fix markdown/g)).toHaveLength(1);
-    expect(hover.isTrusted).toEqual({
-      enabledCommands: ['myCode.focusFileHistory', 'myCode.focusLineHistory']
-    });
+    expect(result.every((option) => option.hoverMessage === undefined)).toBe(true);
   });
 
   it('encodes command arguments as JSON before URI escaping', () => {
@@ -339,7 +327,7 @@ describe('EditorOwnershipController', () => {
     controller.dispose();
   });
 
-  it('keeps dirty buffers clear through registry and visible-editor refreshes until save analysis resolves', async () => {
+  it('keeps the last confirmed decorations visible until save analysis replaces them', async () => {
     const old = record([{ start: 0, endExclusive: 2, commit: committed, uncommitted: false }]);
     const fresh = record([{ start: 2, endExclusive: 3, commit: undefined, uncommitted: true }]);
     const analysis = deferred<void>();
@@ -363,7 +351,7 @@ describe('EditorOwnershipController', () => {
     for (const listener of mocks.visibleListeners) listener();
     await flush();
     expect(registry.entry.analyzer.ensureFile).toHaveBeenCalledTimes(1);
-    expect(editor.setDecorations.mock.calls.every(([, options]) => Array.isArray(options) && options.length === 0)).toBe(true);
+    expect(editor.setDecorations).not.toHaveBeenCalled();
 
     setDirty(editor.document, false);
     for (const listener of mocks.saveListeners) listener(editor.document);
@@ -372,7 +360,7 @@ describe('EditorOwnershipController', () => {
     await flush();
     expect(registry.entry.analyzer.refresh).toHaveBeenCalledWith('working-tree', ['current.ts']);
     expect(registry.entry.analyzer.ensureFile).toHaveBeenCalledTimes(1);
-    expect(editor.setDecorations.mock.calls.every(([, options]) => Array.isArray(options) && options.length === 0)).toBe(true);
+    expect(editor.setDecorations).not.toHaveBeenCalled();
 
     analysis.resolve();
     await flush();
@@ -380,7 +368,7 @@ describe('EditorOwnershipController', () => {
     controller.dispose();
   });
 
-  it('keeps copied ownership clear until a production analyzer replacement settles', async () => {
+  it('keeps confirmed ownership visible until a production analyzer replacement settles', async () => {
     const root = resolve('/repo');
     const replacement = deferred<BlameLine[]>();
     let blameCalls = 0;
@@ -412,9 +400,7 @@ describe('EditorOwnershipController', () => {
     await waitFor(() => blameCalls === 2);
     await flushTurns();
 
-    expect(editor.setDecorations.mock.calls.every(([, options]) =>
-      Array.isArray(options) && options.length === 0
-    )).toBe(true);
+    expect(editor.setDecorations).not.toHaveBeenCalled();
 
     replacement.resolve([{ line: 1, commit: committed, uncommitted: false }]);
     await waitFor(() => hasDecorationAtLine(editor, 1));
@@ -424,7 +410,7 @@ describe('EditorOwnershipController', () => {
     analyzer.dispose();
   });
 
-  it('keeps a failed production replacement clear and retries only once', async () => {
+  it('keeps confirmed ownership visible when a production replacement fails', async () => {
     const root = resolve('/repo');
     const failure = new Error('persistent replacement blame failure');
     let blameCalls = 0;
@@ -465,9 +451,7 @@ describe('EditorOwnershipController', () => {
     expect(blameCalls).toBe(3);
     expect(analyzerError).toHaveBeenCalledTimes(2);
     expect(controllerError).not.toHaveBeenCalled();
-    expect(editor.setDecorations.mock.calls.every(([, options]) =>
-      Array.isArray(options) && options.length === 0
-    )).toBe(true);
+    expect(editor.setDecorations).not.toHaveBeenCalled();
     controller.dispose();
     analyzer.dispose();
   });
@@ -511,7 +495,7 @@ describe('EditorOwnershipController', () => {
     saveA.resolve();
     await flush();
     expect(registry.entry.analyzer.ensureFile).toHaveBeenCalledTimes(1);
-    expect(editor.setDecorations.mock.calls.every(([, options]) => Array.isArray(options) && options.length === 0)).toBe(true);
+    expect(editor.setDecorations).not.toHaveBeenCalled();
 
     saveB.resolve();
     await flush();
@@ -543,7 +527,7 @@ describe('EditorOwnershipController', () => {
     controller.dispose();
   });
 
-  it('refreshes and resumes ownership when undo or external reload leaves a clean document', async () => {
+  it('refreshes a clean document after undo without repainting an unchanged ownership result', async () => {
     const current = record([{ start: 0, endExclusive: 1, commit: committed, uncommitted: false }]);
     const registry = fakeRegistry(current, Promise.resolve(current));
     const editor = editorFor(documentFor('/repo/current.ts', 2));
@@ -559,9 +543,7 @@ describe('EditorOwnershipController', () => {
     await flush();
 
     expect(registry.entry.analyzer.refresh).toHaveBeenCalledWith('working-tree', ['current.ts']);
-    expect(editor.setDecorations.mock.calls.slice(-2).some(([, options]) =>
-      Array.isArray(options) && options.length > 0
-    )).toBe(true);
+    expect(editor.setDecorations).not.toHaveBeenCalled();
     controller.dispose();
   });
 

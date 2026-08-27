@@ -20,8 +20,7 @@ export function commandUri(command: string, args: readonly unknown[]): string {
 
 export function toDecorationOptions(
   record: Pick<FileRecord, 'ranges'>,
-  document: Pick<vscode.TextDocument, 'lineCount'>,
-  sourcePath?: string
+  document: Pick<vscode.TextDocument, 'lineCount'>
 ): vscode.DecorationOptions[] {
   return record.ranges.flatMap((ownedRange) => {
     const ownedDocumentRange = documentRange(ownedRange, document.lineCount);
@@ -32,12 +31,7 @@ export function toDecorationOptions(
         new vscode.Position(line, 0),
         new vscode.Position(line, 0)
       );
-      options.push({
-        range,
-        ...(sourcePath === undefined ? {} : {
-          hoverMessage: ownershipHoverMarkdown(ownedRange, sourcePath, line)
-        })
-      });
+      options.push({ range });
     }
     return options;
   });
@@ -54,44 +48,6 @@ export function documentRange(range: Pick<OwnedRange, 'start' | 'endExclusive'>,
   );
 }
 
-export function ownershipHoverMarkdown(
-  range: OwnedRange,
-  sourcePath: string,
-  zeroBasedLine: number,
-  commandFactory: CommandFactory = commandUri
-): vscode.MarkdownString {
-  return compactOwnershipHover(new vscode.MarkdownString(), range, sourcePath, zeroBasedLine, commandFactory);
-}
-
-function compactOwnershipHover(
-  hover: vscode.MarkdownString,
-  range: OwnedRange,
-  sourcePath: string,
-  zeroBasedLine: number,
-  commandFactory: CommandFactory
-): vscode.MarkdownString {
-  hover.appendMarkdown('**' + escapeMarkdown(localize('Line {line} · Your code', { line: zeroBasedLine + 1 })) + '**');
-  if (range.commit === undefined) {
-    hover.appendMarkdown('\n\n_' + escapeMarkdown(localize('Uncommitted changes')) + '_');
-  } else {
-    const commit = range.commit;
-    const date = formatDate(commit.authoredAt);
-    hover.appendMarkdown(
-      '\n\n\x60' + escapeMarkdown(commit.hash.slice(0, 7)) + '\x60 | '
-        + escapeMarkdown(date) + '  \n\n' + escapeMarkdown(commit.subject)
-    );
-  }
-  hover.appendMarkdown(
-    '\n\n[$(list-tree) ' + escapeMarkdown(localize('Line history')) + ']('
-      + commandFactory(LINE_HISTORY_COMMAND, [sourcePath, zeroBasedLine]) + ')'
-  );
-  hover.appendMarkdown(
-    ' | [$(history) ' + escapeMarkdown(localize('File history')) + ']('
-      + commandFactory(FILE_HISTORY_COMMAND, [sourcePath]) + ')'
-  );
-  hover.isTrusted = { enabledCommands: TRUSTED_HOVER_COMMANDS };
-  return hover;
-}
 
 export interface EditorOwnershipOptions {
   readonly onError?: (error: unknown, operation: string, path: string) => void;
@@ -229,7 +185,6 @@ export class EditorOwnershipController implements vscode.Disposable {
 
     if (document.isDirty || this.dirtyDocumentUris.has(key) || this.pendingSaveRefreshes.has(key)
       || this.suppressedDocumentUris.has(key)) {
-      this.clear(editor);
       return;
     }
 
@@ -272,9 +227,6 @@ export class EditorOwnershipController implements vscode.Disposable {
     if (this.disposed || !isSourceUri(uri)) return;
     const key = uri.toString();
     this.generations.set(key, (this.generations.get(key) ?? 0) + 1);
-    for (const editor of vscode.window.visibleTextEditors) {
-      if (editor.document.uri.toString() === key) this.clear(editor);
-    }
     if (document.isDirty) {
       this.dirtyDocumentUris.add(key);
       this.pendingSaveRefreshes.delete(key);
@@ -357,16 +309,13 @@ export class EditorOwnershipController implements vscode.Disposable {
       ? `clear:${this.decorationRevision}`
       : `${recordFingerprint(record, this.decorationRevision)}:${editor.document.lineCount}`;
     if (this.rendered.get(editor) === fingerprint) return;
-    const sourcePath = editor.document.uri.fsPath;
     const committed = record === undefined ? [] : toDecorationOptions(
       { ranges: record.ranges.filter((range) => !range.uncommitted) },
-      editor.document,
-      sourcePath
+      editor.document
     );
     const working = record === undefined ? [] : toDecorationOptions(
       { ranges: record.ranges.filter((range) => range.uncommitted) },
-      editor.document,
-      sourcePath
+      editor.document
     );
     editor.setDecorations(this.committedDecoration, committed);
     editor.setDecorations(this.workingDecoration, working);

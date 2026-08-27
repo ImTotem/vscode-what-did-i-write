@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => {
   const configurationListeners: Array<(event: { affectsConfiguration(section: string): boolean }) => unknown> = [];
   const decorationProviders: unknown[] = [];
   const contentProviderSchemes: string[] = [];
+  const codeActionProviders: Array<{ selector: unknown; provider: unknown; metadata: unknown }> = [];
   const webviewViewIds: string[] = [];
   const hoverProviders: Array<{ selector: unknown; provider: unknown }> = [];
   const commandHandlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -42,6 +43,7 @@ const mocks = vi.hoisted(() => {
     configurationListeners,
     decorationProviders,
     contentProviderSchemes,
+    codeActionProviders,
     webviewViewIds,
     hoverProviders,
     commandHandlers,
@@ -73,8 +75,13 @@ vi.mock('vscode', () => ({
     registerHoverProvider: (selector: unknown, provider: unknown) => {
       mocks.hoverProviders.push({ selector, provider });
       return mocks.disposable();
+    },
+    registerCodeActionsProvider: (selector: unknown, provider: unknown, metadata: unknown) => {
+      mocks.codeActionProviders.push({ selector, provider, metadata });
+      return mocks.disposable();
     }
   },
+  CodeActionKind: { QuickFix: { value: 'quickfix' } },
   ThemeColor: class { constructor(public readonly id: string) {} },
   OverviewRulerLane: { Left: 1 },
   window: {
@@ -200,6 +207,12 @@ describe('extension activation', () => {
       'myCode.rename',
       'myCode.delete'
     ]));
+    expect(mocks.codeActionProviders).toEqual([
+      expect.objectContaining({
+        selector: { scheme: 'file' },
+        metadata: { providedCodeActionKinds: [{ value: 'quickfix' }] }
+      })
+    ]);
     expect(mocks.createdTreeViews).toHaveLength(1);
     expect(mocks.createdTreeViews[0]?.viewId).toBe('myCode.explorer');
     expect(mocks.createdTreeViews[0]?.options).toMatchObject({ canSelectMany: true });

@@ -15,6 +15,7 @@ import { MyCodeDragAndDropController } from './ui/myCodeDragAndDrop.js';
 import { MyCodeFileActions } from './ui/myCodeFileActions.js';
 import { MyCodeTreeProvider, PastActivityTreeProvider, type MyCodeNode, type PastActivityNode } from './ui/myCodeTree.js';
 import { MyCodeViewController, VisualModeController } from './ui/myCodeViewController.js';
+import { OwnershipCodeActionProvider } from './ui/ownershipCodeActions.js';
 import { RefreshController } from './ui/refreshController.js';
 import { StatusController } from './ui/statusController.js';
 
@@ -42,6 +43,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const gitContentProvider = new GitContentProvider(registry, reportError);
   const historyController = new HistoryController(registry);
   const historyTimeline = new HistoryTimelineViewProvider(historyController, reportError);
+  const ownershipCodeActions = new OwnershipCodeActionProvider(registry);
   const refreshAllViews = async (): Promise<void> => {
     await refreshController.refreshAll();
     await historyTimeline.refresh();
@@ -172,6 +174,11 @@ export function activate(context: vscode.ExtensionContext): void {
       webviewOptions: { retainContextWhenHidden: true }
     }),
     vscode.workspace.registerTextDocumentContentProvider(GIT_CONTENT_SCHEME, gitContentProvider),
+    vscode.languages.registerCodeActionsProvider(
+      { scheme: 'file' },
+      ownershipCodeActions,
+      { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }
+    ),
     vscode.commands.registerCommand('myCode.refresh', refreshAllViews),
     vscode.commands.registerCommand('myCode.showOutput', () => output.show()),
     vscode.commands.registerCommand('myCode.retryIdentity', () => refreshController.retryIdentity()),

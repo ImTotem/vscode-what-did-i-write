@@ -298,143 +298,213 @@
       "view/item/context": [
         {
           "command": "myCode.openFile",
-          "when": "view == myCode.explorer && viewItem == myCode.file"
+          "when": "view == myCode.explorer && viewItem == myCode.file",
+          "group": "inline@1"
         },
         {
           "command": "myCode.openToSide",
-          "when": "view == myCode.explorer && viewItem == myCode.file"
+          "when": "view == myCode.explorer && viewItem == myCode.file",
+          "group": "inline@2"
         },
         {
           "command": "myCode.showFileHistory",
-          "when": "view == myCode.explorer && viewItem == myCode.file"
-        },
-        {
-          "command": "myCode.revealInExplorer",
-          "when": "view == myCode.explorer && viewItem == myCode.file"
-        },
-        {
-          "command": "myCode.revealInOs",
-          "when": "view == myCode.explorer && viewItem == myCode.file"
-        },
-        {
-          "command": "myCode.copyPath",
-          "when": "view == myCode.explorer && viewItem == myCode.file"
-        },
-        {
-          "command": "myCode.copyRelativePath",
-          "when": "view == myCode.explorer && viewItem == myCode.file"
-        },
-        {
-          "command": "myCode.cut",
-          "when": "view == myCode.explorer && viewItem == myCode.file"
-        },
-        {
-          "command": "myCode.copy",
-          "when": "view == myCode.explorer && viewItem == myCode.file"
-        },
-        {
-          "command": "myCode.paste",
-          "when": "view == myCode.explorer && viewItem == myCode.file"
-        },
-        {
-          "command": "myCode.rename",
-          "when": "view == myCode.explorer && viewItem == myCode.file"
-        },
-        {
-          "command": "myCode.delete",
-          "when": "view == myCode.explorer && viewItem == myCode.file"
-        },
-        {
-          "command": "myCode.revealInExplorer",
-          "when": "view == myCode.explorer && viewItem == myCode.folder"
-        },
-        {
-          "command": "myCode.revealInOs",
-          "when": "view == myCode.explorer && viewItem == myCode.folder"
-        },
-        {
-          "command": "myCode.copyPath",
-          "when": "view == myCode.explorer && viewItem == myCode.folder"
-        },
-        {
-          "command": "myCode.copyRelativePath",
-          "when": "view == myCode.explorer && viewItem == myCode.folder"
+          "when": "view == myCode.explorer && viewItem == myCode.file",
+          "group": "inline@3"
         },
         {
           "command": "myCode.newFile",
-          "when": "view == myCode.explorer && viewItem == myCode.folder"
+          "when": "view == myCode.explorer && viewItem == myCode.folder",
+          "group": "inline@1"
         },
         {
           "command": "myCode.newFolder",
-          "when": "view == myCode.explorer && viewItem == myCode.folder"
-        },
-        {
-          "command": "myCode.cut",
-          "when": "view == myCode.explorer && viewItem == myCode.folder"
-        },
-        {
-          "command": "myCode.copy",
-          "when": "view == myCode.explorer && viewItem == myCode.folder"
-        },
-        {
-          "command": "myCode.paste",
-          "when": "view == myCode.explorer && viewItem == myCode.folder"
-        },
-        {
-          "command": "myCode.rename",
-          "when": "view == myCode.explorer && viewItem == myCode.folder"
-        },
-        {
-          "command": "myCode.delete",
-          "when": "view == myCode.explorer && viewItem == myCode.folder"
-        },
-        {
-          "command": "myCode.revealInExplorer",
-          "when": "view == myCode.explorer && viewItem == myCode.repository"
-        },
-        {
-          "command": "myCode.revealInOs",
-          "when": "view == myCode.explorer && viewItem == myCode.repository"
-        },
-        {
-          "command": "myCode.copyPath",
-          "when": "view == myCode.explorer && viewItem == myCode.repository"
-        },
-        {
-          "command": "myCode.copyRelativePath",
-          "when": "view == myCode.explorer && viewItem == myCode.repository"
+          "when": "view == myCode.explorer && viewItem == myCode.folder",
+          "group": "inline@2"
         },
         {
           "command": "myCode.newFile",
-          "when": "view == myCode.explorer && viewItem == myCode.repository"
+          "when": "view == myCode.explorer && viewItem == myCode.repository",
+          "group": "inline@1"
         },
         {
           "command": "myCode.newFolder",
-          "when": "view == myCode.explorer && viewItem == myCode.repository"
+          "when": "view == myCode.explorer && viewItem == myCode.repository",
+          "group": "inline@2"
         },
         {
-          "command": "myCode.cut",
-          "when": "view == myCode.explorer && viewItem == myCode.repository"
+          "command": "myCode.openFile",
+          "when": "view == myCode.explorer && viewItem == myCode.file",
+          "group": "navigation@1"
         },
         {
-          "command": "myCode.copy",
-          "when": "view == myCode.explorer && viewItem == myCode.repository"
-        },
-        {
-          "command": "myCode.paste",
-          "when": "view == myCode.explorer && viewItem == myCode.repository"
+          "command": "myCode.openToSide",
+          "when": "view == myCode.explorer && viewItem == myCode.file",
+          "group": "navigation@2"
         },
         {
           "command": "myCode.showFileHistory",
-          "when": "view == myCode.pastActivity && viewItem == myCode.pastFile"
+          "when": "view == myCode.explorer && viewItem == myCode.file",
+          "group": "3_history@1"
+        },
+        {
+          "command": "myCode.revealInExplorer",
+          "when": "view == myCode.explorer && viewItem == myCode.file",
+          "group": "4_reveal@1"
+        },
+        {
+          "command": "myCode.revealInOs",
+          "when": "view == myCode.explorer && viewItem == myCode.file",
+          "group": "4_reveal@2"
+        },
+        {
+          "command": "myCode.copyPath",
+          "when": "view == myCode.explorer && viewItem == myCode.file",
+          "group": "6_copypath@1"
+        },
+        {
+          "command": "myCode.copyRelativePath",
+          "when": "view == myCode.explorer && viewItem == myCode.file",
+          "group": "6_copypath@2"
+        },
+        {
+          "command": "myCode.cut",
+          "when": "view == myCode.explorer && viewItem == myCode.file",
+          "group": "5_cutcopypaste@1"
+        },
+        {
+          "command": "myCode.copy",
+          "when": "view == myCode.explorer && viewItem == myCode.file",
+          "group": "5_cutcopypaste@2"
+        },
+        {
+          "command": "myCode.paste",
+          "when": "view == myCode.explorer && viewItem == myCode.file",
+          "group": "5_cutcopypaste@3"
+        },
+        {
+          "command": "myCode.rename",
+          "when": "view == myCode.explorer && viewItem == myCode.file",
+          "group": "7_modification@1"
+        },
+        {
+          "command": "myCode.delete",
+          "when": "view == myCode.explorer && viewItem == myCode.file",
+          "group": "7_modification@2"
+        },
+        {
+          "command": "myCode.revealInExplorer",
+          "when": "view == myCode.explorer && viewItem == myCode.folder",
+          "group": "4_reveal@1"
+        },
+        {
+          "command": "myCode.revealInOs",
+          "when": "view == myCode.explorer && viewItem == myCode.folder",
+          "group": "4_reveal@2"
+        },
+        {
+          "command": "myCode.copyPath",
+          "when": "view == myCode.explorer && viewItem == myCode.folder",
+          "group": "6_copypath@1"
+        },
+        {
+          "command": "myCode.copyRelativePath",
+          "when": "view == myCode.explorer && viewItem == myCode.folder",
+          "group": "6_copypath@2"
+        },
+        {
+          "command": "myCode.newFile",
+          "when": "view == myCode.explorer && viewItem == myCode.folder",
+          "group": "navigation@1"
+        },
+        {
+          "command": "myCode.newFolder",
+          "when": "view == myCode.explorer && viewItem == myCode.folder",
+          "group": "navigation@2"
+        },
+        {
+          "command": "myCode.cut",
+          "when": "view == myCode.explorer && viewItem == myCode.folder",
+          "group": "5_cutcopypaste@1"
+        },
+        {
+          "command": "myCode.copy",
+          "when": "view == myCode.explorer && viewItem == myCode.folder",
+          "group": "5_cutcopypaste@2"
+        },
+        {
+          "command": "myCode.paste",
+          "when": "view == myCode.explorer && viewItem == myCode.folder",
+          "group": "5_cutcopypaste@3"
+        },
+        {
+          "command": "myCode.rename",
+          "when": "view == myCode.explorer && viewItem == myCode.folder",
+          "group": "7_modification@1"
+        },
+        {
+          "command": "myCode.delete",
+          "when": "view == myCode.explorer && viewItem == myCode.folder",
+          "group": "7_modification@2"
+        },
+        {
+          "command": "myCode.revealInExplorer",
+          "when": "view == myCode.explorer && viewItem == myCode.repository",
+          "group": "4_reveal@1"
+        },
+        {
+          "command": "myCode.revealInOs",
+          "when": "view == myCode.explorer && viewItem == myCode.repository",
+          "group": "4_reveal@2"
+        },
+        {
+          "command": "myCode.copyPath",
+          "when": "view == myCode.explorer && viewItem == myCode.repository",
+          "group": "6_copypath@1"
+        },
+        {
+          "command": "myCode.copyRelativePath",
+          "when": "view == myCode.explorer && viewItem == myCode.repository",
+          "group": "6_copypath@2"
+        },
+        {
+          "command": "myCode.newFile",
+          "when": "view == myCode.explorer && viewItem == myCode.repository",
+          "group": "navigation@1"
+        },
+        {
+          "command": "myCode.newFolder",
+          "when": "view == myCode.explorer && viewItem == myCode.repository",
+          "group": "navigation@2"
+        },
+        {
+          "command": "myCode.cut",
+          "when": "view == myCode.explorer && viewItem == myCode.repository",
+          "group": "5_cutcopypaste@1"
+        },
+        {
+          "command": "myCode.copy",
+          "when": "view == myCode.explorer && viewItem == myCode.repository",
+          "group": "5_cutcopypaste@2"
+        },
+        {
+          "command": "myCode.paste",
+          "when": "view == myCode.explorer && viewItem == myCode.repository",
+          "group": "5_cutcopypaste@3"
+        },
+        {
+          "command": "myCode.showFileHistory",
+          "when": "view == myCode.pastActivity && viewItem == myCode.pastFile",
+          "group": "navigation@1"
         },
         {
           "command": "myCode.copyHistoricalPath",
-          "when": "view == myCode.pastActivity && viewItem == myCode.pastFile"
+          "when": "view == myCode.pastActivity && viewItem == myCode.pastFile",
+          "group": "6_copypath@1"
         },
         {
           "command": "myCode.copyHistoricalRelativePath",
-          "when": "view == myCode.pastActivity && viewItem == myCode.pastFile"
+          "when": "view == myCode.pastActivity && viewItem == myCode.pastFile",
+          "group": "6_copypath@2"
         }
       ]
     }

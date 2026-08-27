@@ -101,11 +101,13 @@ export class MyCodeTreeProvider implements vscode.TreeDataProvider<MyCodeNode>, 
   private readonly emitter = new vscode.EventEmitter<MyCodeNode | undefined>();
   private readonly subscription: vscode.Disposable;
   private graph: CurrentGraph | undefined;
+  private signature: string;
 
   public readonly onDidChangeTreeData = this.emitter.event;
 
   public constructor(private readonly registry: RepositoryRegistry) {
-    this.subscription = registry.onDidChange(() => this.invalidate());
+    this.signature = currentTreeSignature(readySnapshots(registry));
+    this.subscription = registry.onDidChange(() => this.acceptRegistryChange());
   }
 
   public getTreeItem(element: MyCodeNode): vscode.TreeItem {
@@ -147,12 +149,20 @@ export class MyCodeTreeProvider implements vscode.TreeDataProvider<MyCodeNode>, 
   }
 
   public async refresh(): Promise<void> {
+    this.signature = currentTreeSignature(readySnapshots(this.registry));
     this.invalidate();
   }
 
   public dispose(): void {
     this.subscription.dispose();
     this.emitter.dispose();
+  }
+
+  private acceptRegistryChange(): void {
+    const next = currentTreeSignature(readySnapshots(this.registry));
+    if (next === this.signature) return;
+    this.signature = next;
+    this.invalidate();
   }
 
   private invalidate(): void {
@@ -162,9 +172,8 @@ export class MyCodeTreeProvider implements vscode.TreeDataProvider<MyCodeNode>, 
 
   private currentGraph(): CurrentGraph {
     const snapshots = readySnapshots(this.registry);
-    const signature = snapshotSignature(snapshots);
-    if (this.graph?.signature === signature) return this.graph;
-    this.graph = currentGraph(signature, projectCurrentTree(snapshots));
+    if (this.graph?.signature === this.signature) return this.graph;
+    this.graph = currentGraph(this.signature, projectCurrentTree(snapshots));
     return this.graph;
   }
 
@@ -194,11 +203,13 @@ export class PastActivityTreeProvider implements vscode.TreeDataProvider<PastAct
   private readonly emitter = new vscode.EventEmitter<PastActivityNode | undefined>();
   private readonly subscription: vscode.Disposable;
   private graph: PastGraph | undefined;
+  private signature: string;
 
   public readonly onDidChangeTreeData = this.emitter.event;
 
   public constructor(private readonly registry: RepositoryRegistry) {
-    this.subscription = registry.onDidChange(() => this.invalidate());
+    this.signature = pastTreeSignature(readySnapshots(registry));
+    this.subscription = registry.onDidChange(() => this.acceptRegistryChange());
   }
 
   public getTreeItem(element: PastActivityNode): vscode.TreeItem {
@@ -221,11 +232,20 @@ export class PastActivityTreeProvider implements vscode.TreeDataProvider<PastAct
   }
 
   public async refresh(): Promise<void> {
+    this.signature = pastTreeSignature(readySnapshots(this.registry));
     this.invalidate();
   }
+
   public dispose(): void {
     this.subscription.dispose();
     this.emitter.dispose();
+  }
+
+  private acceptRegistryChange(): void {
+    const next = pastTreeSignature(readySnapshots(this.registry));
+    if (next === this.signature) return;
+    this.signature = next;
+    this.invalidate();
   }
 
   private invalidate(): void {
@@ -235,10 +255,9 @@ export class PastActivityTreeProvider implements vscode.TreeDataProvider<PastAct
 
   private currentGraph(): PastGraph {
     const snapshots = readySnapshots(this.registry);
-    const signature = snapshotSignature(snapshots);
-    if (this.graph?.signature === signature) return this.graph;
+    if (this.graph?.signature === this.signature) return this.graph;
     const roots = projectPastActivity(snapshots);
-    this.graph = { signature, roots, nodes: new Map(roots.map((node) => [node.id, node])) };
+    this.graph = { signature: this.signature, roots, nodes: new Map(roots.map((node) => [node.id, node])) };
     return this.graph;
   }
 }
@@ -282,11 +301,28 @@ function readySnapshots(registry: RepositoryRegistry): readonly RepositorySnapsh
     .filter(({ identity }) => hasConfiguredIdentity(identity));
 }
 
-function snapshotSignature(snapshots: readonly RepositorySnapshot[]): string {
-  return snapshots
-    .map(({ root, generatedAt }) => `${root}\0${generatedAt}`)
-    .sort((left, right) => left.localeCompare(right))
-    .join('\0');
+function currentTreeSignature(snapshots: readonly RepositorySnapshot[]): string {
+  return JSON.stringify([...snapshots]
+    .sort((left, right) => left.root.localeCompare(right.root))
+    .map((snapshot) => [
+      snapshot.root,
+      snapshot.files
+        .filter(isCurrent)
+        .sort(compareFiles)
+        .map(({ relativePath, kind, exists }) => [relativePath, kind, exists])
+    ]));
+}
+
+function pastTreeSignature(snapshots: readonly RepositorySnapshot[]): string {
+  return JSON.stringify([...snapshots]
+    .sort((left, right) => left.root.localeCompare(right.root))
+    .map((snapshot) => [
+      snapshot.root,
+      snapshot.files
+        .filter(({ kind }) => kind === 'past')
+        .sort(compareFiles)
+        .map(({ relativePath, exists, history }) => [relativePath, exists, Math.max(0, ...history.map(({ authoredAt }) => authoredAt))])
+    ]));
 }
 
 function currentRepository(snapshot: RepositorySnapshot): RepositoryTreeNode {

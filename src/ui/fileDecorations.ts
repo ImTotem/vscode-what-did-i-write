@@ -14,6 +14,7 @@ export class MyCodeDecorationProvider implements vscode.FileDecorationProvider, 
   private readonly pending = new Set<string>();
   private readonly subscription: vscode.Disposable;
   private enabled = true;
+  private visualFingerprint: string;
 
   public readonly onDidChangeFileDecorations = this.emitter.event;
 
@@ -21,7 +22,8 @@ export class MyCodeDecorationProvider implements vscode.FileDecorationProvider, 
     private readonly registry: RepositoryRegistry,
     private readonly onError?: (error: unknown, operation: string, path: string) => void
   ) {
-    this.subscription = registry.onDidChange(() => this.emitter.fire(undefined));
+    this.visualFingerprint = decorationFingerprint(registry);
+    this.subscription = registry.onDidChange(() => this.acceptRegistryChange());
   }
 
   public provideFileDecoration(uri: vscode.Uri): vscode.FileDecoration | undefined {
@@ -61,6 +63,13 @@ export class MyCodeDecorationProvider implements vscode.FileDecorationProvider, 
     this.subscription.dispose();
     this.emitter.dispose();
     this.pending.clear();
+  }
+
+  private acceptRegistryChange(): void {
+    const next = decorationFingerprint(this.registry);
+    if (next === this.visualFingerprint) return;
+    this.visualFingerprint = next;
+    this.emitter.fire(undefined);
   }
 
   private ensureResolved(analyzer: AnalyzerAccess, path: string, uri: vscode.Uri): void {
@@ -123,4 +132,18 @@ function workspaceRelativePath(root: string, path: string): string | undefined {
 
 function isParentTraversal(path: string): boolean {
   return path === '..' || path.startsWith(`..${sep}`);
+}
+
+function decorationFingerprint(registry: RepositoryRegistry): string {
+  return JSON.stringify(registry.repositories.flatMap((repository) => {
+    if (repository.state !== 'ready') return [];
+    const snapshot = repository.analyzer.getSnapshot();
+    if (!hasConfiguredIdentity(snapshot.identity)) return [];
+    return snapshot.files
+      .filter(({ kind }) => kind === 'added' || kind === 'modified')
+      .map(({ relativePath, kind }) => [repository.root, relativePath, kind] as const);
+  }).sort((left, right) => {
+    const byRoot = left[0].localeCompare(right[0]);
+    return byRoot !== 0 ? byRoot : left[1].localeCompare(right[1]);
+  }));
 }
