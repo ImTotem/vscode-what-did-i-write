@@ -354,6 +354,42 @@ describe('OwnershipQuickDiffController', () => {
     controller.dispose();
   });
 
+  it('retries a notified fingerprint when the content token is already cancelled', async () => {
+    const root = resolve('fixture/pre-cancelled-notification');
+    const sourcePath = resolve(root, 'current.ts');
+    const first = ownedRecord('current.ts', 0);
+    const next = ownedRecord('current.ts', 1);
+    const fixture = mutableRegistry(root, first);
+    const document = {
+      uri: mocks.Uri.file(sourcePath),
+      isDirty: false,
+      version: 1,
+      getText: () => 'zero\none\ntwo\n'
+    };
+    mocks.documents.set(sourcePath, document);
+    const controller = new OwnershipQuickDiffController(fixture.registry, snapshotState(true).access);
+    await controller.setEnabled(true);
+    const original = await controller.provideOriginalResource(
+      document.uri as unknown as vscode.Uri,
+      cancellation()
+    );
+    await controller.provideTextDocumentContent(original as vscode.Uri);
+    const refreshed: Promise<string>[] = [];
+    controller.onDidChange((uri) => refreshed.push(controller.provideTextDocumentContent(
+      uri,
+      refreshed.length === 0 ? cancellation(true) : cancellation()
+    )));
+
+    fixture.setRecord(next);
+    fixture.emit();
+    await flush();
+    await flush();
+
+    expect(refreshed).toHaveLength(2);
+    await expect(refreshed[1]).resolves.toBe('zero\ntwo\n');
+    controller.dispose();
+  });
+
   it('retries a notified fingerprint when VS Code cancels its content request', async () => {
     const root = resolve('fixture/cancelled-notification');
     const sourcePath = resolve(root, 'current.ts');

@@ -145,13 +145,17 @@ vscode.QuickDiffProvider, vscode.TextDocumentContentProvider, vscode.Disposable 
     const key = uri.toString();
     const cached = this.cachedContents.get(key);
     const generation = this.generation;
-    if (!this.isOperationCurrent(generation, token)) return cached ?? '';
+    if (!this.isOperationCurrent(generation)) return cached ?? '';
     const entry = this.findRepository(descriptor.root);
     if (!this.isRepositoryActive(entry)) return cached ?? '';
     const sourceUri = vscode.Uri.file(join(entry.root, descriptor.path));
     const tracked = this.ensureTrackedOriginal(uri, sourceUri, entry, descriptor.path);
     const materialization = ++tracked.materializationGeneration;
     const requestedFingerprint = tracked.notifiedFingerprint ?? tracked.observedFingerprint;
+    if (isCancellationRequested(token)) {
+      this.retryMaterialization(tracked, materialization, generation, entry, requestedFingerprint);
+      return cached ?? '';
+    }
     let document: vscode.TextDocument;
     try {
       document = await vscode.workspace.openTextDocument(sourceUri);
