@@ -10,6 +10,7 @@ import type { AnalyzerAccess, RepositoryRegistry } from '../extension/repository
 import type { HistoryPreview } from './historyController.js';
 const FILE_HISTORY_COMMAND = 'myCode.focusFileHistory';
 const LINE_HISTORY_COMMAND = 'myCode.focusLineHistory';
+const LINE_BACKGROUND_STATE_KEY = 'myCode.editor.lineBackground';
 const TRUSTED_HOVER_COMMANDS = [FILE_HISTORY_COMMAND, LINE_HISTORY_COMMAND] as const;
 
 export type CommandFactory = (command: string, args: readonly unknown[]) => string;
@@ -74,9 +75,11 @@ export class EditorOwnershipController implements vscode.Disposable {
 
   public constructor(
     private readonly registry: RepositoryRegistry,
-    private readonly options: EditorOwnershipOptions = {}
+    private readonly options: EditorOwnershipOptions = {},
+    private readonly state?: Pick<vscode.Memento, 'get' | 'update'>
   ) {
-    this.lineBackgroundEnabled = this.readLineBackground();
+    this.lineBackgroundEnabled = state?.get<boolean>(LINE_BACKGROUND_STATE_KEY)
+      ?? this.readLineBackground();
     this.committedDecoration = this.createDecoration(true);
     this.workingDecoration = this.createDecoration(false);
     this.subscriptions = [
@@ -118,7 +121,7 @@ export class EditorOwnershipController implements vscode.Disposable {
     if (this.disposed) return;
     if (this.enabled === enabled) {
       if (enabled) {
-        await this.applyLineBackground(this.readLineBackground(), true);
+        await this.applyLineBackground(this.lineBackgroundEnabled, true);
       }
       return;
     }
@@ -146,7 +149,11 @@ export class EditorOwnershipController implements vscode.Disposable {
       const next = !enabled;
       await this.applyLineBackground(next);
       try {
-        await configuration.update('editor.lineBackground', next, vscode.ConfigurationTarget.Workspace);
+        if (this.state === undefined) {
+          await configuration.update('editor.lineBackground', next, vscode.ConfigurationTarget.Workspace);
+        } else {
+          await this.state.update(LINE_BACKGROUND_STATE_KEY, next);
+        }
       } catch (error) {
         await this.applyLineBackground(enabled);
         throw error;
@@ -161,7 +168,9 @@ export class EditorOwnershipController implements vscode.Disposable {
   }
 
   public async acceptLineBackgroundConfigurationChange(): Promise<void> {
-    await this.applyLineBackground(this.readLineBackground());
+    const enabled = this.readLineBackground();
+    await this.applyLineBackground(enabled);
+    await this.state?.update(LINE_BACKGROUND_STATE_KEY, enabled);
   }
 
   private async applyLineBackground(enabled: boolean, force = false): Promise<void> {
@@ -172,7 +181,28 @@ export class EditorOwnershipController implements vscode.Disposable {
     this.workingDecoration.dispose();
     this.committedDecoration = this.createDecoration(true);
     this.workingDecoration = this.createDecoration(false);
-    if (this.enabled) await this.refreshVisibleEditors();
+    if (this.enabled) this.repaintVisibleEditorsFromSnapshot();
+  }
+
+  private repaintVisibleEditorsFromSnapshot(): void {
+    for (const editor of vscode.window.visibleTextEditors) {
+      const { document } = editor;
+      if (!isSourceUri(document.uri)) continue;
+      if (!this.isDocumentSnapshotCurrent(document)) {
+        this.clear(editor);
+        continue;
+      }
+      const repository = this.registry.findByUri(document.uri);
+      if (repository === undefined || repository.state !== 'ready'
+        || !hasConfiguredIdentity(repository.analyzer.getSnapshot().identity)) {
+        this.clear(editor);
+        continue;
+      }
+      const path = workspaceRelativePath(repository.root, document.uri.fsPath);
+      const record = path === undefined ? undefined : findRecord(repository.analyzer, path);
+      if (record === undefined) this.clear(editor);
+      else this.render(editor, record);
+    }
   }
 
   public dispose(): void {

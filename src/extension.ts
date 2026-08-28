@@ -39,7 +39,11 @@ export function activate(context: vscode.ExtensionContext): void {
   const decorationProvider = new MyCodeDecorationProvider(registry, reportError);
   const treeProvider = new MyCodeTreeProvider(registry);
   const pastActivityProvider = new PastActivityTreeProvider(registry);
-  const editorOwnership = new EditorOwnershipController(registry, { onError: reportError });
+  const editorOwnership = new EditorOwnershipController(
+    registry,
+    { onError: reportError },
+    context.workspaceState
+  );
   const gitContentProvider = new GitContentProvider(registry, reportError);
   const historyController = new HistoryController(registry);
   const historyTimeline = new HistoryTimelineViewProvider(historyController, reportError);

@@ -340,6 +340,45 @@ describe('EditorOwnershipController', () => {
     controller.dispose();
   });
 
+  it('persists the background override outside repository settings and repaints without analysis', async () => {
+    mocks.decorations.splice(0);
+    mocks.configuration.updates.splice(0);
+    mocks.configuration.lineBackground = false;
+    const current = record([{ start: 0, endExclusive: 1, commit: committed, uncommitted: false }]);
+    const registry = fakeRegistry(current, Promise.resolve(current));
+    const editor = editorFor(documentFor('/repo/current.ts', 2));
+    const state = workspaceState();
+    setVisibleEditors([editor]);
+    const controller = new EditorOwnershipController(registry, {}, state);
+    await controller.refreshVisibleEditors();
+    registry.entry.analyzer.ensureFile.mockClear();
+    editor.setDecorations.mockClear();
+
+    await controller.toggleLineBackground();
+
+    expect(state.update).toHaveBeenCalledWith('myCode.editor.lineBackground', true);
+    expect(mocks.configuration.updates).toEqual([]);
+    expect(registry.entry.analyzer.ensureFile).not.toHaveBeenCalled();
+    expect(editor.setDecorations.mock.calls.slice(-2).some(([, options]) =>
+      Array.isArray(options) && options.length > 0
+    )).toBe(true);
+    controller.dispose();
+  });
+
+  it('restores the workspace background override when the extension starts', () => {
+    mocks.decorations.splice(0);
+    mocks.configuration.lineBackground = false;
+    const state = workspaceState(true);
+    const registry = fakeRegistry(record([]), Promise.resolve(undefined));
+
+    const controller = new EditorOwnershipController(registry, {}, state);
+    const decorations = mocks.decorations.slice(-2);
+
+    expect(decorations[0]?.options).toHaveProperty('backgroundColor');
+    expect(decorations[1]?.options).toHaveProperty('backgroundColor');
+    controller.dispose();
+  });
+
   it('adopts external background changes while visuals are off without repainting until re-enabled', async () => {
     mocks.decorations.splice(0);
     mocks.configuration.lineBackground = false;
@@ -723,6 +762,18 @@ function setVisibleEditors(editors: readonly vscode.TextEditor[]): void {
 
 function setDirty(document: vscode.TextDocument, isDirty: boolean): void {
   (document as unknown as { isDirty: boolean }).isDirty = isDirty;
+}
+
+function workspaceState(initial?: boolean): Pick<vscode.Memento, 'get' | 'update'> & {
+  readonly update: ReturnType<typeof vi.fn>;
+} {
+  let value = initial;
+  return {
+    get: vi.fn(<T>(_key: string, fallback?: T) => (value ?? fallback) as T),
+    update: vi.fn(async (_key: string, next: unknown) => {
+      value = next as boolean;
+    })
+  };
 }
 
 function fakeRegistry(current: FileRecord, ensureResult: Promise<FileRecord | undefined>) {
