@@ -169,28 +169,36 @@ export class RefreshController {
     try {
       const fingerprint = await entry.repository.getFingerprint();
       if (this.disposed) return;
-      const previous = this.fingerprints.get(entry.root);
-      if (previous === undefined) {
+      const recorded = this.fingerprints.get(entry.root);
+      const previous = recorded ?? entry.startupFingerprint;
+      if (previous !== undefined && sameFingerprint(previous, fingerprint)) {
         this.fingerprints.set(entry.root, fingerprint);
         return;
       }
-      if (previous.head !== fingerprint.head) {
+      if (previous === undefined || previous.head !== fingerprint.head) {
         await entry.analyzer.refresh('head');
-        this.fingerprints.set(entry.root, fingerprint);
-        return;
-      }
-      if (previous.status !== fingerprint.status) {
+      } else if (previous.status !== fingerprint.status) {
         const changes = await entry.repository.getWorkingChanges();
         const paths = [...new Set(changes.flatMap(({ path, originalPath }) =>
           originalPath === undefined ? [path] : [path, originalPath]
         ))].sort();
         await entry.analyzer.refresh('working-tree', paths);
       }
-      this.fingerprints.set(entry.root, fingerprint);
+      const afterRefresh = await entry.repository.getFingerprint();
+      if (sameFingerprint(fingerprint, afterRefresh)) {
+        this.fingerprints.set(entry.root, afterRefresh);
+      }
     } catch (error) {
       this.options.onError?.(error, 'fingerprint', entry.root);
     }
   }
+}
+
+function sameFingerprint(
+  left: { readonly head: string | undefined; readonly status: string },
+  right: { readonly head: string | undefined; readonly status: string }
+): boolean {
+  return left.head === right.head && left.status === right.status;
 }
 
 function relativePath(root: string, path: string): string | undefined {

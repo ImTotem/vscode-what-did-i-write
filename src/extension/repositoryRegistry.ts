@@ -43,6 +43,7 @@ export interface RegisteredRepository {
   readonly state: RegisteredRepositoryState;
   readonly error?: unknown;
   readonly ready: boolean;
+  readonly startupFingerprint?: RepositoryFingerprint;
 }
 
 export type RegistryOperation = 'discover' | 'initialize' | 'blame';
@@ -58,6 +59,7 @@ class RepositoryLifetime implements RegisteredRepository {
   public workspaceFolders: readonly UriAccess[];
   public state: RegisteredRepositoryState = 'initializing';
   public error: unknown;
+  public startupFingerprint: RepositoryFingerprint | undefined;
   private analyzerSubscription: AnalyzerDisposable | undefined;
 
   public get ready(): boolean {
@@ -89,6 +91,10 @@ class RepositoryLifetime implements RegisteredRepository {
   public markError(error: unknown): void {
     this.state = 'error';
     this.error = error;
+  }
+
+  public setStartupFingerprint(fingerprint: RepositoryFingerprint | undefined): void {
+    this.startupFingerprint = fingerprint;
   }
 
   public dispose(): void {
@@ -207,7 +213,8 @@ export class RepositoryRegistry {
         this.lifetimes.delete(key);
       }
     }
-    const initializations: Promise<void>[] = [];
+    const stageInitializations = reinitializeErrors || waitForInitialization;
+    const initializations: Promise<InitializationOutcome>[] = [];
     for (const [key, group] of grouped) {
       const existing = this.lifetimes.get(key);
       if (existing !== undefined) {
@@ -228,26 +235,33 @@ export class RepositoryRegistry {
         () => this.emitChange()
       );
       this.lifetimes.set(key, lifetime);
-      const initialization = analyzer.initialize().then(() => analyzer.waitForIdle()).then(
-        () => {
-          if (this.lifetimes.get(key) !== lifetime) return;
-          lifetime.markReady();
-          this.emitChange();
-        },
-        (error: unknown) => {
-          if (this.lifetimes.get(key) !== lifetime) return;
-          lifetime.markError(error);
-          this.options.onError?.(error, 'initialize', lifetime.root);
-          this.emitChange();
+      const initialization = (async (): Promise<InitializationOutcome> => {
+        try {
+          try {
+            lifetime.setStartupFingerprint(await group.repository.getFingerprint());
+          } catch {
+            lifetime.setStartupFingerprint(undefined);
+          }
+          await analyzer.initialize();
+          await analyzer.waitForIdle();
+          return { ok: true, key, lifetime };
+        } catch (error) {
+          return { ok: false, key, lifetime, error };
         }
-      );
+      })();
       initializations.push(initialization);
+      if (!stageInitializations) {
+        void initialization.then((outcome) => this.applyInitialization(outcome, true));
+      }
     }
     this.discovering = false;
     this.discoveryFailed = discoveries.some((discovery) => 'failed' in discovery);
     this.emitChange();
-    if (reinitializeErrors || waitForInitialization) {
-      await Promise.allSettled(initializations);
+    if (stageInitializations) {
+      const outcomes = await Promise.all(initializations);
+      if (this.disposed || generation !== this.generation) return;
+      for (const outcome of outcomes) this.applyInitialization(outcome, false);
+      this.emitChange();
     }
   }
 
@@ -274,7 +288,23 @@ export class RepositoryRegistry {
   private emitChange(): void {
     for (const listener of this.listeners) listener();
   }
+
+  private applyInitialization(outcome: InitializationOutcome, emit: boolean): void {
+    const { key, lifetime } = outcome;
+    if (this.disposed || this.lifetimes.get(key) !== lifetime) return;
+    if (outcome.ok) {
+      lifetime.markReady();
+    } else {
+      lifetime.markError(outcome.error);
+      this.options.onError?.(outcome.error, 'initialize', lifetime.root);
+    }
+    if (emit) this.emitChange();
+  }
 }
+
+type InitializationOutcome =
+  | { readonly ok: true; readonly key: string; readonly lifetime: RepositoryLifetime }
+  | { readonly ok: false; readonly key: string; readonly lifetime: RepositoryLifetime; readonly error: unknown };
 
 function containsPath(root: string, candidate: string): boolean {
   const path = relative(normalizeFsPath(root), normalizeFsPath(candidate));

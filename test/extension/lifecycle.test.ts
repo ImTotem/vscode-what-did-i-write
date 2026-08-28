@@ -74,6 +74,42 @@ describe('RepositoryRegistry', () => {
     registry.dispose();
   });
 
+  it('publishes a multi-root startup batch only after every repository is initialized', async () => {
+    const firstRoot = join(process.cwd(), 'startup-first');
+    const secondRoot = join(process.cwd(), 'startup-second');
+    const firstInitialization = deferred<void>();
+    const secondInitialization = deferred<void>();
+    const firstAnalyzer = fakeAnalyzer(firstRoot, vi.fn(() => firstInitialization.promise));
+    const secondAnalyzer = fakeAnalyzer(secondRoot, vi.fn(() => secondInitialization.promise));
+    const repositories = new Map([
+      [firstRoot, fakeRepository(firstRoot)],
+      [secondRoot, fakeRepository(secondRoot)]
+    ]);
+    const registry = new RepositoryRegistry({
+      getWorkspaceFolders: () => [{ fsPath: firstRoot }, { fsPath: secondRoot }],
+      discover: async (path) => repositories.get(path)!,
+      createAnalyzer: (repository) => repository.root === firstRoot ? firstAnalyzer : secondAnalyzer
+    });
+    const publications: string[][] = [];
+    registry.onDidChange(() => publications.push(registry.repositories.map(({ state }) => state)));
+
+    const start = registry.start();
+    await waitUntil(() => firstAnalyzer.initialize.mock.calls.length === 1
+      && secondAnalyzer.initialize.mock.calls.length === 1);
+    firstInitialization.resolve(undefined);
+    await waitUntil(() => firstAnalyzer.waitForIdle.mock.calls.length === 1);
+    await Promise.resolve();
+
+    expect(registry.repositories.map(({ state }) => state)).toEqual(['initializing', 'initializing']);
+    expect(publications).not.toContainEqual(['ready', 'initializing']);
+
+    secondInitialization.resolve(undefined);
+    await start;
+
+    expect(registry.repositories.map(({ state }) => state)).toEqual(['ready', 'ready']);
+    registry.dispose();
+  });
+
   it('de-duplicates repository roots and disposes the final folder lifetime', async () => {
     const workspaceRoot = join(process.cwd(), 'workspace');
     const repositoryRoot = join(workspaceRoot, 'repository');
@@ -296,7 +332,7 @@ describe('RefreshController', () => {
     expect(scheduler.intervalDelay).toBe(10_000);
     await Promise.resolve();
     await Promise.resolve();
-    expect(repository.getFingerprint).toHaveBeenCalledTimes(1);
+    expect(repository.getFingerprint).toHaveBeenCalledTimes(2);
     expect(analyzer.refresh).toHaveBeenCalledTimes(1);
     expect(analyzer.refresh).toHaveBeenLastCalledWith(
       'working-tree', ['src/new.ts', 'src/same.ts']
@@ -316,6 +352,8 @@ describe('RefreshController', () => {
     repository.getFingerprint
       .mockResolvedValueOnce({ head: 'a', status: 'clean' })
       .mockResolvedValueOnce({ head: 'b', status: 'clean' })
+      .mockResolvedValueOnce({ head: 'b', status: 'clean' })
+      .mockResolvedValueOnce({ head: 'b', status: 'dirty' })
       .mockResolvedValueOnce({ head: 'b', status: 'dirty' });
     repository.getWorkingChanges.mockResolvedValue([{ status: 'M', path: 'src/changed.ts' }]);
 
@@ -334,12 +372,14 @@ describe('RefreshController', () => {
     const root = join(process.cwd(), 'repository');
     const analyzer = fakeAnalyzer(root);
     const repository = fakeRepository(root);
-    const registry = await registryWith(root, repository, analyzer);
-    const controller = new RefreshController(registry, { scheduler: new FakeScheduler() });
     repository.getFingerprint
       .mockResolvedValueOnce({ head: 'h1', status: 's1' })
+      .mockResolvedValueOnce({ head: 'h1', status: 's1' })
+      .mockResolvedValueOnce({ head: 'h2', status: 's2' })
       .mockResolvedValueOnce({ head: 'h2', status: 's2' })
       .mockResolvedValueOnce({ head: 'h2', status: 's2' });
+    const registry = await registryWith(root, repository, analyzer);
+    const controller = new RefreshController(registry, { scheduler: new FakeScheduler() });
 
     await controller.tick();
     await controller.tick();
@@ -348,6 +388,28 @@ describe('RefreshController', () => {
     expect(analyzer.refresh).toHaveBeenCalledTimes(1);
     expect(analyzer.refresh).toHaveBeenNthCalledWith(1, 'head');
     controller.dispose();
+  });
+
+  it('stabilizes startup when the repository changes after initialization begins', async () => {
+    const root = join(process.cwd(), 'startup-fingerprint-race');
+    const analyzer = fakeAnalyzer(root);
+    const repository = fakeRepository(root);
+    repository.getFingerprint
+      .mockResolvedValueOnce({ head: 'before', status: 'clean' })
+      .mockResolvedValueOnce({ head: 'after', status: 'dirty' })
+      .mockResolvedValueOnce({ head: 'after', status: 'dirty' })
+      .mockResolvedValueOnce({ head: 'after', status: 'dirty' });
+    const registry = await registryWith(root, repository, analyzer);
+    const controller = new RefreshController(registry, { scheduler: new FakeScheduler() });
+
+    await controller.tick();
+
+    expect(analyzer.refresh).toHaveBeenCalledTimes(1);
+    expect(analyzer.refresh).toHaveBeenCalledWith('head');
+    await controller.tick();
+    expect(repository.getFingerprint).toHaveBeenCalledTimes(4);
+    controller.dispose();
+    registry.dispose();
   });
 
   it('routes delete and cross-repository rename paths including dot-dot-prefixed children', async () => {
