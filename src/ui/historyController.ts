@@ -70,7 +70,17 @@ export interface CommitTimelineEntry {
   readonly parentPath?: string;
 }
 
-export type HistoryTimelineEntry = WorkingTimelineEntry | CommitTimelineEntry;
+export interface OriginalTimelineEntry {
+  readonly id: string;
+  readonly kind: 'original';
+  readonly title: string;
+  readonly detail: string;
+  readonly revision: string;
+  readonly path: string;
+  readonly exists: boolean;
+}
+
+export type HistoryTimelineEntry = WorkingTimelineEntry | CommitTimelineEntry | OriginalTimelineEntry;
 
 export interface HistoryTimelineModel {
   readonly root: string;
@@ -208,6 +218,20 @@ export class HistoryController {
         path: item.path,
         parentPath: item.parentPath
       }));
+    const oldest = commits.at(-1);
+    const originalEntry: OriginalTimelineEntry[] = zeroBasedLine !== undefined || oldest === undefined
+      ? []
+      : [{
+          id: 'original:' + oldest.commit.hash + ':' + encodeURIComponent(oldest.parentPath ?? oldest.path),
+          kind: 'original',
+          title: localize('ORIGINAL'),
+          detail: oldest.parentPath === undefined
+            ? localize('File did not exist')
+            : localize('Before your first change'),
+          revision: oldest.commit.hash + '^',
+          path: oldest.parentPath ?? oldest.path,
+          exists: oldest.parentPath !== undefined
+        }];
     const workingEntry: WorkingTimelineEntry[] = working === undefined ? [] : [{
       id: 'working',
       kind: 'working',
@@ -228,8 +252,48 @@ export class HistoryController {
       relativePath: target.path,
       mode: zeroBasedLine === undefined ? 'file' : 'line',
       ...(zeroBasedLine === undefined ? {} : { line: zeroBasedLine, commitLine }),
-      entries: [...workingEntry, ...commits]
+      entries: [...workingEntry, ...commits, ...originalEntry]
     };
+  }
+
+  public async openTimelineComparison(
+    model: HistoryTimelineModel,
+    baseId: string,
+    targetId: string
+  ): Promise<void> {
+    if (baseId === targetId) return;
+    const base = model.entries.find(({ id }) => id === baseId);
+    const target = model.entries.find(({ id }) => id === targetId);
+    if (base === undefined || target === undefined) return;
+    const sourceUri = vscode.Uri.file(model.sourcePath);
+    const activeEditor = vscode.window.activeTextEditor;
+    const sourceEditor = activeEditor?.document.uri.toString() === sourceUri.toString()
+      ? activeEditor
+      : vscode.window.visibleTextEditors
+        .find(({ document }) => document.uri.toString() === sourceUri.toString());
+    const viewColumn = sourceEditor?.viewColumn ?? activeEditor?.viewColumn;
+    const sameGroup = viewColumn === undefined ? {} : { viewColumn };
+    if (model.sourceExists) {
+      await vscode.commands.executeCommand(
+        'vscode.open',
+        sourceUri,
+        { preview: false, preserveFocus: true, ...sameGroup }
+      );
+    }
+
+    const before = timelineRevisionUri(model.root, base);
+    const after = timelineRevisionUri(model.root, target);
+    const targetPath = timelinePath(target);
+    const separator = String.fromCharCode(0xb7);
+    await vscode.commands.executeCommand(
+      'vscode.diff',
+      before,
+      after,
+      basename(targetPath) + ' ' + separator + ' ' + timelineLabel(base) + ' → ' + timelineLabel(target),
+      { preview: false, preserveFocus: false, ...sameGroup }
+    );
+    const line = target.kind === 'working' ? model.line : model.commitLine;
+    if (line !== undefined) revealLine(line, before, after);
   }
 
   public async openTimelineEntry(model: HistoryTimelineModel, id: string): Promise<void> {
@@ -269,6 +333,7 @@ export class HistoryController {
       if (line !== undefined) revealLine(line, before, after);
       return;
     }
+    if (entry.kind === 'original') return;
 
     const beforePath = entry.parentPath ?? entry.path;
     const before = revisionUri(model.root, `${entry.commit.hash}^`, beforePath);
@@ -447,6 +512,25 @@ function targetFor(entry: RegisteredRepository, absolutePath: string): ResolvedT
 
 function historyRepository(entry: RegisteredRepository): HistoryRepository {
   return entry.repository as unknown as HistoryRepository;
+}
+
+function timelineRevisionUri(root: string, entry: HistoryTimelineEntry): vscode.Uri {
+  if (entry.kind === 'working') {
+    return entry.exists
+      ? vscode.Uri.file(join(root, entry.workingPath))
+      : revisionUri(root, EMPTY_REVISION, entry.workingPath);
+  }
+  return revisionUri(root, entry.kind === 'commit' ? entry.commit.hash : entry.revision, entry.path);
+}
+
+function timelinePath(entry: HistoryTimelineEntry): string {
+  return entry.kind === 'working' ? entry.workingPath : entry.path;
+}
+
+function timelineLabel(entry: HistoryTimelineEntry): string {
+  if (entry.kind === 'working') return localize('Working changes');
+  if (entry.kind === 'original') return localize('ORIGINAL');
+  return entry.commit.hash.slice(0, 7);
 }
 
 async function currentChangeItem(

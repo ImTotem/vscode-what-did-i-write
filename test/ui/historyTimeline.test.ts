@@ -39,6 +39,22 @@ describe('renderTimelineHtml', () => {
     expect(html).not.toContain('<script>alert(1)</script>');
   });
 
+  it('renders file comparison guidance, an ORIGINAL state, and the selected BASE entry', () => {
+    const html = renderTimelineHtml(
+      { kind: 'ready', model: fileTimelineModel(), baseId: 'commit:older' },
+      'nonce-1',
+      'vscode-resource:'
+    );
+
+    expect(html).toContain('Right-click a history entry to set it as BASE');
+    expect(html).toContain('Set as comparison base');
+    expect(html).toContain('role="menu"');
+    expect(html).toContain('ORIGINAL');
+    expect(html).toContain('Before your first change');
+    expect(html).toContain('BASE');
+    expect(html).toContain('entry base');
+  });
+
   it('renders explicit loading, empty, and error states', () => {
     expect(renderTimelineHtml({ kind: 'loading' }, 'n', 'vscode-resource:')).toContain('Loading history');
     expect(renderTimelineHtml({ kind: 'empty', path: 'src/empty.ts' }, 'n', 'vscode-resource:')).toContain('No matching commits');
@@ -267,6 +283,38 @@ describe('HistoryTimelineViewProvider', () => {
     provider.dispose();
   });
 
+  it('requires a right-click BASE before a file-history click opens a direct comparison', async () => {
+    const model = fileTimelineModel();
+    const history = {
+      getTimeline: vi.fn(async () => model),
+      openTimelineEntry: vi.fn(async () => undefined),
+      openTimelineComparison: vi.fn(async () => undefined)
+    };
+    const provider = new HistoryTimelineViewProvider(history);
+    const view = fakeView();
+    provider.resolveWebviewView(view.value);
+    await provider.focus('C:/repo/src/time.h');
+
+    view.receive({ type: 'select', id: 'commit:newest' });
+    await flush();
+    expect(history.openTimelineEntry).not.toHaveBeenCalled();
+    expect(history.openTimelineComparison).not.toHaveBeenCalled();
+
+    view.receive({ type: 'setBase', id: 'commit:older' });
+    await flush();
+    expect(view.webview.html).toContain('entry base');
+    expect(view.webview.html).toContain('BASE');
+
+    view.receive({ type: 'select', id: 'working' });
+    await flush();
+    expect(history.openTimelineComparison).toHaveBeenCalledWith(
+      model,
+      'commit:older',
+      'working'
+    );
+    provider.dispose();
+  });
+
   it('does not let an older async refresh overwrite the newest target', async () => {
     const first = deferred<HistoryTimelineModel | undefined>();
     const second = deferred<HistoryTimelineModel | undefined>();
@@ -401,6 +449,26 @@ function timelineModel(): HistoryTimelineModel {
       {
         id: 'commit:older', kind: 'commit', title: older.subject, relativeDate: '1 day ago',
         authoredAt: older.authoredAt, latest: false, commit: older, path: 'src/time.h', parentPath: 'src/time.h'
+      }
+    ]
+  };
+}
+
+function fileTimelineModel(): HistoryTimelineModel {
+  const { line: _line, commitLine: _commitLine, ...model } = timelineModel();
+  return {
+    ...model,
+    mode: 'file',
+    entries: [
+      ...model.entries,
+      {
+        id: 'original:oldest',
+        kind: 'original',
+        title: 'ORIGINAL',
+        detail: 'Before your first change',
+        revision: 'aaaaaaa11111111^',
+        path: 'src/time.h',
+        exists: true
       }
     ]
   };

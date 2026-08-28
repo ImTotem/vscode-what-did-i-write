@@ -201,13 +201,44 @@ describe('history timeline model', () => {
       relativePath: 'src/new name.ts',
       mode: 'file'
     });
-    expect(model?.entries.map(({ kind }) => kind)).toEqual(['working', 'commit', 'commit']);
-    expect(model?.entries.slice(1).map((entry) => entry.kind === 'commit' && entry.commit.hash)).toEqual([
+    expect(model?.entries.map(({ kind }) => kind)).toEqual(['working', 'commit', 'commit', 'original']);
+    expect(model?.entries.slice(1, 3).map((entry) => entry.kind === 'commit' && entry.commit.hash)).toEqual([
       newestByName.hash,
       mine.hash
     ]);
     expect(model?.entries[1]).toMatchObject({ kind: 'commit', latest: true, path: 'src/new name.ts' });
     expect(model?.entries[2]).toMatchObject({ kind: 'commit', latest: false, parentPath: 'src/older name.ts' });
+    expect(model?.entries[3]).toMatchObject({
+      kind: 'original',
+      title: 'ORIGINAL',
+      detail: 'Before your first change',
+      revision: mine.hash + '^',
+      path: 'src/older name.ts',
+      exists: true
+    });
+  });
+
+  it('uses an empty ORIGINAL state when my oldest commit added the file', async () => {
+    const repository = {
+      getFileHistoryEntries: vi.fn(async () => [
+        { commit: mine, path: 'src/created.ts', parentPath: undefined }
+      ]),
+      getFileHistory: vi.fn(async () => []),
+      getLineHistory: vi.fn(async () => []),
+      getWorkingChanges: vi.fn(async () => [])
+    };
+    const controller = new HistoryController(registryWith(repository, 'src/created.ts'));
+
+    const model = await controller.getTimeline(join(ROOT, 'src/created.ts'));
+
+    expect(model?.entries.at(-1)).toMatchObject({
+      kind: 'original',
+      title: 'ORIGINAL',
+      detail: 'File did not exist',
+      revision: mine.hash + '^',
+      path: 'src/created.ts',
+      exists: false
+    });
   });
 
   it('builds line history from the mapped HEAD coordinate', async () => {
@@ -287,6 +318,72 @@ describe('history timeline model', () => {
       expectRevision('bbbbbbb22222222', 'src/time.h'),
       'time.h ' + String.fromCharCode(0xb7) + ' bbbbbbb',
       { preview: false, preserveFocus: false, viewColumn: 3 }
+    );
+  });
+
+  it('compares the selected base commit directly with another commit instead of its parent', async () => {
+    const newest = commit('ccccccc33333333', 'Me', 'me@example.com', 1_700_000_200, 'Newest');
+    const repository = {
+      getFileHistoryEntries: vi.fn(async () => [
+        { commit: newest, path: 'src/new name.ts', parentPath: 'src/old name.ts' },
+        { commit: mine, path: 'src/old name.ts', parentPath: 'src/older name.ts' }
+      ]),
+      getFileHistory: vi.fn(async () => []),
+      getLineHistory: vi.fn(async () => []),
+      getWorkingChanges: vi.fn(async () => [])
+    };
+    const controller = new HistoryController(registryWith(repository, 'src/new name.ts'));
+    const source = join(ROOT, 'src/new name.ts');
+    const model = await controller.getTimeline(source);
+    const commits = model?.entries.filter((entry) => entry.kind === 'commit');
+    if (model === undefined || commits?.length !== 2) throw new Error('timeline commits missing');
+    mocks.executeCommand.mockClear();
+    mocks.activeTextEditor.document.uri = mocks.Uri.file(source);
+    mocks.activeTextEditor.viewColumn = 3;
+
+    await controller.openTimelineComparison(model, commits[1]!.id, commits[0]!.id);
+
+    expect(mocks.executeCommand).toHaveBeenNthCalledWith(
+      1,
+      'vscode.open',
+      mocks.Uri.file(source),
+      { preview: false, preserveFocus: true, viewColumn: 3 }
+    );
+    expect(mocks.executeCommand).toHaveBeenNthCalledWith(
+      2,
+      'vscode.diff',
+      expectRevision(mine.hash, 'src/old name.ts'),
+      expectRevision(newest.hash, 'src/new name.ts'),
+      'new name.ts ' + String.fromCharCode(0xb7) + ' bbbbbbb → ccccccc',
+      { preview: false, preserveFocus: false, viewColumn: 3 }
+    );
+  });
+
+  it('compares a commit base with current working changes', async () => {
+    const repository = {
+      getFileHistoryEntries: vi.fn(async () => [
+        { commit: mine, path: 'src/time.h', parentPath: 'src/time.h' }
+      ]),
+      getFileHistory: vi.fn(async () => []),
+      getLineHistory: vi.fn(async () => []),
+      getWorkingChanges: vi.fn(async () => [{ status: '.M', path: 'src/time.h' }])
+    };
+    const controller = new HistoryController(registryWith(repository, 'src/time.h'));
+    const source = join(ROOT, 'src/time.h');
+    const model = await controller.getTimeline(source);
+    const base = model?.entries.find((entry) => entry.kind === 'commit');
+    if (model === undefined || base === undefined) throw new Error('timeline base missing');
+    mocks.executeCommand.mockClear();
+
+    await controller.openTimelineComparison(model, base.id, 'working');
+
+    expect(mocks.executeCommand).toHaveBeenNthCalledWith(
+      2,
+      'vscode.diff',
+      expectRevision(mine.hash, 'src/time.h'),
+      mocks.Uri.file(source),
+      'time.h ' + String.fromCharCode(0xb7) + ' bbbbbbb → Working changes',
+      { preview: false, preserveFocus: false, viewColumn: 2 }
     );
   });
 });
