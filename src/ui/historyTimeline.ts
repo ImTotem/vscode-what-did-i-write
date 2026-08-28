@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { resolve } from 'node:path';
 
 import * as vscode from 'vscode';
 
@@ -92,6 +93,9 @@ export class HistoryTimelineViewProvider implements vscode.WebviewViewProvider, 
 
   public followEditor(editor: vscode.TextEditor | undefined): void {
     if (this.disposed || editor?.document.uri.scheme !== 'file') return;
+    if (this.model !== undefined && sameFilePath(this.model.sourcePath, editor.document.uri.fsPath)) {
+      return;
+    }
     this.target = editor.document.uri.fsPath;
     this.line = undefined;
     this.model = undefined;
@@ -167,7 +171,7 @@ export class HistoryTimelineViewProvider implements vscode.WebviewViewProvider, 
       const entry = model.entries.find(({ id }) => id === message.id);
       if (model.mode !== 'file' || entry === undefined || entry.kind === 'working') return;
       this.baseId = entry.id;
-      this.render({ kind: 'ready', model, baseId: this.baseId });
+      await this.view?.webview.postMessage({ type: 'setBase', id: this.baseId });
       return;
     }
     if (!isSelectionMessage(message)) return;
@@ -293,6 +297,7 @@ export function renderTimelineHtml(
     .working button.card { background: var(--vscode-editor-inactiveSelectionBackground); }
     .badge { background: color-mix(in srgb, var(--vscode-charts-green) 18%, transparent); border-radius: 8px; color: var(--vscode-charts-green); display: inline-block; font-size: 9px; font-weight: 800; margin-left: 5px; padding: 1px 5px; }
     .base-badge { background: color-mix(in srgb, var(--vscode-focusBorder) 22%, transparent); color: var(--vscode-focusBorder); }
+    .base-badge[hidden] { display: none; }
     .title { display: block; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
     .meta, .author { color: var(--vscode-descriptionForeground); display: block; font-size: 11px; line-height: 1.35; margin-top: 3px; overflow-wrap: anywhere; }
     .context-menu { background: var(--vscode-menu-background); border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border)); box-shadow: 0 2px 8px var(--vscode-widget-shadow); min-width: 170px; padding: 3px; position: fixed; z-index: 10; }
@@ -309,6 +314,16 @@ export function renderTimelineHtml(
     const menu = document.getElementById('comparison-menu');
     const positionSheet = document.getElementById('context-menu-position');
     let contextEntryId;
+    const applyBase = (id) => {
+      document.querySelectorAll('[data-entry-id]').forEach((button) => {
+        const entry = button.closest('.entry');
+        if (!entry) return;
+        const selected = button instanceof HTMLElement && button.dataset.entryId === id;
+        entry.classList.toggle('base', selected);
+        const badge = button.querySelector('[data-base-badge]');
+        if (badge instanceof HTMLElement) badge.hidden = !selected;
+      });
+    };
     const hideMenu = () => {
       if (menu) menu.hidden = true;
       contextEntryId = undefined;
@@ -336,6 +351,7 @@ export function renderTimelineHtml(
     document.addEventListener('click', (event) => {
       const action = event.target instanceof Element ? event.target.closest('[data-action="set-base"]') : null;
       if (action && contextEntryId) {
+        applyBase(contextEntryId);
         vscode.postMessage({ type: 'setBase', id: contextEntryId });
         hideMenu();
         return;
@@ -348,6 +364,11 @@ export function renderTimelineHtml(
     });
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape') hideMenu();
+    });
+    window.addEventListener('message', (event) => {
+      if (event.data && event.data.type === 'setBase' && typeof event.data.id === 'string') {
+        applyBase(event.data.id);
+      }
     });
   </script>
 </body>
@@ -381,7 +402,7 @@ function renderModel(model: HistoryTimelineModel, baseId?: string, refreshing = 
   const commitMarkup = commits.map((entry) => `
     <li class="entry${entry.latest ? ' latest' : ''}${entry.id === baseId ? ' base' : ''}">
       <button class="card" type="button" data-entry-id="${escapeHtml(entry.id)}" data-entry-kind="commit">
-        <span class="title">${escapeHtml(entry.title)}${entry.latest ? `<span class="badge">${escapeHtml(localize('LATEST'))}</span>` : ''}${entry.id === baseId ? `<span class="badge base-badge">${escapeHtml(localize('BASE'))}</span>` : ''}</span>
+        <span class="title">${escapeHtml(entry.title)}${entry.latest ? `<span class="badge">${escapeHtml(localize('LATEST'))}</span>` : ''}<span class="badge base-badge" data-base-badge${entry.id === baseId ? '' : ' hidden'}>${escapeHtml(localize('BASE'))}</span></span>
         <span class="meta">${escapeHtml(entry.commit.hash.slice(0, 7))} | ${escapeHtml(entry.relativeDate)} | ${escapeHtml(formatDateTime(entry.authoredAt))}</span>
         <span class="author">${escapeHtml(entry.commit.authorName)} &lt;${escapeHtml(entry.commit.authorEmail)}&gt;</span>
       </button>
@@ -389,7 +410,7 @@ function renderModel(model: HistoryTimelineModel, baseId?: string, refreshing = 
   const originalMarkup = original === undefined ? '' : `
     <li class="entry original${original.id === baseId ? ' base' : ''}">
       <button class="card" type="button" data-entry-id="${escapeHtml(original.id)}" data-entry-kind="original">
-        <span class="title">${escapeHtml(original.title)}${original.id === baseId ? `<span class="badge base-badge">${escapeHtml(localize('BASE'))}</span>` : ''}</span>
+        <span class="title">${escapeHtml(original.title)}<span class="badge base-badge" data-base-badge${original.id === baseId ? '' : ' hidden'}>${escapeHtml(localize('BASE'))}</span></span>
         <span class="meta">${escapeHtml(original.detail)}</span>
       </button>
     </li>`;
@@ -439,6 +460,14 @@ function isBaseMessage(value: unknown): value is { readonly type: 'setBase'; rea
   if (typeof value !== 'object' || value === null) return false;
   const candidate = value as { readonly type?: unknown; readonly id?: unknown };
   return candidate.type === 'setBase' && typeof candidate.id === 'string';
+}
+
+function sameFilePath(left: string, right: string): boolean {
+  const normalizedLeft = resolve(left);
+  const normalizedRight = resolve(right);
+  return process.platform === 'win32'
+    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
+    : normalizedLeft === normalizedRight;
 }
 
 function targetLabel(value: unknown): string {

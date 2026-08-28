@@ -53,6 +53,8 @@ describe('renderTimelineHtml', () => {
     expect(html).toContain('Before your first change');
     expect(html).toContain('BASE');
     expect(html).toContain('entry base');
+    expect(html).toContain('data-base-badge');
+    expect(html).toContain("window.addEventListener('message'");
   });
 
   it('positions the comparison menu through the nonce-authorized stylesheet instead of inline styles', () => {
@@ -336,8 +338,16 @@ describe('HistoryTimelineViewProvider', () => {
 
     view.receive({ type: 'setBase', id: 'commit:older' });
     await flush();
-    expect(view.webview.html).toContain('entry base');
-    expect(view.webview.html).toContain('BASE');
+    const htmlAfterBase = view.webview.html;
+    expect(view.webview.postMessage).toHaveBeenCalledWith({
+      type: 'setBase', id: 'commit:older'
+    });
+
+    history.getTimeline.mockClear();
+    provider.followEditor(editor('file', model.sourcePath));
+    await flush();
+    expect(history.getTimeline).not.toHaveBeenCalled();
+    expect(view.webview.html).toBe(htmlAfterBase);
 
     view.receive({ type: 'select', id: 'working' });
     await flush();
@@ -549,6 +559,7 @@ function fakeView(initiallyVisible = true) {
     },
     options: {} as vscode.WebviewOptions,
     cspSource: 'vscode-resource:',
+    postMessage: vi.fn(async () => true),
     onDidReceiveMessage: (next: (message: unknown) => unknown) => {
       listener = next;
       return { dispose: () => { listener = undefined; } };
