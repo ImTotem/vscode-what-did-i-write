@@ -48,8 +48,13 @@ export function activate(context: vscode.ExtensionContext): void {
     editorOwnership,
     reportError
   );
+  const withMyCodeProgress = <T>(task: () => Promise<T>): Promise<T> =>
+    Promise.resolve(vscode.window.withProgress(
+      { location: { viewId: 'myCode.explorer' } },
+      () => task()
+    ));
   let fullRefreshes = 0;
-  const refreshAllViews = async (): Promise<void> => {
+  const refreshAllViews = (): Promise<void> => withMyCodeProgress(async () => {
     fullRefreshes += 1;
     try {
       await refreshController.refreshAll();
@@ -59,7 +64,7 @@ export function activate(context: vscode.ExtensionContext): void {
     } finally {
       fullRefreshes -= 1;
     }
-  };
+  });
   let myChangesView: vscode.TreeView<MyCodeNode>;
   const fileActions = new MyCodeFileActions({
     selection: () => myChangesView.selection,
@@ -292,9 +297,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
   refreshController.setFocused(vscode.window.state.focused);
   historyTimeline.followEditor(vscode.window.activeTextEditor);
-  void registry
-    .start()
-    .then(refreshFingerprintsWhenFocused)
+  void withMyCodeProgress(async () => {
+    await registry.start();
+    await refreshFingerprintsWhenFocused();
+  })
     .catch((error: unknown) => reportError(error, 'start', 'workspace'));
 }
 

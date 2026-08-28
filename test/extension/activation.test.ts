@@ -16,12 +16,17 @@ const mocks = vi.hoisted(() => {
   const codeActionProviders: Array<{ selector: unknown; provider: unknown; metadata: unknown }> = [];
   const webviewViewIds: string[] = [];
   const hoverProviders: Array<{ selector: unknown; provider: unknown }> = [];
+  const progressOptions: unknown[] = [];
   const commandHandlers = new Map<string, (...args: unknown[]) => unknown>();
   const disposable = () => ({ dispose: vi.fn() });
   const output = { appendLine: vi.fn(), show: vi.fn(), dispose: vi.fn() };
   const status = { text: '', show: vi.fn(), dispose: vi.fn() };
   const showQuickPick = vi.fn<(items: unknown[]) => Promise<unknown>>();
   const executeCommand = vi.fn(async () => undefined);
+  const withProgress = vi.fn(async (options: unknown, task: () => Promise<unknown>) => {
+    progressOptions.push(options);
+    return task();
+  });
   const treeView = {
     selection: [] as unknown[],
     reveal: vi.fn(async () => undefined),
@@ -46,9 +51,11 @@ const mocks = vi.hoisted(() => {
     codeActionProviders,
     webviewViewIds,
     hoverProviders,
+    progressOptions,
     commandHandlers,
     showQuickPick,
     executeCommand,
+    withProgress,
     disposable,
     output,
     status,
@@ -87,6 +94,7 @@ vi.mock('vscode', () => ({
   window: {
     state: { focused: false },
     visibleTextEditors: [],
+    withProgress: mocks.withProgress,
     createTextEditorDecorationType: () => mocks.disposable(),
     createOutputChannel: vi.fn((name: string) => {
       mocks.outputChannelNames.push(name);
@@ -277,6 +285,9 @@ describe('extension activation', () => {
     expect(rename).toHaveBeenCalledWith(fresh);
 
     await flushActivation();
+    expect(mocks.progressOptions).toEqual([
+      { location: { viewId: 'myCode.explorer' } }
+    ]);
     expect(scheduleHistoryRefresh).toHaveBeenCalled();
     expect(refreshHistory).not.toHaveBeenCalled();
     refreshAll.mockClear();
@@ -286,6 +297,10 @@ describe('extension activation', () => {
     refreshPast.mockClear();
     const refreshHandler = mocks.commandHandlers.get('myCode.refresh');
     await Promise.resolve(refreshHandler?.());
+    expect(mocks.progressOptions).toEqual([
+      { location: { viewId: 'myCode.explorer' } },
+      { location: { viewId: 'myCode.explorer' } }
+    ]);
     expect(refreshAll).toHaveBeenCalledTimes(1);
     expect(refreshHistory).toHaveBeenCalledTimes(1);
     expect(refreshCurrent).toHaveBeenCalledTimes(1);
