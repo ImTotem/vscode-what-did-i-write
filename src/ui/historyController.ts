@@ -290,7 +290,7 @@ export class HistoryController {
       before,
       after,
       basename(targetPath) + ' ' + separator + ' ' + timelineLabel(base) + ' → ' + timelineLabel(target),
-      { preview: false, preserveFocus: false, ...sameGroup }
+      { preview: true, preserveFocus: false, ...sameGroup }
     );
     const line = target.kind === 'working' ? model.line : model.commitLine;
     if (line !== undefined) revealLine(line, before, after);

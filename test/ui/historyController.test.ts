@@ -355,7 +355,7 @@ describe('history timeline model', () => {
       expectRevision(mine.hash, 'src/old name.ts'),
       expectRevision(newest.hash, 'src/new name.ts'),
       'new name.ts ' + String.fromCharCode(0xb7) + ' bbbbbbb → ccccccc',
-      { preview: false, preserveFocus: false, viewColumn: 3 }
+      { preview: true, preserveFocus: false, viewColumn: 3 }
     );
   });
 
@@ -383,7 +383,7 @@ describe('history timeline model', () => {
       expectRevision(mine.hash, 'src/time.h'),
       mocks.Uri.file(source),
       'time.h ' + String.fromCharCode(0xb7) + ' bbbbbbb → Working changes',
-      { preview: false, preserveFocus: false, viewColumn: 2 }
+      { preview: true, preserveFocus: false, viewColumn: 2 }
     );
   });
 });
