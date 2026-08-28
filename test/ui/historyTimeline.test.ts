@@ -47,6 +47,7 @@ describe('renderTimelineHtml', () => {
     );
 
     expect(html).toContain('Right-click a history entry to set it as BASE');
+    expect(html).toContain('Right-click the BASE again to clear it');
     expect(html).not.toContain('Set as comparison base');
     expect(html).not.toContain('role="menu"');
     expect(html).toContain("vscode.postMessage({ type: 'setBase', id: target.dataset.entryId })");
@@ -69,6 +70,7 @@ describe('renderTimelineHtml', () => {
     expect(html).not.toContain('id="context-menu-position"');
     expect(html).not.toContain('comparison-menu');
     expect(html).not.toContain('data-action="set-base"');
+    expect(html).toContain("applyBase(typeof event.data.id === 'string' ? event.data.id : undefined)");
   });
 
   it('renders explicit loading, empty, and error states', () => {
@@ -355,6 +357,34 @@ describe('HistoryTimelineViewProvider', () => {
       'commit:older',
       'working'
     );
+    provider.dispose();
+  });
+
+  it('clears the comparison base when the same history entry is right-clicked again', async () => {
+    const model = fileTimelineModel();
+    const history = {
+      getTimeline: vi.fn(async () => model),
+      openTimelineEntry: vi.fn(async () => undefined),
+      openTimelineComparison: vi.fn(async () => undefined)
+    };
+    const provider = new HistoryTimelineViewProvider(history);
+    const view = fakeView();
+    provider.resolveWebviewView(view.value);
+    await provider.focus('C:/repo/src/time.h');
+
+    view.receive({ type: 'setBase', id: 'commit:older' });
+    await flush();
+    view.receive({ type: 'setBase', id: 'commit:older' });
+    await flush();
+
+    expect(view.webview.postMessage.mock.calls.slice(-2)).toEqual([
+      [{ type: 'setBase', id: 'commit:older' }],
+      [{ type: 'setBase' }]
+    ]);
+
+    view.receive({ type: 'select', id: 'working' });
+    await flush();
+    expect(history.openTimelineComparison).not.toHaveBeenCalled();
     provider.dispose();
   });
 

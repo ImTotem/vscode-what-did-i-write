@@ -170,8 +170,10 @@ export class HistoryTimelineViewProvider implements vscode.WebviewViewProvider, 
     if (isBaseMessage(message)) {
       const entry = model.entries.find(({ id }) => id === message.id);
       if (model.mode !== 'file' || entry === undefined || entry.kind === 'working') return;
-      this.baseId = entry.id;
-      await this.view?.webview.postMessage({ type: 'setBase', id: this.baseId });
+      this.baseId = this.baseId === entry.id ? undefined : entry.id;
+      await this.view?.webview.postMessage(this.baseId === undefined
+        ? { type: 'setBase' }
+        : { type: 'setBase', id: this.baseId });
       return;
     }
     if (!isSelectionMessage(message)) return;
@@ -331,8 +333,8 @@ export function renderTimelineHtml(
       }
     });
     window.addEventListener('message', (event) => {
-      if (event.data && event.data.type === 'setBase' && typeof event.data.id === 'string') {
-        applyBase(event.data.id);
+      if (event.data && event.data.type === 'setBase') {
+        applyBase(typeof event.data.id === 'string' ? event.data.id : undefined);
       }
     });
   </script>
@@ -380,7 +382,7 @@ function renderModel(model: HistoryTimelineModel, baseId?: string, refreshing = 
       </button>
     </li>`;
   const comparisonHint = model.mode === 'file'
-    ? `<div class="comparison-hint">${escapeHtml(localize('Right-click a history entry to set it as BASE, then click another entry to compare.'))}</div>`
+    ? `<div class="comparison-hint">${escapeHtml(localize('Right-click a history entry to set it as BASE, then click another entry to compare. Right-click the BASE again to clear it.'))}</div>`
     : '';
   const refreshingMarkup = refreshing
     ? `<div class="refreshing">${escapeHtml(localize('Refreshing history...'))}</div>`

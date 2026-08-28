@@ -89,7 +89,7 @@
   "Repository roots cannot be empty.": "Repository roots cannot be empty.",
   "reveal in Explorer": "reveal in Explorer",
   "reveal in operating system": "reveal in operating system",
-  "Right-click a history entry to set it as BASE, then click another entry to compare.": "Right-click a history entry to set it as BASE, then click another entry to compare.",
+  "Right-click a history entry to set it as BASE, then click another entry to compare. Right-click the BASE again to clear it.": "Right-click a history entry to set it as BASE, then click another entry to compare. Right-click the BASE again to clear it.",
   "show decorations": "show decorations",
   "Show File History": "Show File History",
   "That history item is no longer available. Refresh and try again.": "That history item is no longer available. Refresh and try again.",
