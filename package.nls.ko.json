@@ -10,7 +10,6 @@
   "command.showFileHistory": "파일 히스토리 보기",
   "command.showLineHistory": "줄 히스토리 보기",
   "command.toggleLineBackground": "줄 배경 전환",
-  "command.expandAll": "모두 펼치기",
   "command.collapseAll": "모두 접기",
   "command.hideDecorations": "내 코드 표시 숨기기",
   "command.showDecorations": "내 코드 표시 보이기",

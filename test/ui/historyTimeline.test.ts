@@ -47,8 +47,9 @@ describe('renderTimelineHtml', () => {
     );
 
     expect(html).toContain('Right-click a history entry to set it as BASE');
-    expect(html).toContain('Set as comparison base');
-    expect(html).toContain('role="menu"');
+    expect(html).not.toContain('Set as comparison base');
+    expect(html).not.toContain('role="menu"');
+    expect(html).toContain("vscode.postMessage({ type: 'setBase', id: target.dataset.entryId })");
     expect(html).toContain('ORIGINAL');
     expect(html).toContain('Before your first change');
     expect(html).toContain('BASE');
@@ -57,19 +58,17 @@ describe('renderTimelineHtml', () => {
     expect(html).toContain("window.addEventListener('message'");
   });
 
-  it('positions the comparison menu through the nonce-authorized stylesheet instead of inline styles', () => {
+  it('sets a comparison base directly on right-click without rendering a second menu', () => {
     const html = renderTimelineHtml(
       { kind: 'ready', model: fileTimelineModel() },
       'nonce-1',
       'vscode-resource:'
     );
 
-    expect(html).toContain('id="context-menu-position"');
-    expect(html).toContain('positionSheet.sheet.cssRules[0]');
-    expect(html).toContain('window.innerWidth - bounds.width');
-    expect(html).toContain('window.innerHeight - bounds.height');
-    expect(html).not.toContain('menu.style.left');
-    expect(html).not.toContain('menu.style.top');
+    expect(html).toContain("document.addEventListener('contextmenu'");
+    expect(html).not.toContain('id="context-menu-position"');
+    expect(html).not.toContain('comparison-menu');
+    expect(html).not.toContain('data-action="set-base"');
   });
 
   it('renders explicit loading, empty, and error states', () => {

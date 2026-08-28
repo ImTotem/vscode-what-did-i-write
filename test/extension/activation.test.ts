@@ -171,7 +171,6 @@ describe('extension activation', () => {
     const resolvePastNode = vi.spyOn(PastActivityTreeProvider.prototype, 'resolveNode');
     const focusHistory = vi.spyOn(HistoryTimelineViewProvider.prototype, 'focus').mockResolvedValue(undefined);
     const rename = vi.spyOn(MyCodeFileActions.prototype, 'rename').mockResolvedValue(undefined);
-    const expandAll = vi.spyOn(MyCodeViewController.prototype, 'expandAll').mockResolvedValue(undefined);
     const collapseAll = vi.spyOn(MyCodeViewController.prototype, 'collapseAll').mockResolvedValue(undefined);
     const toggleVisuals = vi.spyOn(VisualModeController.prototype, 'setEnabled').mockResolvedValue(undefined);
     const acceptVisualConfiguration = vi.spyOn(VisualModeController.prototype, 'acceptConfigurationChange').mockResolvedValue(undefined);
@@ -195,7 +194,6 @@ describe('extension activation', () => {
       'myCode.showLineHistory',
       'myCode.openCommitDiff',
       'myCode.openWorkingTreeDiff',
-      'myCode.expandAll',
       'myCode.collapseAll',
       'myCode.hideDecorations',
       'myCode.showDecorations',
@@ -262,10 +260,8 @@ describe('extension activation', () => {
     expect(resolveNode).toHaveBeenCalledWith(staleHistoryFile.id);
     expect(focusHistory).toHaveBeenCalledWith(freshHistoryFile, undefined);
 
-    await Promise.resolve(mocks.commandHandlers.get('myCode.expandAll')?.());
     await Promise.resolve(mocks.commandHandlers.get('myCode.collapseAll')?.());
     await Promise.resolve(mocks.commandHandlers.get('myCode.hideDecorations')?.());
-    expect(expandAll).toHaveBeenCalledTimes(1);
     expect(collapseAll).toHaveBeenCalledTimes(1);
     expect(toggleVisuals).toHaveBeenCalledWith(false);
 
@@ -324,7 +320,6 @@ describe('extension activation', () => {
     resolvePastNode.mockRestore();
     focusHistory.mockRestore();
     rename.mockRestore();
-    expandAll.mockRestore();
     collapseAll.mockRestore();
     toggleVisuals.mockRestore();
     acceptVisualConfiguration.mockRestore();

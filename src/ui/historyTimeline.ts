@@ -300,20 +300,12 @@ export function renderTimelineHtml(
     .base-badge[hidden] { display: none; }
     .title { display: block; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
     .meta, .author { color: var(--vscode-descriptionForeground); display: block; font-size: 11px; line-height: 1.35; margin-top: 3px; overflow-wrap: anywhere; }
-    .context-menu { background: var(--vscode-menu-background); border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border)); box-shadow: 0 2px 8px var(--vscode-widget-shadow); min-width: 170px; padding: 3px; position: fixed; z-index: 10; }
-    .context-menu[hidden] { display: none; }
-    .context-menu button { background: transparent; border: 0; color: var(--vscode-menu-foreground); cursor: pointer; font: inherit; padding: 5px 8px; text-align: left; width: 100%; }
-    .context-menu button:hover { background: var(--vscode-menu-selectionBackground); color: var(--vscode-menu-selectionForeground); }
   </style>
-  <style id="context-menu-position" nonce="${safeNonce}">.context-menu { left: 0; top: 0; }</style>
 </head>
 <body>${body}
   <script nonce="${safeNonce}">
     const vscode = acquireVsCodeApi();
     const comparisonMode = ${comparisonMode ? 'true' : 'false'};
-    const menu = document.getElementById('comparison-menu');
-    const positionSheet = document.getElementById('context-menu-position');
-    let contextEntryId;
     const applyBase = (id) => {
       document.querySelectorAll('[data-entry-id]').forEach((button) => {
         const entry = button.closest('.entry');
@@ -324,46 +316,19 @@ export function renderTimelineHtml(
         if (badge instanceof HTMLElement) badge.hidden = !selected;
       });
     };
-    const hideMenu = () => {
-      if (menu) menu.hidden = true;
-      contextEntryId = undefined;
-    };
     document.addEventListener('contextmenu', (event) => {
       if (!comparisonMode) return;
       const target = event.target instanceof Element ? event.target.closest('[data-entry-id]') : null;
       if (!(target instanceof HTMLElement) || !target.dataset.entryId || target.dataset.entryKind === 'working') return;
       event.preventDefault();
-      contextEntryId = target.dataset.entryId;
-      if (menu) {
-        menu.hidden = false;
-        const bounds = menu.getBoundingClientRect();
-        const left = Math.max(0, Math.min(event.clientX, window.innerWidth - bounds.width));
-        const top = Math.max(0, Math.min(event.clientY, window.innerHeight - bounds.height));
-        const positionRule = positionSheet && positionSheet.sheet
-          ? positionSheet.sheet.cssRules[0]
-          : undefined;
-        if (positionRule && 'style' in positionRule) {
-          positionRule.style.left = left + 'px';
-          positionRule.style.top = top + 'px';
-        }
-      }
+      applyBase(target.dataset.entryId);
+      vscode.postMessage({ type: 'setBase', id: target.dataset.entryId });
     });
     document.addEventListener('click', (event) => {
-      const action = event.target instanceof Element ? event.target.closest('[data-action="set-base"]') : null;
-      if (action && contextEntryId) {
-        applyBase(contextEntryId);
-        vscode.postMessage({ type: 'setBase', id: contextEntryId });
-        hideMenu();
-        return;
-      }
-      hideMenu();
       const target = event.target instanceof Element ? event.target.closest('[data-entry-id]') : null;
       if (target instanceof HTMLElement && target.dataset.entryId) {
         vscode.postMessage({ type: 'select', id: target.dataset.entryId });
       }
-    });
-    document.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') hideMenu();
     });
     window.addEventListener('message', (event) => {
       if (event.data && event.data.type === 'setBase' && typeof event.data.id === 'string') {
@@ -417,9 +382,6 @@ function renderModel(model: HistoryTimelineModel, baseId?: string, refreshing = 
   const comparisonHint = model.mode === 'file'
     ? `<div class="comparison-hint">${escapeHtml(localize('Right-click a history entry to set it as BASE, then click another entry to compare.'))}</div>`
     : '';
-  const contextMenu = model.mode === 'file'
-    ? `<div id="comparison-menu" class="context-menu" role="menu" hidden><button type="button" role="menuitem" data-action="set-base">${escapeHtml(localize('Set as comparison base'))}</button></div>`
-    : '';
   const refreshingMarkup = refreshing
     ? `<div class="refreshing">${escapeHtml(localize('Refreshing history...'))}</div>`
     : '';
@@ -429,8 +391,7 @@ function renderModel(model: HistoryTimelineModel, baseId?: string, refreshing = 
     ${comparisonHint}
     ${workingMarkup}
     <div class="direction"><span class="latest-label">${escapeHtml(localize('LATEST'))}</span><span>${escapeHtml(localize('Older'))} &darr;</span></div>
-    <ol class="timeline-rail" aria-label="${escapeHtml(localize('Newest to oldest'))}">${commitMarkup}${originalMarkup}</ol>
-    ${contextMenu}`;
+    <ol class="timeline-rail" aria-label="${escapeHtml(localize('Newest to oldest'))}">${commitMarkup}${originalMarkup}</ol>`;
 }
 
 function stateMessage(title: string, detail: string): string {

@@ -52,6 +52,7 @@ describe('extension manifest', () => {
 
   it('contributes the extension lifecycle commands', () => {
     const commands = manifest.contributes?.commands ?? [];
+    expect(commands.map(({ command }) => command)).not.toContain('myCode.expandAll');
     expect(commands.map(({ command }) => command)).toEqual(expect.arrayContaining([
       'myCode.refresh',
       'myCode.showOutput',
@@ -115,8 +116,7 @@ describe('extension manifest', () => {
   it('exposes the core actions in the MY CODE view title bar', () => {
     expect(manifest.contributes?.menus?.['view/title']).toEqual(expect.arrayContaining([
       expect.objectContaining({ command: 'myCode.refresh', when: 'view == myCode.explorer' }),
-      expect.objectContaining({ command: 'myCode.expandAll', when: 'view == myCode.explorer && !myCode.treeAllExpanded' }),
-      expect.objectContaining({ command: 'myCode.collapseAll', when: 'view == myCode.explorer && myCode.treeAllExpanded' }),
+      expect.objectContaining({ command: 'myCode.collapseAll', when: 'view == myCode.explorer' }),
       expect.objectContaining({ command: 'myCode.hideDecorations', when: 'view == myCode.explorer && myCode.visualsEnabled' }),
       expect.objectContaining({ command: 'myCode.toggleLineBackground', when: 'view == myCode.explorer' })
     ]));
@@ -133,7 +133,7 @@ describe('extension manifest', () => {
 
   it('uses short tooltip labels while keeping Command Palette branding in the category', () => {
     const commands = manifest.contributes?.commands ?? [];
-    const required = ['expandAll', 'collapseAll', 'hideDecorations', 'showDecorations', 'openToSide', 'revealInExplorer', 'revealInOs', 'copyPath', 'copyRelativePath', 'copyHistoricalPath', 'copyHistoricalRelativePath', 'cut', 'copy', 'paste', 'newFile', 'newFolder', 'rename', 'delete'].map((id) => `myCode.${id}`);
+    const required = ['collapseAll', 'hideDecorations', 'showDecorations', 'openToSide', 'revealInExplorer', 'revealInOs', 'copyPath', 'copyRelativePath', 'copyHistoricalPath', 'copyHistoricalRelativePath', 'cut', 'copy', 'paste', 'newFile', 'newFolder', 'rename', 'delete'].map((id) => `myCode.${id}`);
     expect(commands.map(({ command }) => command)).toEqual(expect.arrayContaining(required));
     for (const command of commands.filter(({ command }) => command.startsWith('myCode.'))) {
       expect(english(command.title)).not.toMatch(/^What Did I Write\?: /);
@@ -169,8 +169,7 @@ describe('extension manifest', () => {
   it('uses conditional title slots and exposes mutations only on current non-synthetic rows', () => {
     const title = manifest.contributes?.menus?.['view/title'] ?? [];
     expect(title).toEqual(expect.arrayContaining([
-      { command: 'myCode.expandAll', when: 'view == myCode.explorer && !myCode.treeAllExpanded', group: 'navigation@2' },
-      { command: 'myCode.collapseAll', when: 'view == myCode.explorer && myCode.treeAllExpanded', group: 'navigation@2' },
+      { command: 'myCode.collapseAll', when: 'view == myCode.explorer', group: 'navigation@2' },
       { command: 'myCode.hideDecorations', when: 'view == myCode.explorer && myCode.visualsEnabled', group: 'navigation@3' },
       { command: 'myCode.showDecorations', when: 'view == myCode.explorer && !myCode.visualsEnabled', group: 'navigation@3' },
       { command: 'myCode.toggleLineBackground', when: 'view == myCode.explorer', group: 'navigation@4' }

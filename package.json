@@ -82,12 +82,6 @@
         "category": "%command.category%"
       },
       {
-        "command": "myCode.expandAll",
-        "title": "%command.expandAll%",
-        "icon": "$(expand-all)",
-        "category": "%command.category%"
-      },
-      {
         "command": "myCode.collapseAll",
         "title": "%command.collapseAll%",
         "icon": "$(collapse-all)",
@@ -270,13 +264,8 @@
           "group": "navigation@1"
         },
         {
-          "command": "myCode.expandAll",
-          "when": "view == myCode.explorer && !myCode.treeAllExpanded",
-          "group": "navigation@2"
-        },
-        {
           "command": "myCode.collapseAll",
-          "when": "view == myCode.explorer && myCode.treeAllExpanded",
+          "when": "view == myCode.explorer",
           "group": "navigation@2"
         },
         {

@@ -3,19 +3,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as vscode from 'vscode';
 
 const mocks = vi.hoisted(() => {
-  class EventEmitter<T> {
-    private readonly listeners = new Set<(value: T) => void>();
-
-    public readonly event = (listener: (value: T) => void) => {
-      this.listeners.add(listener);
-      return { dispose: () => this.listeners.delete(listener) };
-    };
-
-    public fire(value: T): void {
-      for (const listener of this.listeners) listener(value);
-    }
-  }
-
   const executeCommand = vi.fn(async (..._args: unknown[]) => undefined);
   const configuration = {
     visualsEnabled: true,
@@ -25,7 +12,7 @@ const mocks = vi.hoisted(() => {
     scmUpdates: [] as unknown[][],
     scmUpdate: vi.fn()
   };
-  return { EventEmitter, executeCommand, configuration };
+  return { executeCommand, configuration };
 });
 
 vi.mock('vscode', () => ({
@@ -45,7 +32,6 @@ vi.mock('vscode', () => ({
 }));
 
 import { MyCodeViewController, VisualModeController } from '../../src/ui/myCodeViewController.js';
-import type { MyCodeNode } from '../../src/ui/myCodeTree.js';
 
 describe('MyCodeViewController', () => {
   beforeEach(() => {
@@ -53,169 +39,27 @@ describe('MyCodeViewController', () => {
     mocks.executeCommand.mockResolvedValue(undefined);
   });
 
-  it('reveals every expandable node parent-first without stealing selection or focus', async () => {
-    const fixture = treeFixture(['root', 'folder']);
-    const controller = new MyCodeViewController(fixture.provider, fixture.view);
-    await flush();
-    mocks.executeCommand.mockClear();
-
-    await controller.expandAll();
-
-    expect(fixture.view.reveal).toHaveBeenNthCalledWith(1, fixture.nodes[0], { expand: true, select: false, focus: false });
-    expect(fixture.view.reveal).toHaveBeenNthCalledWith(2, fixture.nodes[1], { expand: true, select: false, focus: false });
-    expect(mocks.executeCommand).toHaveBeenCalledWith('setContext', 'myCode.treeAllExpanded', true);
-    controller.dispose();
-  });
-
-  it('reveals sibling folders in parallel after their parent is available', async () => {
-    const fixture = treeFixture(['root', 'folder-a', 'folder-b']);
-    const firstSibling = deferred<void>();
-    const secondSibling = deferred<void>();
-    fixture.view.reveal
-      .mockResolvedValueOnce(undefined)
-      .mockReturnValueOnce(firstSibling.promise)
-      .mockReturnValueOnce(secondSibling.promise);
-    const controller = new MyCodeViewController(fixture.provider, fixture.view);
-    await flush();
-
-    const expansion = controller.expandAll();
-    await flush();
-
-    expect(fixture.view.reveal).toHaveBeenCalledTimes(3);
-    firstSibling.resolve();
-    secondSibling.resolve();
-    await expansion;
-    expect(mocks.executeCommand.mock.calls.at(-1)).toEqual(['setContext', 'myCode.treeAllExpanded', true]);
-    controller.dispose();
-  });
-
-  it('uses VS Code collapse all only after focusing the provided tree view', async () => {
-    const fixture = treeFixture(['root']);
-    const controller = new MyCodeViewController(fixture.provider, fixture.view);
-    await flush();
+  it('always collapses MY CHANGES through the focused VS Code tree', async () => {
+    const controller = new MyCodeViewController();
     mocks.executeCommand.mockClear();
 
     await controller.collapseAll();
 
-    expect(mocks.executeCommand.mock.calls.slice(0, 3)).toEqual([
+    expect(mocks.executeCommand.mock.calls).toEqual([
       ['myCode.explorer.focus'],
-      ['list.collapseAll'],
-      ['setContext', 'myCode.treeAllExpanded', false]
+      ['list.collapseAll']
     ]);
     controller.dispose();
   });
 
-  it('derives the title-action context from manual expansion and collapsed subtrees', async () => {
-    const fixture = treeFixture(['root', 'folder']);
-    const controller = new MyCodeViewController(fixture.provider, fixture.view);
-    await flush();
+  it('surfaces a VS Code collapse failure without issuing expansion or context commands', async () => {
+    const controller = new MyCodeViewController();
     mocks.executeCommand.mockClear();
+    mocks.executeCommand.mockRejectedValueOnce(new Error('focus failed'));
 
-    fixture.expand(fixture.nodes[0]!);
-    await flush();
-    expect(mocks.executeCommand.mock.calls.at(-1)).toEqual(['setContext', 'myCode.treeAllExpanded', false]);
+    await expect(controller.collapseAll()).rejects.toThrow('focus failed');
 
-    fixture.expand(fixture.nodes[1]!);
-    await flush();
-    expect(mocks.executeCommand.mock.calls.at(-1)).toEqual(['setContext', 'myCode.treeAllExpanded', true]);
-
-    fixture.collapse(fixture.nodes[0]!);
-    await flush();
-    expect(mocks.executeCommand.mock.calls.at(-1)).toEqual(['setContext', 'myCode.treeAllExpanded', false]);
-    controller.dispose();
-  });
-
-  it('resets derived expansion state on a tree rebuild without revealing the view', async () => {
-    const fixture = treeFixture(['root']);
-    const controller = new MyCodeViewController(fixture.provider, fixture.view);
-    await controller.expandAll();
-    fixture.view.reveal.mockClear();
-    mocks.executeCommand.mockClear();
-
-    fixture.rebuild();
-    await flush();
-
-    expect(fixture.view.reveal).not.toHaveBeenCalled();
-    expect(mocks.executeCommand).toHaveBeenCalledWith('setContext', 'myCode.treeAllExpanded', false);
-    controller.dispose();
-  });
-
-
-  it('finishes a rebuild reset after an in-flight all-expanded context write', async () => {
-    const fixture = treeFixture(['root']);
-    const staleContext = deferred<void>();
-    const completedContexts: boolean[] = [];
-    const controller = new MyCodeViewController(fixture.provider, fixture.view);
-    await flush();
-    mocks.executeCommand.mockImplementation((command, _key, value) => {
-      if (command !== 'setContext') return Promise.resolve(undefined);
-      if (value === true) return staleContext.promise.then(() => { completedContexts.push(true); return undefined; });
-      completedContexts.push(value as boolean);
-      return Promise.resolve(undefined);
-    });
-
-    const expansion = controller.expandAll();
-    await flush();
-    fixture.rebuild();
-    await flush();
-    staleContext.resolve();
-    await expansion;
-    await flush();
-
-    expect(completedContexts.at(-1)).toBe(false);
-    controller.dispose();
-  });
-  it('does not leave the all-expanded context set after a reveal fails', async () => {
-    const fixture = treeFixture(['root', 'folder']);
-    fixture.view.reveal.mockRejectedValueOnce(new Error('reveal failed'));
-    const controller = new MyCodeViewController(fixture.provider, fixture.view);
-    await flush();
-    mocks.executeCommand.mockClear();
-
-    await expect(controller.expandAll()).rejects.toThrow('reveal failed');
-
-    expect(mocks.executeCommand.mock.calls.at(-1)).toEqual(['setContext', 'myCode.treeAllExpanded', false]);
-    controller.dispose();
-  });
-
-
-  it('keeps a rebuild reset when an earlier deferred reveal resolves', async () => {
-    const fixture = treeFixture(['root', 'folder']);
-    const firstReveal = deferred<void>();
-    fixture.view.reveal.mockReturnValueOnce(firstReveal.promise);
-    const controller = new MyCodeViewController(fixture.provider, fixture.view);
-    await flush();
-    mocks.executeCommand.mockClear();
-
-    const expansion = controller.expandAll();
-    await flush();
-    expect(fixture.view.reveal).toHaveBeenCalledTimes(1);
-
-    fixture.rebuild();
-    firstReveal.resolve();
-    await expansion;
-
-    expect(fixture.view.reveal).toHaveBeenCalledTimes(1);
-    expect(mocks.executeCommand.mock.calls.at(-1)).toEqual(['setContext', 'myCode.treeAllExpanded', false]);
-    controller.dispose();
-  });
-
-  it('retains successful reveals so manual expansion can complete a failed expand-all', async () => {
-    const fixture = treeFixture(['root', 'folder']);
-    const secondReveal = deferred<void>();
-    fixture.view.reveal.mockResolvedValueOnce(undefined).mockReturnValueOnce(secondReveal.promise);
-    const controller = new MyCodeViewController(fixture.provider, fixture.view);
-    await flush();
-    mocks.executeCommand.mockClear();
-
-    const expansion = controller.expandAll();
-    await flush();
-    secondReveal.reject(new Error('second reveal failed'));
-    await expect(expansion).rejects.toThrow('second reveal failed');
-
-    fixture.expand(fixture.nodes[1]!);
-    await flush();
-    expect(mocks.executeCommand.mock.calls.at(-1)).toEqual(['setContext', 'myCode.treeAllExpanded', true]);
+    expect(mocks.executeCommand).toHaveBeenCalledTimes(1);
     controller.dispose();
   });
 });
@@ -465,37 +309,6 @@ describe('VisualModeController', () => {
     });
   });
 });
-
-function treeFixture(ids: readonly string[]) {
-  const nodes = ids.map((id) => ({ id }) as unknown as MyCodeNode);
-  const rebuildEmitter = new mocks.EventEmitter<MyCodeNode | undefined>();
-  const expandedListeners = new Set<(event: { element: MyCodeNode }) => void>();
-  const collapsedListeners = new Set<(event: { element: MyCodeNode }) => void>();
-  const view = {
-    reveal: vi.fn(async (_node: MyCodeNode, _options: unknown) => undefined),
-    onDidExpandElement: (listener: (event: { element: MyCodeNode }) => void) => {
-      expandedListeners.add(listener);
-      return { dispose: () => expandedListeners.delete(listener) };
-    },
-    onDidCollapseElement: (listener: (event: { element: MyCodeNode }) => void) => {
-      collapsedListeners.add(listener);
-      return { dispose: () => collapsedListeners.delete(listener) };
-    }
-  } as unknown as vscode.TreeView<MyCodeNode> & { reveal: ReturnType<typeof vi.fn> };
-  const provider = {
-    expandableNodes: () => nodes,
-    getParent: (node: MyCodeNode) => node.id === 'root' ? undefined : nodes[0],
-    onDidChangeTreeData: rebuildEmitter.event
-  };
-  return {
-    nodes,
-    provider,
-    view,
-    expand: (node: MyCodeNode) => { for (const listener of expandedListeners) listener({ element: node }); },
-    collapse: (node: MyCodeNode) => { for (const listener of collapsedListeners) listener({ element: node }); },
-    rebuild: () => rebuildEmitter.fire(undefined)
-  };
-}
 
 async function flush(): Promise<void> {
   await Promise.resolve();

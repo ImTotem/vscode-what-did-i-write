@@ -28,7 +28,8 @@ describe('release package contract', () => {
     expect(readme).toContain('`M`');
     expect(readme).toContain('`◷`');
     expect(readme).toContain('What Did I Write?: Refresh');
-    expect(readme).toContain('Expand All');
+    expect(readme).toContain('Collapse All');
+    expect(readme).not.toContain('Expand All');
     expect(readme).toContain('Hide My Code Decorations');
     expect(readme).toContain('Extension Development Host');
   });

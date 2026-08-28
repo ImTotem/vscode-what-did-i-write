@@ -83,7 +83,7 @@ export function activate(context: vscode.ExtensionContext): void {
     canSelectMany: true,
     dragAndDropController
   });
-  const viewController = new MyCodeViewController(treeProvider, myChangesView);
+  const viewController = new MyCodeViewController();
   const visualModeController = new VisualModeController(
     decorationProvider,
     editorOwnership,
@@ -211,8 +211,6 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('myCode.showOutput', () => output.show()),
     vscode.commands.registerCommand('myCode.retryIdentity', () => refreshController.retryIdentity()),
     vscode.commands.registerCommand('myCode.toggleLineBackground', () => editorOwnership.toggleLineBackground()),
-    vscode.commands.registerCommand('myCode.expandAll', () =>
-      runUiCommand('expand MY CHANGES', () => viewController.expandAll())),
     vscode.commands.registerCommand('myCode.collapseAll', () =>
       runUiCommand('collapse MY CHANGES', () => viewController.collapseAll())),
     vscode.commands.registerCommand('myCode.hideDecorations', () =>

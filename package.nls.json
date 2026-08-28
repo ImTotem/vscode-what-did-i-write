@@ -10,7 +10,6 @@
   "command.showFileHistory": "Show File History",
   "command.showLineHistory": "Show Line History",
   "command.toggleLineBackground": "Toggle Line Background",
-  "command.expandAll": "Expand All",
   "command.collapseAll": "Collapse All",
   "command.hideDecorations": "Hide My Code Decorations",
   "command.showDecorations": "Show My Code Decorations",

@@ -55,7 +55,7 @@ The history timeline keeps current working changes at the top, then lists commit
 | Location | What is there |
 | --- | --- |
 | Activity Bar → **MY CODE** | Only your current and past authored files. |
-| **MY CHANGES** title bar | Refresh, Expand All / Collapse All, and Hide / Show My Code Decorations. |
+| **MY CHANGES** title bar | Refresh, Collapse All, and Hide / Show My Code Decorations. |
 | **MY CHANGES** context menu | Explorer-style open, reveal, path copy, create, cut/copy/paste, rename, and delete actions. |
 | Editor native Quick Diff gutter / overview ruler | VS Code-native markers for lines attributed to you. |
 | Editor gutter hover / click | The marker expands on hover; click it for the native inline diff. Use **FILE HISTORY** for commit history. |
@@ -65,7 +65,7 @@ The history timeline keeps current working changes at the top, then lists commit
 ## Commands and settings
 
 - `What Did I Write?: Refresh` — refresh every discovered repository and all views.
-- `What Did I Write?: Expand All` / `Collapse All` — expand or collapse all current folders.
+- `What Did I Write?: Collapse All` — collapse every open folder in the list.
 - `What Did I Write?: Hide My Code Decorations` / `Show My Code Decorations` — persist the workspace visual mode.
 - `What Did I Write?: Retry` — retry identity discovery after changing global Git config.
 - `What Did I Write?: Show Output` — open diagnostic details.
