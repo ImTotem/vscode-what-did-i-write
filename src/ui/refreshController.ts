@@ -171,11 +171,7 @@ export class RefreshController {
       if (this.disposed) return;
       const previous = this.fingerprints.get(entry.root);
       if (previous === undefined) {
-        await entry.analyzer.refresh('head');
-        const afterRefresh = await entry.repository.getFingerprint();
-        if (sameFingerprint(fingerprint, afterRefresh)) {
-          this.fingerprints.set(entry.root, afterRefresh);
-        }
+        this.fingerprints.set(entry.root, fingerprint);
         return;
       }
       if (previous.head !== fingerprint.head) {
@@ -195,13 +191,6 @@ export class RefreshController {
       this.options.onError?.(error, 'fingerprint', entry.root);
     }
   }
-}
-
-function sameFingerprint(
-  left: { readonly head: string | undefined; readonly status: string },
-  right: { readonly head: string | undefined; readonly status: string }
-): boolean {
-  return left.head === right.head && left.status === right.status;
 }
 
 function relativePath(root: string, path: string): string | undefined {

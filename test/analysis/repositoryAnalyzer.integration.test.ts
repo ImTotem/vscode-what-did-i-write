@@ -276,6 +276,34 @@ describe('RepositoryAnalyzer', () => {
     expect(started[5]).toBe('priority-6.ts');
   });
 
+  it('reports idle only after every background candidate has settled', async () => {
+    const root = await createTemporaryDirectory();
+    const storagePath = await createTemporaryDirectory();
+    const path = 'startup-idle.ts';
+    await writeFile(join(root, path), 'owned\n');
+    const blame = deferred<BlameLine[]>();
+    const repository = new ControlledRepository(root, [path], async () => blame.promise);
+    const analyzer = new RepositoryAnalyzer(repository, new CacheStore(storagePath));
+
+    await analyzer.initialize();
+    let idle = false;
+    const waiting = analyzer.waitForIdle().then(() => {
+      idle = true;
+    });
+    await nextTurn();
+
+    expect(idle).toBe(false);
+
+    blame.resolve([ownedLine(userCommit)]);
+    await waiting;
+
+    expect(analyzer.getSnapshot()).toMatchObject({
+      scanning: false,
+      files: [{ relativePath: path, kind: 'modified' }]
+    });
+    analyzer.dispose();
+  });
+
   it('keeps the previous file list visible and settles a manual refresh only after one final publication', async () => {
     const root = await createTemporaryDirectory();
     const storagePath = await createTemporaryDirectory();

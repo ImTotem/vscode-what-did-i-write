@@ -16,12 +16,70 @@ import { RefreshController, type TimerScheduler } from '../../src/ui/refreshCont
 import { StatusController, type StatusControllerActions } from '../../src/ui/statusController.js';
 
 describe('RepositoryRegistry', () => {
+  it('does not settle startup until repository initialization is complete', async () => {
+    const root = join(process.cwd(), 'startup-wait');
+    const initialization = deferred<void>();
+    const analyzer = fakeAnalyzer(root, vi.fn(() => initialization.promise));
+    const registry = new RepositoryRegistry({
+      getWorkspaceFolders: () => [{ fsPath: root }],
+      discover: async () => fakeRepository(root),
+      createAnalyzer: () => analyzer
+    });
+    let settled = false;
+
+    const start = registry.start().then(() => {
+      settled = true;
+    });
+    await waitUntil(() => analyzer.initialize.mock.calls.length === 1);
+    await Promise.resolve();
+
+    expect(settled).toBe(false);
+    expect(registry.state).toBe('initializing');
+
+    initialization.resolve(undefined);
+    await start;
+
+    expect(registry.state).toBe('ready');
+    registry.dispose();
+  });
+
+  it('keeps a repository hidden until its background analysis is idle', async () => {
+    const root = join(process.cwd(), 'startup-analysis');
+    const idle = deferred<void>();
+    const analyzer = {
+      ...fakeAnalyzer(root),
+      waitForIdle: vi.fn(() => idle.promise)
+    };
+    const registry = new RepositoryRegistry({
+      getWorkspaceFolders: () => [{ fsPath: root }],
+      discover: async () => fakeRepository(root),
+      createAnalyzer: () => analyzer
+    });
+    let settled = false;
+
+    const start = registry.start().then(() => {
+      settled = true;
+    });
+    await waitUntil(() => analyzer.initialize.mock.calls.length === 1);
+    await Promise.resolve();
+
+    expect(analyzer.waitForIdle).toHaveBeenCalledOnce();
+    expect(settled).toBe(false);
+    expect(registry.state).toBe('initializing');
+
+    idle.resolve(undefined);
+    await start;
+
+    expect(registry.state).toBe('ready');
+    registry.dispose();
+  });
+
   it('de-duplicates repository roots and disposes the final folder lifetime', async () => {
     const workspaceRoot = join(process.cwd(), 'workspace');
     const repositoryRoot = join(workspaceRoot, 'repository');
     const firstFolder = { fsPath: repositoryRoot };
     const nestedFolder = { fsPath: join(repositoryRoot, 'packages', 'nested') };
-    const initialize = vi.fn(() => new Promise<void>(() => undefined));
+    const initialize = vi.fn(async () => undefined);
     const analyzer = fakeAnalyzer(repositoryRoot, initialize);
     const repository = fakeRepository(repositoryRoot);
     const registry = new RepositoryRegistry({
@@ -238,8 +296,11 @@ describe('RefreshController', () => {
     expect(scheduler.intervalDelay).toBe(10_000);
     await Promise.resolve();
     await Promise.resolve();
-    expect(repository.getFingerprint).toHaveBeenCalledTimes(2);
-    expect(analyzer.refresh).toHaveBeenLastCalledWith('head');
+    expect(repository.getFingerprint).toHaveBeenCalledTimes(1);
+    expect(analyzer.refresh).toHaveBeenCalledTimes(1);
+    expect(analyzer.refresh).toHaveBeenLastCalledWith(
+      'working-tree', ['src/new.ts', 'src/same.ts']
+    );
     controller.setFocused(false);
     expect(scheduler.intervalCleared).toBe(true);
     controller.dispose();
@@ -254,7 +315,6 @@ describe('RefreshController', () => {
 
     repository.getFingerprint
       .mockResolvedValueOnce({ head: 'a', status: 'clean' })
-      .mockResolvedValueOnce({ head: 'a', status: 'clean' })
       .mockResolvedValueOnce({ head: 'b', status: 'clean' })
       .mockResolvedValueOnce({ head: 'b', status: 'dirty' });
     repository.getWorkingChanges.mockResolvedValue([{ status: 'M', path: 'src/changed.ts' }]);
@@ -265,13 +325,12 @@ describe('RefreshController', () => {
     await controller.refreshAll();
 
     expect(analyzer.refresh).toHaveBeenNthCalledWith(1, 'head');
-    expect(analyzer.refresh).toHaveBeenNthCalledWith(2, 'head');
-    expect(analyzer.refresh).toHaveBeenNthCalledWith(3, 'working-tree', ['src/changed.ts']);
-    expect(analyzer.refresh).toHaveBeenNthCalledWith(4, 'manual');
+    expect(analyzer.refresh).toHaveBeenNthCalledWith(2, 'working-tree', ['src/changed.ts']);
+    expect(analyzer.refresh).toHaveBeenNthCalledWith(3, 'manual');
     controller.dispose();
   });
 
-  it('refreshes before acknowledging an initial fingerprint and retries changes during refresh', async () => {
+  it('records the initial fingerprint without a redundant refresh and detects the next change', async () => {
     const root = join(process.cwd(), 'repository');
     const analyzer = fakeAnalyzer(root);
     const repository = fakeRepository(root);
@@ -280,17 +339,14 @@ describe('RefreshController', () => {
     repository.getFingerprint
       .mockResolvedValueOnce({ head: 'h1', status: 's1' })
       .mockResolvedValueOnce({ head: 'h2', status: 's2' })
-      .mockResolvedValueOnce({ head: 'h2', status: 's2' })
-      .mockResolvedValueOnce({ head: 'h2', status: 's2' })
       .mockResolvedValueOnce({ head: 'h2', status: 's2' });
 
     await controller.tick();
     await controller.tick();
     await controller.tick();
 
-    expect(analyzer.refresh).toHaveBeenCalledTimes(2);
+    expect(analyzer.refresh).toHaveBeenCalledTimes(1);
     expect(analyzer.refresh).toHaveBeenNthCalledWith(1, 'head');
-    expect(analyzer.refresh).toHaveBeenNthCalledWith(2, 'head');
     controller.dispose();
   });
 
@@ -403,7 +459,7 @@ describe('StatusController', () => {
     expect(registry.state).toBe('discovering');
     expect(status.text).toBe('$(sync~spin) What Did I Write?: Scanning');
     discovery.resolve(fakeRepository(root));
-    await start;
+    await waitUntil(() => registry.state === 'initializing');
     expect(registry.state).toBe('initializing');
     expect(status.text).toBe('$(sync~spin) What Did I Write?: Scanning');
 
@@ -412,6 +468,7 @@ describe('StatusController', () => {
     expect(showWarning).not.toHaveBeenCalled();
 
     initialization.reject(new Error('cache permission denied'));
+    await start;
     await waitUntil(() => registry.state === 'error');
 
     expect(status.text).toBe('$(warning) What Did I Write?: Error');
@@ -506,6 +563,7 @@ function fakeAnalyzer(root: string, initialize = vi.fn(async () => undefined)) {
   const listeners = new Set<(value: RepositorySnapshot) => void>();
   return {
     initialize,
+    waitForIdle: vi.fn(async () => undefined),
     refresh: vi.fn(async () => undefined),
     ensureFile: vi.fn(async () => undefined),
     getSnapshot: () => current,

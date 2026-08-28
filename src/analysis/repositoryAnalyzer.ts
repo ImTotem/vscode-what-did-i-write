@@ -111,6 +111,7 @@ const nodeFileSystem: AnalyzerFileSystem = {
 export class RepositoryAnalyzer {
   public readonly reportsErrors = true;
   private readonly listeners = new Set<(snapshot: RepositorySnapshot) => void>();
+  private readonly idleWaiters = new Set<() => void>();
   private readonly inFlight = new Map<string, AnalysisJob>();
   private readonly queuedJobs: AnalysisJob[] = [];
   private readonly retargetedJobs: AnalysisJob[] = [];
@@ -148,6 +149,18 @@ export class RepositoryAnalyzer {
 
   public initialize(): Promise<void> {
     return this.refresh('initialize');
+  }
+
+  public waitForIdle(): Promise<void> {
+    if (this.disposed || !this.snapshot.scanning) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const finish = (): void => {
+        this.idleWaiters.delete(finish);
+        resolve();
+      };
+      this.idleWaiters.add(finish);
+      if (this.disposed || !this.snapshot.scanning) finish();
+    });
   }
 
   public async refresh(reason: RefreshReason, paths?: readonly string[]): Promise<void> {
@@ -498,6 +511,7 @@ export class RepositoryAnalyzer {
       job.resolve(this.getFile(job.candidate.relativePath));
     }
     this.snapshot = this.createSnapshot(false);
+    this.settleIdleWaiters();
     this.listeners.clear();
   }
 
@@ -595,6 +609,13 @@ export class RepositoryAnalyzer {
     if (this.disposed) return;
     this.snapshot = this.createSnapshot(scanning, files);
     for (const listener of this.listeners) listener(this.snapshot);
+    if (!scanning) this.settleIdleWaiters();
+  }
+
+  private settleIdleWaiters(): void {
+    const waiters = [...this.idleWaiters];
+    this.idleWaiters.clear();
+    for (const resolve of waiters) resolve();
   }
 
   private createSnapshot(scanning: boolean, visibleFiles?: readonly FileRecord[]): RepositorySnapshot {

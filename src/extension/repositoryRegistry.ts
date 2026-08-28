@@ -24,6 +24,7 @@ export interface RepositoryAccess extends AnalyzerRepositoryAccess {
 export interface AnalyzerAccess {
   readonly reportsErrors?: boolean;
   initialize(): Promise<void>;
+  waitForIdle(): Promise<void>;
   refresh(reason: string, paths?: readonly string[]): Promise<void>;
   ensureFile(relativePath: string, priority: AnalysisPriority): Promise<FileRecord | undefined>;
   getSnapshot(): RepositorySnapshot;
@@ -138,14 +139,18 @@ export class RepositoryRegistry {
   };
 
   public start(): Promise<void> {
-    return this.updateWorkspaceFolders(this.options.getWorkspaceFolders());
+    return this.updateWorkspaceFolders(this.options.getWorkspaceFolders(), false, true);
   }
 
   public rediscover(): Promise<void> {
     return this.updateWorkspaceFolders(this.options.getWorkspaceFolders(), true);
   }
 
-  public async updateWorkspaceFolders(workspaceFolders: readonly UriAccess[], reinitializeErrors = false): Promise<void> {
+  public async updateWorkspaceFolders(
+    workspaceFolders: readonly UriAccess[],
+    reinitializeErrors = false,
+    waitForInitialization = false
+  ): Promise<void> {
     if (this.disposed) return;
     const generation = ++this.generation;
     this.discovering = true;
@@ -223,7 +228,7 @@ export class RepositoryRegistry {
         () => this.emitChange()
       );
       this.lifetimes.set(key, lifetime);
-      const initialization = analyzer.initialize().then(
+      const initialization = analyzer.initialize().then(() => analyzer.waitForIdle()).then(
         () => {
           if (this.lifetimes.get(key) !== lifetime) return;
           lifetime.markReady();
@@ -241,7 +246,9 @@ export class RepositoryRegistry {
     this.discovering = false;
     this.discoveryFailed = discoveries.some((discovery) => 'failed' in discovery);
     this.emitChange();
-    if (reinitializeErrors) await Promise.allSettled(initializations);
+    if (reinitializeErrors || waitForInitialization) {
+      await Promise.allSettled(initializations);
+    }
   }
 
   public findByUri(uri: UriAccess): RegisteredRepository | undefined {
