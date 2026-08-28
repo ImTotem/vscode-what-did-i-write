@@ -51,7 +51,11 @@ const mocks = vi.hoisted(() => {
   const documentListeners = new Set<(event: { document: vscode.TextDocument }) => void>();
   const saveListeners = new Set<(document: vscode.TextDocument) => void>();
   const closeListeners = new Set<(document: vscode.TextDocument) => void>();
-  const configuration = { lineBackground: false, updates: [] as unknown[][] };
+  const configuration = {
+    lineBackground: false,
+    updates: [] as unknown[][],
+    writeThrough: true
+  };
   const window = {
     visibleTextEditors: [] as readonly vscode.TextEditor[],
     createTextEditorDecorationType: (options: unknown) => {
@@ -88,7 +92,7 @@ vi.mock('vscode', () => ({
       get: <T>(_key: string, fallback: T) => (mocks.configuration.lineBackground as unknown as T) ?? fallback,
       update: (...args: unknown[]) => {
         mocks.configuration.updates.push(args);
-        if (args[0] === 'editor.lineBackground' && args[2] === 2) {
+        if (mocks.configuration.writeThrough && args[0] === 'editor.lineBackground' && args[2] === 2) {
           mocks.configuration.lineBackground = args[1] as boolean;
         }
         return Promise.resolve();
@@ -228,6 +232,35 @@ describe('EditorOwnershipController', () => {
     });
   });
 
+  it('rebuilds persisted background decorations when startup reapplies an already-enabled visual mode', async () => {
+    mocks.decorations.splice(0);
+    mocks.configuration.lineBackground = true;
+    const current = record([{ start: 0, endExclusive: 1, commit: committed, uncommitted: false }]);
+    const registry = fakeRegistry(current, Promise.resolve(current));
+    const editor = editorFor(documentFor('/repo/current.ts', 2));
+    setVisibleEditors([editor]);
+    const controller = new EditorOwnershipController(registry);
+    await controller.refreshVisibleEditors();
+    const original = mocks.decorations.slice(-2);
+    editor.setDecorations.mockClear();
+
+    await controller.setEnabled(true);
+
+    const rebuilt = mocks.decorations.slice(-2);
+    expect(rebuilt).not.toEqual(original);
+    expect(original.map(({ dispose }) => dispose.mock.calls.length)).toEqual([1, 1]);
+    expect(rebuilt[0]?.options).toMatchObject({
+      backgroundColor: { id: 'myCode.editor.committedLineBackground' }
+    });
+    expect(rebuilt[1]?.options).toMatchObject({
+      backgroundColor: { id: 'myCode.editor.workingLineBackground' }
+    });
+    expect(editor.setDecorations.mock.calls.slice(-2).map(([decoration]) => decoration))
+      .toEqual(rebuilt);
+    mocks.configuration.lineBackground = false;
+    controller.dispose();
+  });
+
   it('rebuilds decoration types and repaints visible editors after an external background setting change', async () => {
     mocks.decorations.splice(0);
     mocks.configuration.lineBackground = false;
@@ -279,6 +312,31 @@ describe('EditorOwnershipController', () => {
     expect(editor.setDecorations.mock.calls.slice(-2).map(([decoration]) => decoration))
       .toEqual(rebuilt);
     mocks.configuration.lineBackground = false;
+    controller.dispose();
+  });
+
+  it('applies the first toggle even when VS Code exposes the old setting until after the write resolves', async () => {
+    mocks.decorations.splice(0);
+    mocks.configuration.updates.splice(0);
+    mocks.configuration.lineBackground = false;
+    mocks.configuration.writeThrough = false;
+    const current = record([{ start: 0, endExclusive: 1, commit: committed, uncommitted: false }]);
+    const registry = fakeRegistry(current, Promise.resolve(current));
+    const editor = editorFor(documentFor('/repo/current.ts', 2));
+    setVisibleEditors([editor]);
+    const controller = new EditorOwnershipController(registry);
+
+    await controller.toggleLineBackground();
+
+    const rebuilt = mocks.decorations.slice(-2);
+    expect(mocks.configuration.updates).toEqual([
+      ['editor.lineBackground', true, 2]
+    ]);
+    expect(rebuilt[0]?.options).toHaveProperty('backgroundColor');
+    expect(rebuilt[1]?.options).toHaveProperty('backgroundColor');
+    expect(editor.setDecorations.mock.calls.slice(-2).map(([decoration]) => decoration))
+      .toEqual(rebuilt);
+    mocks.configuration.writeThrough = true;
     controller.dispose();
   });
 

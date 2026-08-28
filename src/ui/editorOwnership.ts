@@ -117,7 +117,9 @@ export class EditorOwnershipController implements vscode.Disposable {
   public async setEnabled(enabled: boolean): Promise<void> {
     if (this.disposed) return;
     if (this.enabled === enabled) {
-      if (enabled) await this.refreshVisibleEditors();
+      if (enabled) {
+        await this.applyLineBackground(this.readLineBackground(), true);
+      }
       return;
     }
 
@@ -140,11 +142,15 @@ export class EditorOwnershipController implements vscode.Disposable {
     const previous = this.backgroundOperation;
     const operation = (previous ?? Promise.resolve()).catch(() => undefined).then(async () => {
       const configuration = vscode.workspace.getConfiguration('myCode');
-      const enabled = configuration.get<boolean>('editor.lineBackground', false);
-      await configuration.update('editor.lineBackground', !enabled, vscode.ConfigurationTarget.Workspace);
-      await this.applyLineBackground(
-        configuration.get<boolean>('editor.lineBackground', !enabled)
-      );
+      const enabled = this.lineBackgroundEnabled;
+      const next = !enabled;
+      await this.applyLineBackground(next);
+      try {
+        await configuration.update('editor.lineBackground', next, vscode.ConfigurationTarget.Workspace);
+      } catch (error) {
+        await this.applyLineBackground(enabled);
+        throw error;
+      }
     });
     this.backgroundOperation = operation;
     try {
@@ -158,8 +164,8 @@ export class EditorOwnershipController implements vscode.Disposable {
     await this.applyLineBackground(this.readLineBackground());
   }
 
-  private async applyLineBackground(enabled: boolean): Promise<void> {
-    if (this.disposed || enabled === this.lineBackgroundEnabled) return;
+  private async applyLineBackground(enabled: boolean, force = false): Promise<void> {
+    if (this.disposed || (!force && enabled === this.lineBackgroundEnabled)) return;
     this.lineBackgroundEnabled = enabled;
     this.decorationRevision += 1;
     this.committedDecoration.dispose();
