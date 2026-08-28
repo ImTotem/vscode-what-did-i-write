@@ -61,6 +61,7 @@ class RepositoryLifetime implements RegisteredRepository {
   public error: unknown;
   public startupFingerprint: RepositoryFingerprint | undefined;
   private analyzerSubscription: AnalyzerDisposable | undefined;
+  private initialization: Promise<InitializationOutcome> | undefined;
 
   public get ready(): boolean {
     return this.state === 'ready';
@@ -95,6 +96,18 @@ class RepositoryLifetime implements RegisteredRepository {
 
   public setStartupFingerprint(fingerprint: RepositoryFingerprint | undefined): void {
     this.startupFingerprint = fingerprint;
+  }
+
+  public setInitialization(initialization: Promise<InitializationOutcome>): void {
+    this.initialization = initialization;
+  }
+
+  public getInitialization(): Promise<InitializationOutcome> | undefined {
+    return this.initialization;
+  }
+
+  public clearInitialization(): void {
+    this.initialization = undefined;
   }
 
   public dispose(): void {
@@ -220,6 +233,10 @@ export class RepositoryRegistry {
       if (existing !== undefined) {
         if (!reinitializeErrors || existing.state !== 'error') {
           existing.setWorkspaceFolders(group.folders);
+          const pending = existing.getInitialization();
+          if (stageInitializations && existing.state === 'initializing' && pending !== undefined) {
+            initializations.push(pending);
+          }
           continue;
         }
         existing.dispose();
@@ -249,6 +266,7 @@ export class RepositoryRegistry {
           return { ok: false, key, lifetime, error };
         }
       })();
+      lifetime.setInitialization(initialization);
       initializations.push(initialization);
       if (!stageInitializations) {
         void initialization.then((outcome) => this.applyInitialization(outcome, true));
@@ -259,9 +277,12 @@ export class RepositoryRegistry {
     this.emitChange();
     if (stageInitializations) {
       const outcomes = await Promise.all(initializations);
-      if (this.disposed || generation !== this.generation) return;
-      for (const outcome of outcomes) this.applyInitialization(outcome, false);
-      this.emitChange();
+      if (this.disposed) return;
+      let changed = false;
+      for (const outcome of outcomes) {
+        changed = this.applyInitialization(outcome, false) || changed;
+      }
+      if (changed) this.emitChange();
     }
   }
 
@@ -289,9 +310,12 @@ export class RepositoryRegistry {
     for (const listener of this.listeners) listener();
   }
 
-  private applyInitialization(outcome: InitializationOutcome, emit: boolean): void {
+  private applyInitialization(outcome: InitializationOutcome, emit: boolean): boolean {
     const { key, lifetime } = outcome;
-    if (this.disposed || this.lifetimes.get(key) !== lifetime) return;
+    if (this.disposed || this.lifetimes.get(key) !== lifetime || lifetime.state !== 'initializing') {
+      return false;
+    }
+    lifetime.clearInitialization();
     if (outcome.ok) {
       lifetime.markReady();
     } else {
@@ -299,6 +323,7 @@ export class RepositoryRegistry {
       this.options.onError?.(outcome.error, 'initialize', lifetime.root);
     }
     if (emit) this.emitChange();
+    return true;
   }
 }
 

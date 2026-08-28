@@ -110,6 +110,29 @@ describe('RepositoryRegistry', () => {
     registry.dispose();
   });
 
+  it('finishes a retained startup initialization after a workspace-folder update supersedes it', async () => {
+    const root = join(process.cwd(), 'startup-retained');
+    const initialization = deferred<void>();
+    const analyzer = fakeAnalyzer(root, vi.fn(() => initialization.promise));
+    const repository = fakeRepository(root);
+    const folder = { fsPath: root };
+    const registry = new RepositoryRegistry({
+      getWorkspaceFolders: () => [folder],
+      discover: async () => repository,
+      createAnalyzer: () => analyzer
+    });
+
+    const start = registry.start();
+    await waitUntil(() => analyzer.initialize.mock.calls.length === 1);
+    await registry.updateWorkspaceFolders([folder]);
+    initialization.resolve(undefined);
+    await start;
+
+    expect(registry.repositories).toHaveLength(1);
+    expect(registry.repositories[0]?.state).toBe('ready');
+    registry.dispose();
+  });
+
   it('de-duplicates repository roots and disposes the final folder lifetime', async () => {
     const workspaceRoot = join(process.cwd(), 'workspace');
     const repositoryRoot = join(workspaceRoot, 'repository');
