@@ -11,7 +11,12 @@ export type HistoryTimelineViewState =
   | { readonly kind: 'loading' }
   | { readonly kind: 'empty'; readonly path: string }
   | { readonly kind: 'error'; readonly message: string }
-  | { readonly kind: 'ready'; readonly model: HistoryTimelineModel; readonly baseId?: string };
+  | {
+      readonly kind: 'ready';
+      readonly model: HistoryTimelineModel;
+      readonly baseId?: string;
+      readonly refreshing?: boolean;
+    };
 
 type TimelineHistoryAccess = Pick<HistoryController, 'getTimeline' | 'openTimelineEntry'> & {
   openTimelineComparison?: HistoryController['openTimelineComparison'];
@@ -100,8 +105,8 @@ export class HistoryTimelineViewProvider implements vscode.WebviewViewProvider, 
     await this.refreshNow();
   }
 
-  public scheduleRegistryRefresh(): void {
-    if (this.disposed) return;
+  public scheduleRegistryRefresh(suppressed = false): void {
+    if (this.disposed || suppressed) return;
     this.registryRefreshDirty = true;
     this.scheduleVisibleRegistryRefresh();
   }
@@ -119,7 +124,11 @@ export class HistoryTimelineViewProvider implements vscode.WebviewViewProvider, 
     };
     const provider = this;
     try {
-      if (this.model === undefined) this.render({ kind: 'loading' });
+      if (this.model === undefined) {
+        this.render({ kind: 'loading' });
+      } else {
+        this.render({ kind: 'ready', model: this.model, baseId: this.baseId, refreshing: true });
+      }
       const model = await this.history.getTimeline(target, line, cancellation);
       if (!this.isCurrent(generation)) return;
       this.model = model;
@@ -266,6 +275,7 @@ export function renderTimelineHtml(
     .mode { color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 700; letter-spacing: .08em; white-space: nowrap; }
     .working { margin-bottom: 10px; }
     .comparison-hint { color: var(--vscode-descriptionForeground); font-size: 11px; line-height: 1.4; margin: 0 2px 10px; }
+    .refreshing { color: var(--vscode-descriptionForeground); font-size: 10px; margin: -5px 2px 8px; }
     .direction { align-items: center; color: var(--vscode-descriptionForeground); display: flex; font-size: 10px; font-weight: 700; justify-content: space-between; letter-spacing: .06em; margin: 0 4px 5px 22px; }
     .latest-label { color: var(--vscode-charts-green); }
     .timeline-rail { list-style: none; margin: 0; padding: 0; position: relative; }
@@ -345,11 +355,11 @@ function renderBody(state: HistoryTimelineViewState): string {
     case 'error':
       return stateMessage('History unavailable', state.message);
     case 'ready':
-      return renderModel(state.model, state.baseId);
+      return renderModel(state.model, state.baseId, state.refreshing === true);
   }
 }
 
-function renderModel(model: HistoryTimelineModel, baseId?: string): string {
+function renderModel(model: HistoryTimelineModel, baseId?: string, refreshing = false): string {
   const working = model.entries.find((entry): entry is WorkingTimelineEntry => entry.kind === 'working');
   const commits = model.entries.filter((entry): entry is CommitTimelineEntry => entry.kind === 'commit');
   const original = model.entries.find((entry) => entry.kind === 'original');
@@ -379,8 +389,12 @@ function renderModel(model: HistoryTimelineModel, baseId?: string): string {
   const contextMenu = model.mode === 'file'
     ? `<div id="comparison-menu" class="context-menu" role="menu" hidden><button type="button" role="menuitem" data-action="set-base">${escapeHtml(localize('Set as comparison base'))}</button></div>`
     : '';
+  const refreshingMarkup = refreshing
+    ? `<div class="refreshing">${escapeHtml(localize('Refreshing history...'))}</div>`
+    : '';
   return `
     <div class="header"><span class="path">${escapeHtml(model.relativePath)}</span><span class="mode">${mode}</span></div>
+    ${refreshingMarkup}
     ${comparisonHint}
     ${workingMarkup}
     <div class="direction"><span class="latest-label">${escapeHtml(localize('LATEST'))}</span><span>${escapeHtml(localize('Older'))} &darr;</span></div>

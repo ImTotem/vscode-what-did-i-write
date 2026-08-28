@@ -283,6 +283,25 @@ describe('HistoryTimelineViewProvider', () => {
     provider.dispose();
   });
 
+  it('does not schedule history work for an intermediate scanning publication', async () => {
+    const history = {
+      getTimeline: vi.fn(async () => timelineModel()),
+      openTimelineEntry: vi.fn(async () => undefined)
+    };
+    const scheduler = new FakeTimelineScheduler();
+    const provider = new HistoryTimelineViewProvider(history, undefined, scheduler);
+    const view = fakeView();
+    provider.resolveWebviewView(view.value);
+    await provider.focus('C:/repo/src/time.h');
+    history.getTimeline.mockClear();
+
+    provider.scheduleRegistryRefresh(true);
+
+    expect(scheduler.pending).toBe(0);
+    expect(history.getTimeline).not.toHaveBeenCalled();
+    provider.dispose();
+  });
+
   it('requires a right-click BASE before a file-history click opens a direct comparison', async () => {
     const model = fileTimelineModel();
     const history = {
@@ -363,6 +382,32 @@ describe('HistoryTimelineViewProvider', () => {
     next.resolve({ ...timelineModel(), relativePath: 'src/newer.h', sourcePath: 'C:/repo/src/newer.h' });
     await switching;
     expect(view.webview.html).toContain('src/newer.h');
+    provider.dispose();
+  });
+
+  it('keeps the current timeline visible with a refresh indicator until replacement history is ready', async () => {
+    const replacement = deferred<HistoryTimelineModel | undefined>();
+    const newer = { ...timelineModel(), relativePath: 'src/newer.h', sourcePath: 'C:/repo/src/newer.h' };
+    const history = {
+      getTimeline: vi.fn()
+        .mockResolvedValueOnce(timelineModel())
+        .mockReturnValueOnce(replacement.promise),
+      openTimelineEntry: vi.fn(async () => undefined)
+    };
+    const provider = new HistoryTimelineViewProvider(history);
+    const view = fakeView();
+    provider.resolveWebviewView(view.value);
+    await provider.focus('C:/repo/src/time.h');
+
+    const refreshing = provider.refresh();
+
+    expect(view.webview.html).toContain('src/time.h');
+    expect(view.webview.html).toContain('Refreshing history');
+    expect(view.webview.html).not.toContain('Loading history...');
+    replacement.resolve(newer);
+    await refreshing;
+    expect(view.webview.html).toContain('src/newer.h');
+    expect(view.webview.html).not.toContain('Refreshing history');
     provider.dispose();
   });
 

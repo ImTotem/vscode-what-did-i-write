@@ -80,6 +80,7 @@
   "Reading local Git history.": "로컬 Git 히스토리를 읽고 있습니다.",
   "Recursively deletes: {paths}. Entire real folders are removed, including hidden files not shown in What Did I Write?.": "다음 폴더를 하위 항목까지 삭제합니다: {paths}. What Did I Write?에 표시되지 않은 파일을 포함해 실제 폴더 전체가 제거됩니다.",
   "Refresh": "새로 고침",
+  "Refreshing history...": "히스토리 새로 고치는 중...",
   "rename": "이름 바꾸기",
   "Rename": "이름 바꾸기",
   "Rename Folder": "폴더 이름 바꾸기",

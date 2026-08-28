@@ -115,6 +115,7 @@ export class RepositoryAnalyzer {
   private readonly queuedJobs: AnalysisJob[] = [];
   private readonly retargetedJobs: AnalysisJob[] = [];
   private readonly pendingJobs = new Map<number, number>();
+  private readonly batchedGenerations = new Set<number>();
   private readonly indexLoads = new Map<string, Promise<Map<string, MutableCandidate>>>();
   private indexLoadTail: Promise<void> = Promise.resolve();
   private indexedCandidates = new Map<string, MutableCandidate>();
@@ -149,12 +150,12 @@ export class RepositoryAnalyzer {
     return this.refresh('initialize');
   }
 
-  public async refresh(_reason: RefreshReason, paths?: readonly string[]): Promise<void> {
+  public async refresh(reason: RefreshReason, paths?: readonly string[]): Promise<void> {
     if (this.disposed) return;
     const generation = ++this.generation;
     this.dropQueuedJobsBefore(generation);
     try {
-      await this.refreshGeneration(generation, paths);
+      await this.refreshGeneration(generation, paths, reason === 'manual');
     } catch (error) {
       if (generation === this.generation) {
         this.settleRetargetedJobs();
@@ -166,8 +167,10 @@ export class RepositoryAnalyzer {
 
   private async refreshGeneration(
     generation: number,
-    paths: readonly string[] | undefined
+    paths: readonly string[] | undefined,
+    atomic: boolean
   ): Promise<void> {
+    const stableFiles = this.snapshot.files;
     const identity = await this.repository.getGlobalIdentity();
     if (generation !== this.generation) return;
     if (!hasConfiguredIdentity(identity)) {
@@ -235,15 +238,28 @@ export class RepositoryAnalyzer {
     this.identity = identity;
     this.head = head ?? '';
     this.candidates = candidates;
-    this.publish(true);
+    if (atomic) this.batchedGenerations.add(generation);
+    this.publish(true, atomic ? stableFiles : undefined);
     this.requeueRetargetedJobs(generation);
 
+    const backgroundJobs: Promise<FileRecord | undefined>[] = [];
     for (const candidate of candidates.values()) {
       if (candidate.exists) {
-        void this.ensureFile(candidate.relativePath, 'background').catch(() => undefined);
+        const job = this.ensureFile(candidate.relativePath, 'background');
+        if (atomic) backgroundJobs.push(job);
+        else void job.catch(() => undefined);
       }
     }
-    if (!this.isScanning(generation)) this.publish(false);
+    if (atomic) {
+      try {
+        await Promise.allSettled(backgroundJobs);
+      } finally {
+        this.batchedGenerations.delete(generation);
+      }
+      if (!this.disposed && generation === this.generation) this.publish(false);
+    } else if (!this.isScanning(generation)) {
+      this.publish(false);
+    }
   }
 
   private loadIndexedCandidates(
@@ -351,7 +367,7 @@ export class RepositoryAnalyzer {
           if (this.inFlight.get(job.key) === job) this.inFlight.delete(job.key);
           this.activeJobs -= 1;
           this.decrementPending(job.generation);
-          if (job.generation === this.generation) this.publish(this.isScanning(job.generation));
+          if (job.generation === this.generation) this.publishGeneration(job.generation);
           this.pumpQueue();
         });
     }
@@ -469,6 +485,7 @@ export class RepositoryAnalyzer {
     this.queuedJobs.splice(0);
     this.retargetedJobs.splice(0);
     this.pendingJobs.clear();
+    this.batchedGenerations.clear();
     this.indexLoads.clear();
     for (const job of jobs) {
       job.resolve(this.getFile(job.candidate.relativePath));
@@ -503,7 +520,7 @@ export class RepositoryAnalyzer {
       candidate.failedGeneration = undefined;
       candidate.failure = undefined;
       candidate.resolvedGeneration = generation;
-      this.publish(this.isScanning(generation));
+      this.publishGeneration(generation);
       return toFileRecord(candidate);
     }
 
@@ -516,7 +533,7 @@ export class RepositoryAnalyzer {
       candidate.failedGeneration = undefined;
       candidate.failure = undefined;
       candidate.resolvedGeneration = generation;
-      this.publish(this.isScanning(generation));
+      this.publishGeneration(generation);
       return toFileRecord(candidate);
     }
 
@@ -548,7 +565,7 @@ export class RepositoryAnalyzer {
     candidate.failedGeneration = undefined;
     candidate.failure = undefined;
     candidate.resolvedGeneration = generation;
-    this.publish(this.isScanning(generation));
+    this.publishGeneration(generation);
     return toFileRecord(candidate);
   }
 
@@ -561,14 +578,20 @@ export class RepositoryAnalyzer {
     return absolutePath;
   }
 
-  private publish(scanning: boolean): void {
+  private publishGeneration(generation: number): void {
+    if (!this.batchedGenerations.has(generation)) {
+      this.publish(this.isScanning(generation));
+    }
+  }
+
+  private publish(scanning: boolean, files?: readonly FileRecord[]): void {
     if (this.disposed) return;
-    this.snapshot = this.createSnapshot(scanning);
+    this.snapshot = this.createSnapshot(scanning, files);
     for (const listener of this.listeners) listener(this.snapshot);
   }
 
-  private createSnapshot(scanning: boolean): RepositorySnapshot {
-    const files = [...this.candidates.values()]
+  private createSnapshot(scanning: boolean, visibleFiles?: readonly FileRecord[]): RepositorySnapshot {
+    const files = visibleFiles ?? [...this.candidates.values()]
       .map(toFileRecord)
       .filter((file): file is FileRecord => file !== undefined)
       .sort((left, right) => left.relativePath.localeCompare(right.relativePath));

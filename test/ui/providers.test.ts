@@ -247,6 +247,19 @@ describe('MyCodeTreeProvider', () => {
     provider.dispose();
   });
 
+  it('does not invalidate MY CHANGES when a manual view refresh sees the same final tree', async () => {
+    const registry = fakeRegistry(snapshot(ROOT, [file('current.ts', 'modified')]));
+    const provider = new MyCodeTreeProvider(registry);
+    const changes: unknown[] = [];
+    provider.onDidChangeTreeData((node) => changes.push(node));
+    provider.getChildren();
+
+    await provider.refresh();
+
+    expect(changes).toEqual([]);
+    provider.dispose();
+  });
+
   it('renders current files as Explorer resources', () => {
     const provider = new MyCodeTreeProvider(fakeRegistry(snapshot(ROOT, [file('current.ts', 'modified')])));
     const current = provider.getChildren()[0] as MyCodeNode;
@@ -377,6 +390,20 @@ describe('PastActivityTreeProvider', () => {
     registry.publish(snapshot(ROOT, [updated], 3));
 
     expect(changes).toEqual([undefined]);
+    provider.dispose();
+  });
+
+  it('does not invalidate PAST ACTIVITY when a manual view refresh sees the same final timeline', async () => {
+    const original = { ...file('old.ts', 'past', false), history: [{ hash: 'a', authorName: 'Me', authorEmail: 'me@example.com', authoredAt: 7, subject: 'Old' }] };
+    const registry = fakeRegistry(snapshot(ROOT, [original]));
+    const provider = new PastActivityTreeProvider(registry);
+    const changes: unknown[] = [];
+    provider.onDidChangeTreeData((node) => changes.push(node));
+    provider.getChildren();
+
+    await provider.refresh();
+
+    expect(changes).toEqual([]);
     provider.dispose();
   });
 });

@@ -276,6 +276,50 @@ describe('RepositoryAnalyzer', () => {
     expect(started[5]).toBe('priority-6.ts');
   });
 
+  it('keeps the previous file list visible and settles a manual refresh only after one final publication', async () => {
+    const root = await createTemporaryDirectory();
+    const storagePath = await createTemporaryDirectory();
+    const path = 'atomic.ts';
+    await writeFile(join(root, path), 'owned\n');
+    const replacement = deferred<BlameLine[]>();
+    let blameCalls = 0;
+    const repository = new ControlledRepository(root, [path], async () => {
+      blameCalls += 1;
+      return blameCalls === 1 ? [ownedLine(userCommit)] : replacement.promise;
+    });
+    const analyzer = new RepositoryAnalyzer(repository, new CacheStore(storagePath));
+
+    await analyzer.initialize();
+    await analyzer.ensureFile(path, 'active-editor');
+    await waitUntil(() => !analyzer.getSnapshot().scanning);
+    const publications: RepositorySnapshot[] = [];
+    analyzer.onDidChange((snapshot) => publications.push(snapshot));
+    let settled = false;
+
+    const refresh = analyzer.refresh('manual', [path]).then(() => {
+      settled = true;
+    });
+    await waitUntil(() => blameCalls === 2);
+    await nextTurn();
+
+    expect(settled).toBe(false);
+    expect(publications).toHaveLength(1);
+    expect(publications[0]).toMatchObject({
+      scanning: true,
+      files: [{ relativePath: path, kind: 'modified' }]
+    });
+
+    replacement.resolve([ownedLine(aliceCommit)]);
+    await refresh;
+
+    expect(publications).toHaveLength(2);
+    expect(publications[1]).toMatchObject({
+      scanning: false,
+      files: [{ relativePath: path, kind: 'past' }]
+    });
+    analyzer.dispose();
+  });
+
   it('disposes queued work, settles explicit callers, and suppresses late publications', async () => {
     const root = await createTemporaryDirectory();
     const storagePath = await createTemporaryDirectory();

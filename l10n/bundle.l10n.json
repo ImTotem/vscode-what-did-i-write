@@ -80,6 +80,7 @@
   "Reading local Git history.": "Reading local Git history.",
   "Recursively deletes: {paths}. Entire real folders are removed, including hidden files not shown in What Did I Write?.": "Recursively deletes: {paths}. Entire real folders are removed, including hidden files not shown in What Did I Write?.",
   "Refresh": "Refresh",
+  "Refreshing history...": "Refreshing history...",
   "rename": "rename",
   "Rename": "Rename",
   "Rename Folder": "Rename Folder",

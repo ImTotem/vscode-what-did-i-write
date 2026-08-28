@@ -149,7 +149,9 @@ export class MyCodeTreeProvider implements vscode.TreeDataProvider<MyCodeNode>, 
   }
 
   public async refresh(): Promise<void> {
-    this.signature = currentTreeSignature(readySnapshots(this.registry));
+    const next = currentTreeSignature(readySnapshots(this.registry));
+    if (next === this.signature) return;
+    this.signature = next;
     this.invalidate();
   }
 
@@ -232,7 +234,9 @@ export class PastActivityTreeProvider implements vscode.TreeDataProvider<PastAct
   }
 
   public async refresh(): Promise<void> {
-    this.signature = pastTreeSignature(readySnapshots(this.registry));
+    const next = pastTreeSignature(readySnapshots(this.registry));
+    if (next === this.signature) return;
+    this.signature = next;
     this.invalidate();
   }
 

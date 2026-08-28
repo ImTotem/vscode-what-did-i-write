@@ -48,11 +48,17 @@ export function activate(context: vscode.ExtensionContext): void {
     editorOwnership,
     reportError
   );
+  let fullRefreshes = 0;
   const refreshAllViews = async (): Promise<void> => {
-    await refreshController.refreshAll();
-    await historyTimeline.refresh();
-    await treeProvider.refresh();
-    await pastActivityProvider.refresh();
+    fullRefreshes += 1;
+    try {
+      await refreshController.refreshAll();
+      await historyTimeline.refresh();
+      await treeProvider.refresh();
+      await pastActivityProvider.refresh();
+    } finally {
+      fullRefreshes -= 1;
+    }
   };
   let myChangesView: vscode.TreeView<MyCodeNode>;
   const fileActions = new MyCodeFileActions({
@@ -178,7 +184,11 @@ export function activate(context: vscode.ExtensionContext): void {
     historyTimeline,
     myChangesView,
     viewController,
-    registry.onDidChange(() => historyTimeline.scheduleRegistryRefresh()),
+    registry.onDidChange(() => historyTimeline.scheduleRegistryRefresh(
+      fullRefreshes > 0 || registry.repositories.some(({ analyzer }) =>
+        analyzer.getSnapshot().scanning
+      )
+    )),
     vscode.window.registerFileDecorationProvider(decorationProvider),
     vscode.window.registerTreeDataProvider('myCode.pastActivity', pastActivityProvider),
     vscode.window.registerWebviewViewProvider('myCode.history', historyTimeline, {
