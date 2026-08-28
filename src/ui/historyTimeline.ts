@@ -300,12 +300,14 @@ export function renderTimelineHtml(
     .context-menu button { background: transparent; border: 0; color: var(--vscode-menu-foreground); cursor: pointer; font: inherit; padding: 5px 8px; text-align: left; width: 100%; }
     .context-menu button:hover { background: var(--vscode-menu-selectionBackground); color: var(--vscode-menu-selectionForeground); }
   </style>
+  <style id="context-menu-position" nonce="${safeNonce}">.context-menu { left: 0; top: 0; }</style>
 </head>
 <body>${body}
   <script nonce="${safeNonce}">
     const vscode = acquireVsCodeApi();
     const comparisonMode = ${comparisonMode ? 'true' : 'false'};
     const menu = document.getElementById('comparison-menu');
+    const positionSheet = document.getElementById('context-menu-position');
     let contextEntryId;
     const hideMenu = () => {
       if (menu) menu.hidden = true;
@@ -318,9 +320,17 @@ export function renderTimelineHtml(
       event.preventDefault();
       contextEntryId = target.dataset.entryId;
       if (menu) {
-        menu.style.left = event.clientX + 'px';
-        menu.style.top = event.clientY + 'px';
         menu.hidden = false;
+        const bounds = menu.getBoundingClientRect();
+        const left = Math.max(0, Math.min(event.clientX, window.innerWidth - bounds.width));
+        const top = Math.max(0, Math.min(event.clientY, window.innerHeight - bounds.height));
+        const positionRule = positionSheet && positionSheet.sheet
+          ? positionSheet.sheet.cssRules[0]
+          : undefined;
+        if (positionRule && 'style' in positionRule) {
+          positionRule.style.left = left + 'px';
+          positionRule.style.top = top + 'px';
+        }
       }
     });
     document.addEventListener('click', (event) => {

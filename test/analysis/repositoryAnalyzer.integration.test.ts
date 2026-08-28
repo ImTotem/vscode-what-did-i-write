@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -317,6 +317,92 @@ describe('RepositoryAnalyzer', () => {
       scanning: false,
       files: [{ relativePath: path, kind: 'past' }]
     });
+    analyzer.dispose();
+  });
+
+  it('includes a deleted visible-file request in one atomic manual refresh publication', async () => {
+    const root = await createTemporaryDirectory();
+    const storagePath = await createTemporaryDirectory();
+    const path = 'deleted-visible.ts';
+    await writeFile(join(root, path), 'owned\n');
+    const repository = new ControlledRepository(root, [path], async () => [ownedLine(userCommit)]);
+    const analyzer = new RepositoryAnalyzer(repository, new CacheStore(storagePath));
+
+    await analyzer.initialize();
+    await analyzer.ensureFile(path, 'active-editor');
+    await waitUntil(() => !analyzer.getSnapshot().scanning);
+    await unlink(join(root, path));
+    const publications: RepositorySnapshot[] = [];
+    let visibleRequest: Promise<FileRecord | undefined> | undefined;
+    analyzer.onDidChange((snapshot) => {
+      publications.push(snapshot);
+      if (snapshot.scanning) visibleRequest = analyzer.ensureFile(path, 'active-editor');
+    });
+
+    await analyzer.refresh('manual', [path]);
+    await visibleRequest;
+    await nextTurn();
+
+    expect(publications).toHaveLength(2);
+    expect(publications[0]).toMatchObject({
+      scanning: true,
+      files: [{ relativePath: path, exists: true }]
+    });
+    expect(publications[1]).toMatchObject({
+      scanning: false,
+      files: [{ relativePath: path, kind: 'past', exists: false, ranges: [] }]
+    });
+    analyzer.dispose();
+  });
+
+  it('settles an explicit queued request retargeted to a deleted file before manual refresh returns', async () => {
+    const root = await createTemporaryDirectory();
+    const storagePath = await createTemporaryDirectory();
+    const blockers = Array.from({ length: 4 }, (_, index) => 'blocker-' + (index + 1) + '.ts');
+    const deletedPath = 'retargeted-deleted.ts';
+    await Promise.all([...blockers, deletedPath].map(async (path) => writeFile(join(root, path), 'owned\n')));
+    const releases = blockers.map(() => deferred<void>());
+    let head = 'a'.repeat(40);
+    let indexedPaths: readonly string[] = [...blockers, deletedPath];
+    let blockerStarts = 0;
+    const repository: RepositoryAccess = {
+      root,
+      getGlobalIdentity: async () => ({ name: userCommit.authorName, email: userCommit.authorEmail }),
+      getHead: async () => head,
+      getUserIndex: async () => indexForPaths(indexedPaths),
+      getWorkingChanges: async () => [],
+      blame: async (path) => {
+        const index = blockers.indexOf(path);
+        if (index >= 0) {
+          blockerStarts += 1;
+          await releases[index]?.promise;
+        }
+        return [ownedLine(userCommit)];
+      }
+    };
+    const analyzer = new RepositoryAnalyzer(repository, new CacheStore(storagePath));
+
+    await analyzer.initialize();
+    await waitUntil(() => blockerStarts === 4);
+    const explicit = analyzer.ensureFile(deletedPath, 'active-editor');
+    await unlink(join(root, deletedPath));
+    head = 'b'.repeat(40);
+    indexedPaths = [deletedPath];
+    const publications: RepositorySnapshot[] = [];
+    analyzer.onDidChange((snapshot) => publications.push(snapshot));
+
+    await analyzer.refresh('manual', [deletedPath]);
+    await expect(explicit).resolves.toMatchObject({
+      relativePath: deletedPath,
+      kind: 'past',
+      exists: false,
+      ranges: []
+    });
+    await nextTurn();
+
+    expect(publications).toHaveLength(2);
+    expect(publications.at(-1)).toMatchObject({ scanning: false });
+    for (const release of releases) release.resolve();
     analyzer.dispose();
   });
 

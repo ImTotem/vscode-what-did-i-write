@@ -55,6 +55,21 @@ describe('renderTimelineHtml', () => {
     expect(html).toContain('entry base');
   });
 
+  it('positions the comparison menu through the nonce-authorized stylesheet instead of inline styles', () => {
+    const html = renderTimelineHtml(
+      { kind: 'ready', model: fileTimelineModel() },
+      'nonce-1',
+      'vscode-resource:'
+    );
+
+    expect(html).toContain('id="context-menu-position"');
+    expect(html).toContain('positionSheet.sheet.cssRules[0]');
+    expect(html).toContain('window.innerWidth - bounds.width');
+    expect(html).toContain('window.innerHeight - bounds.height');
+    expect(html).not.toContain('menu.style.left');
+    expect(html).not.toContain('menu.style.top');
+  });
+
   it('renders explicit loading, empty, and error states', () => {
     expect(renderTimelineHtml({ kind: 'loading' }, 'n', 'vscode-resource:')).toContain('Loading history');
     expect(renderTimelineHtml({ kind: 'empty', path: 'src/empty.ts' }, 'n', 'vscode-resource:')).toContain('No matching commits');

@@ -211,7 +211,6 @@ export class RepositoryAnalyzer {
       candidate.exists = await pathExists(this.absolutePath(candidate.relativePath), this.fileSystem);
     });
     if (generation !== this.generation) return;
-
     if (cacheKeyText !== undefined && cacheKeyText === this.indexCacheKey) {
       const invalidatedPaths = paths === undefined
         ? undefined
@@ -231,6 +230,14 @@ export class RepositoryAnalyzer {
           candidate.resolvedGeneration = generation;
         }
       }
+    }
+    for (const candidate of candidates.values()) {
+      if (candidate.exists) continue;
+      candidate.binary = false;
+      candidate.ranges = [];
+      candidate.failedGeneration = undefined;
+      candidate.failure = undefined;
+      candidate.resolvedGeneration = generation;
     }
 
     this.indexedCandidates = cloneCandidates(indexedCandidates);
