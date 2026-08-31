@@ -23,7 +23,7 @@ What Did I Write?는 현재 체크아웃한 Git 저장소에서 내가 작성한
 ```powershell
 npm install
 npm run package
-code --install-extension .\what-did-i-write-0.1.0.vsix
+code --install-extension .\what-did-i-write-0.1.1.vsix
 ```
 
 설치 후 Git 저장소를 여세요. Git 저장소가 아닌 폴더에는 아무 표시도 하지 않습니다. Git이나 전역 사용자 정보를 찾지 못하면 해결 방법이 포함된 경고를 한 번 보여주고, 자세한 내용은 **What Did I Write?** 출력 채널에 기록합니다.

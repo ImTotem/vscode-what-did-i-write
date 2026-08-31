@@ -23,7 +23,7 @@ Build and install the local package:
 ```powershell
 npm install
 npm run package
-code --install-extension .\what-did-i-write-0.1.0.vsix
+code --install-extension .\what-did-i-write-0.1.1.vsix
 ```
 
 Open a Git repository after installation. Non-Git folders are ignored. If Git or the global identity is missing, the extension shows an actionable warning and writes details to the **What Did I Write?** output channel.

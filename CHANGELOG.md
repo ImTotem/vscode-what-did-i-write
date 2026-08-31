@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.1 - 2026-08-31
+
+- Replaced the unreliable Expand All action with a persistent Collapse All action.
+- Added direct right-click comparison-base selection and second-click clearing in File History.
+
 ## 0.1.0 - 2026-08-26
 
 Initial local-only MVP release.

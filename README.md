@@ -27,7 +27,7 @@ Staged, unstaged, and untracked files are treated as your current work.
 Build a local installable package with `npm run package`, then install it:
 
 ```powershell
-code --install-extension .\what-did-i-write-0.1.0.vsix
+code --install-extension .\what-did-i-write-0.1.1.vsix
 ```
 
 Open a Git repository after installation. Folders outside Git repositories are
