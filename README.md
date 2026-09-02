@@ -27,7 +27,7 @@ Staged, unstaged, and untracked files are treated as your current work.
 Build a local installable package with `npm run package`, then install it:
 
 ```powershell
-code --install-extension .\what-did-i-write-0.1.1.vsix
+code --install-extension .\what-did-i-write-0.2.0.vsix
 ```
 
 Open a Git repository after installation. Folders outside Git repositories are
@@ -51,8 +51,8 @@ history list, and **FILE HISTORY** for the selected file or line. Expand folders
 in **MY CHANGES** and select a file to open it; selecting a past row focuses its
 history without making the deleted path mutable.
 
-The **MY CHANGES** list uses a collapsible Explorer-like folder hierarchy.
-The **FILE HISTORY** view places saved working changes first and the newest commit at the top.
+The **MY CHANGES** list uses a collapsible Explorer-like folder hierarchy. Selecting files or folders combines their unique descendant files into one history.
+The **FILE HISTORY** view shows the selection's current authored-line count, per-commit line changes, and BASE-to-target totals while placing the newest commit at the top.
 Its vertical rail points toward older matching commits, so the time direction is visible
 without reading every timestamp. Clicking a commit keeps the source pinned and updates
 one reusable preview diff beside it.
@@ -73,7 +73,7 @@ Binary files may be listed, but are never line-decorated.
 | **MY CHANGES** title bar | Refresh, Collapse All, and Hide / Show My Code Decorations. |
 | Editor native Quick Diff gutter / overview ruler | VS Code-native markers for lines attributed to you. |
 | Editor gutter hover / click | The marker expands on hover; click it for the native inline diff. Use **FILE HISTORY** for commit history. |
-| **FILE HISTORY** | Newest-first commit rail; click an entry to update the reusable preview diff beside the source. |
+| **FILE HISTORY** | Combined selection history with current-line, per-commit, and BASE comparison statistics. |
 | Command Palette | Every What Did I Write? command, including Retry and Show Output. |
 
 ## Commands and setting

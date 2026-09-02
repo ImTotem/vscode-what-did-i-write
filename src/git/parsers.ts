@@ -17,6 +17,12 @@ export interface WorkingChange {
 
 export interface BlameLine extends OwnedLine {}
 
+export interface NumStatRecord {
+  readonly additions: number;
+  readonly deletions: number;
+  readonly path: string;
+}
+
 export class GitParseError extends Error {
   public constructor(
     readonly parser: string,
@@ -29,6 +35,69 @@ export class GitParseError extends Error {
 }
 
 const NUL = 0;
+
+export function parseNumStat(input: Buffer): NumStatRecord[] {
+  if (input.length === 0) return [];
+  if (input[input.length - 1] !== NUL) {
+    throw parseError('parseNumStat', input.length, 'missing NUL record terminator');
+  }
+  const records: NumStatRecord[] = [];
+  for (const raw of input.toString('utf8').split('\0').slice(0, -1)) {
+    const parsed = parseNumStatRecord(raw, input, 'parseNumStat');
+    if (parsed !== undefined) records.push(parsed);
+  }
+  return records;
+}
+
+export function parseCommitNumStats(input: Buffer): ReadonlyMap<string, readonly NumStatRecord[]> {
+  const result = new Map<string, readonly NumStatRecord[]>();
+  if (input.length === 0) return result;
+  if (input[0] !== NUL || input[input.length - 1] !== NUL) {
+    throw parseError('parseCommitNumStats', 0, 'invalid NUL framing');
+  }
+  const fields = input.toString('utf8').split('\0');
+  let cursor = 1;
+  while (cursor < fields.length - 1) {
+    const hash = fields[cursor] ?? '';
+    if (!/^[0-9a-f]+$/i.test(hash)) {
+      throw parseError('parseCommitNumStats', byteOffset(input, hash), 'invalid commit hash');
+    }
+    cursor += 1;
+    if ((fields[cursor] ?? '') !== '') {
+      throw parseError('parseCommitNumStats', byteOffset(input, fields[cursor] ?? ''), 'missing commit separator');
+    }
+    cursor += 1;
+    const records: NumStatRecord[] = [];
+    while (cursor < fields.length - 1 && (fields[cursor] ?? '') !== '') {
+      const raw = fields[cursor] as string;
+      const parsed = parseNumStatRecord(raw, input, 'parseCommitNumStats');
+      if (parsed !== undefined) records.push(parsed);
+      cursor += 1;
+    }
+    result.set(hash, records);
+    cursor += 1;
+  }
+  return result;
+}
+
+function parseNumStatRecord(raw: string, input: Buffer, parser: string): NumStatRecord | undefined {
+  const record = raw.replace(/^[\r\n]+/, '');
+  if (record.length === 0) return undefined;
+  const firstTab = record.indexOf('\t');
+  const secondTab = firstTab < 0 ? -1 : record.indexOf('\t', firstTab + 1);
+  if (firstTab < 1 || secondTab < firstTab + 2 || secondTab === record.length - 1) {
+    throw parseError(parser, byteOffset(input, raw), 'malformed numstat record');
+  }
+  const additionsText = record.slice(0, firstTab);
+  const deletionsText = record.slice(firstTab + 1, secondTab);
+  if (additionsText === '-' && deletionsText === '-') return undefined;
+  const additions = Number(additionsText);
+  const deletions = Number(deletionsText);
+  if (!Number.isSafeInteger(additions) || additions < 0 || !Number.isSafeInteger(deletions) || deletions < 0) {
+    throw parseError(parser, byteOffset(input, raw), 'invalid line counts');
+  }
+  return { additions, deletions, path: record.slice(secondTab + 1) };
+}
 
 export function parseLogIndex(input: Buffer): LogIndexEntry[] {
   const entries: LogIndexEntry[] = [];

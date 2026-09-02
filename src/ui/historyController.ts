@@ -3,10 +3,10 @@ import { basename, isAbsolute, join, relative, sep } from 'node:path';
 import * as vscode from 'vscode';
 
 import { matchesIdentity } from '../core/identity.js';
-import type { CommitSummary, GitIdentity, OwnedRange } from '../core/model.js';
+import type { CommitSummary, GitIdentity, LineChangeStats, OwnedRange } from '../core/model.js';
 import type { RegisteredRepository, RepositoryRegistry } from '../extension/repositoryRegistry.js';
 import type { WorkingChange } from '../git/parsers.js';
-import type { FileHistoryEntry } from '../git/repository.js';
+import type { FileHistoryEntry, UserIndex } from '../git/repository.js';
 import { formatDateTime, formatRelativeDate, localize } from '../localization.js';
 import { revisionUri } from './gitContentProvider.js';
 import type { HistoryTreeNode } from './myCodeTree.js';
@@ -21,6 +21,16 @@ interface HistoryRepository {
   mapWorkingLineToHead?(path: string, line: number): Promise<number | undefined>;
   getLineHistory(path: string, line: number): Promise<CommitSummary[]>;
   getWorkingChanges(): Promise<WorkingChange[]>;
+  getUserIndex?(identity: GitIdentity): Promise<UserIndex>;
+  getDiffStats?(
+    baseRevision: string,
+    targetRevision: string | undefined,
+    paths: readonly string[]
+  ): Promise<LineChangeStats>;
+  getCommitDiffStats?(
+    commitHashes: readonly string[],
+    paths: readonly string[]
+  ): Promise<ReadonlyMap<string, LineChangeStats>>;
 }
 
 export interface CommitHistoryQuickPickItem extends vscode.QuickPickItem {
@@ -45,7 +55,7 @@ export interface HistoryPreview {
   readonly lineHistory: readonly CommitSummary[];
 }
 
-export type TimelineMode = 'file' | 'line';
+export type TimelineMode = 'file' | 'line' | 'selection';
 
 export interface WorkingTimelineEntry {
   readonly id: 'working';
@@ -68,6 +78,7 @@ export interface CommitTimelineEntry {
   readonly commit: CommitSummary;
   readonly path: string;
   readonly parentPath?: string;
+  readonly stats?: LineChangeStats;
 }
 
 export interface OriginalTimelineEntry {
@@ -92,6 +103,12 @@ export interface HistoryTimelineModel {
   readonly line?: number;
   readonly commitLine?: number;
   readonly entries: readonly HistoryTimelineEntry[];
+  readonly fileCount?: number;
+  readonly currentOwnedLines?: number;
+  readonly selectedPaths?: readonly string[];
+  readonly currentPaths?: readonly string[];
+  readonly untrackedOwnedLines?: number;
+  readonly untrackedPaths?: readonly string[];
 }
 
 
@@ -206,7 +223,7 @@ export class HistoryController {
     }
     if (cancelled()) return undefined;
 
-    const commits = commitQuickPickItems(history, target.identity, historyPath, this.now())
+    let commits = commitQuickPickItems(history, target.identity, historyPath, this.now())
       .map((item, index): CommitTimelineEntry => ({
         id: `commit:${item.commit.hash}:${encodeURIComponent(item.path)}`,
         kind: 'commit',
@@ -244,6 +261,21 @@ export class HistoryController {
     }];
     const sourceRecord = target.entry.analyzer.getSnapshot().files
       .find(({ relativePath }) => relativePath === target.path);
+    const selectedPaths = [...new Set([
+      target.path,
+      ...commits.flatMap(({ path, parentPath }) => parentPath === undefined ? [path] : [path, parentPath]),
+      ...(working === undefined ? [] : [working.headPath, working.workingPath])
+    ])].sort();
+    const currentOwnedLines = sourceRecord?.ranges.reduce(
+      (total, range) => total + Math.max(0, range.endExclusive - range.start), 0
+    ) ?? 0;
+    if (zeroBasedLine === undefined && repository.getCommitDiffStats !== undefined && commits.length > 0) {
+      const statsByHash = await repository.getCommitDiffStats(
+        commits.map(({ commit }) => commit.hash), selectedPaths
+      );
+      if (cancelled()) return undefined;
+      commits = commits.map((entry) => ({ ...entry, stats: statsByHash.get(entry.commit.hash) }));
+    }
     return {
       root: target.root,
       head: target.head,
@@ -252,19 +284,138 @@ export class HistoryController {
       relativePath: target.path,
       mode: zeroBasedLine === undefined ? 'file' : 'line',
       ...(zeroBasedLine === undefined ? {} : { line: zeroBasedLine, commitLine }),
-      entries: [...workingEntry, ...commits, ...originalEntry]
+      entries: [...workingEntry, ...commits, ...originalEntry],
+      ...(zeroBasedLine === undefined ? {
+        fileCount: 1,
+        currentOwnedLines,
+        selectedPaths,
+        currentPaths: sourceRecord?.exists === false ? [] : [target.path]
+      } : {})
+    };
+  }
+
+  public async getSelectionTimeline(
+    inputs: readonly unknown[],
+    cancellation?: Pick<vscode.CancellationToken, 'isCancellationRequested'>
+  ): Promise<HistoryTimelineModel | undefined> {
+    const cancelled = (): boolean => cancellation?.isCancellationRequested === true;
+    const targets = [...new Map(inputs.flatMap((input) => {
+      const target = this.resolveTarget(input);
+      return target === undefined ? [] : [[`${target.root}\0${target.path}`, target] as const];
+    })).values()];
+    if (targets.length === 0 || cancelled()) return undefined;
+    const root = targets[0]?.root;
+    if (root === undefined || targets.some((target) => !sameRoot(target.root, root))) return undefined;
+    const first = targets[0] as ResolvedTarget;
+    const repository = historyRepository(first.entry);
+    if (repository.getUserIndex === undefined || repository.getDiffStats === undefined) return undefined;
+    if (targets.length === 1) {
+      return this.getTimeline(join(root, targets[0]?.path as string), undefined, cancellation);
+    }
+    const selectedPaths = targets.map(({ path }) => path).sort();
+    const selectedSet = new Set(selectedPaths);
+    const snapshot = first.entry.analyzer.getSnapshot();
+    const selectedRecords = snapshot.files.filter(({ relativePath }) => selectedSet.has(relativePath));
+    const currentOwnedLines = selectedRecords.reduce((total, record) => total + record.ranges.reduce(
+      (fileTotal, range) => fileTotal + Math.max(0, range.endExclusive - range.start), 0
+    ), 0);
+    const [index, workingChanges] = await Promise.all([
+      repository.getUserIndex(first.identity),
+      repository.getWorkingChanges()
+    ]);
+    if (cancelled()) return undefined;
+    const selectedEntries = index.entries.flatMap((entry) => {
+      const changes = entry.changes.filter(({ path }) => selectedSet.has(path));
+      return changes.length === 0 || !matchesIdentity(
+        first.identity, entry.commit.authorName, entry.commit.authorEmail
+      ) ? [] : [{ commit: entry.commit, changes }];
+    }).sort((left, right) => right.commit.authoredAt - left.commit.authoredAt);
+    const aliases = new Set(selectedPaths);
+    for (const { changes } of selectedEntries) {
+      for (const change of changes) {
+        if (change.originalPath !== undefined) aliases.add(change.originalPath);
+      }
+    }
+    const allPaths = [...aliases].sort();
+    const statsByHash = repository.getCommitDiffStats === undefined
+      ? new Map((await mapConcurrent(selectedEntries, 4, async ({ commit }) => [
+          commit.hash,
+          await repository.getDiffStats?.(`${commit.hash}^`, commit.hash, allPaths)
+        ] as const)).filter((entry): entry is readonly [string, LineChangeStats] => entry[1] !== undefined))
+      : await repository.getCommitDiffStats(selectedEntries.map(({ commit }) => commit.hash), allPaths);
+    if (cancelled()) return undefined;
+    const commits = selectedEntries.map(({ commit, changes }, index) => ({
+      id: `commit:${commit.hash}`,
+      kind: 'commit' as const,
+      title: commit.subject,
+      relativeDate: formatRelativeDate(commit.authoredAt, this.now()),
+      authoredAt: commit.authoredAt,
+      latest: index === 0,
+      commit,
+      path: changes[0]?.path ?? selectedPaths[0] as string,
+      stats: statsByHash.get(commit.hash)
+    }));
+    const oldest = commits.at(-1);
+    const original: OriginalTimelineEntry[] = oldest === undefined ? [] : [{
+      id: `original:${oldest.commit.hash}`,
+      kind: 'original',
+      title: localize('ORIGINAL'),
+      detail: localize('Before your first change'),
+      revision: `${oldest.commit.hash}^`,
+      path: selectedPaths[0] as string,
+      exists: true
+    }];
+    const selectedWorking = workingChanges.filter(({ path, originalPath }) =>
+      selectedSet.has(path) || (originalPath !== undefined && selectedSet.has(originalPath)));
+    const untrackedPaths = new Set(selectedWorking.filter(({ status }) => status === '?').map(({ path }) => path));
+    const untrackedOwnedLines = selectedRecords
+      .filter(({ relativePath }) => untrackedPaths.has(relativePath))
+      .reduce((total, record) => total + record.ranges.reduce(
+        (fileTotal, range) => fileTotal + Math.max(0, range.endExclusive - range.start), 0
+      ), 0);
+    const working: WorkingTimelineEntry[] = selectedWorking.length === 0 ? [] : [{
+      id: 'working',
+      kind: 'working',
+      title: localize('Current changes'),
+      detail: localize('{count} selected files', { count: selectedPaths.length }),
+      headPath: selectedPaths[0] as string,
+      workingPath: selectedPaths[0] as string,
+      exists: true,
+      headExists: true
+    }];
+    return {
+      root,
+      head: first.head,
+      sourcePath: root,
+      sourceExists: false,
+      relativePath: localize('{count} selected files', { count: selectedPaths.length }),
+      mode: 'selection',
+      entries: [...working, ...commits, ...original],
+      fileCount: selectedPaths.length,
+      currentOwnedLines,
+      selectedPaths: allPaths,
+      currentPaths: selectedRecords.filter(({ exists }) => exists).map(({ relativePath }) => relativePath),
+      untrackedOwnedLines,
+      untrackedPaths: [...untrackedPaths].sort()
     };
   }
 
   public async openTimelineComparison(
     model: HistoryTimelineModel,
     baseId: string,
-    targetId: string
+    targetId: string,
+    cancellation?: Pick<vscode.CancellationToken, 'isCancellationRequested'>
   ): Promise<void> {
+    const cancelled = (): boolean => cancellation?.isCancellationRequested === true;
+    if (cancelled()) return;
     if (baseId === targetId) return;
     const base = model.entries.find(({ id }) => id === baseId);
     const target = model.entries.find(({ id }) => id === targetId);
     if (base === undefined || target === undefined) return;
+    if (model.mode === 'selection') {
+      await this.openSelectionComparison(model, base, target, cancellation);
+      return;
+    }
     const sourceUri = vscode.Uri.file(model.sourcePath);
     const activeEditor = vscode.window.activeTextEditor;
     const sourceEditor = activeEditor?.document.uri.toString() === sourceUri.toString()
@@ -280,6 +431,7 @@ export class HistoryController {
         { preview: false, preserveFocus: true, ...sameGroup }
       );
     }
+    if (cancelled()) return;
 
     const before = timelineRevisionUri(model.root, base);
     const after = timelineRevisionUri(model.root, target);
@@ -294,6 +446,36 @@ export class HistoryController {
     );
     const line = target.kind === 'working' ? model.line : model.commitLine;
     if (line !== undefined) revealLine(line, before, after);
+  }
+
+  public async getTimelineComparisonStats(
+    model: HistoryTimelineModel,
+    baseId: string,
+    targetId?: string
+  ): Promise<LineChangeStats | undefined> {
+    const base = model.entries.find(({ id }) => id === baseId);
+    const target = targetId === undefined
+      ? undefined
+      : model.entries.find(({ id }) => id === targetId);
+    const baseRevision = base === undefined || base.kind === 'working'
+      ? undefined
+      : base.kind === 'commit' ? base.commit.hash : base.revision;
+    const targetRevision = target === undefined || target.kind === 'working'
+      ? undefined
+      : target.kind === 'commit' ? target.commit.hash : target.revision;
+    const paths = model.selectedPaths;
+    if (baseRevision === undefined || paths === undefined) return undefined;
+    const entry = this.registry.repositories.find(({ root }) => sameRoot(root, model.root));
+    if (entry === undefined) return undefined;
+    const repository = historyRepository(entry);
+    if (repository.getDiffStats === undefined) return undefined;
+    const stats = await repository.getDiffStats(baseRevision, targetRevision, paths);
+    const untracked = targetRevision === undefined ? model.untrackedOwnedLines ?? 0 : 0;
+    return untracked === 0 ? stats : {
+      ...stats,
+      added: stats.added + untracked,
+      paths: [...new Set([...stats.paths, ...(model.untrackedPaths ?? [])])].sort()
+    };
   }
 
   public async openTimelineEntry(model: HistoryTimelineModel, id: string): Promise<void> {
@@ -456,6 +638,38 @@ export class HistoryController {
       parentPath: selected.parentPath,
       line: commitLine
     }, mode);
+  }
+
+  private async openSelectionComparison(
+    model: HistoryTimelineModel,
+    base: HistoryTimelineEntry,
+    target: HistoryTimelineEntry,
+    cancellation?: Pick<vscode.CancellationToken, 'isCancellationRequested'>
+  ): Promise<void> {
+    const baseRevision = base.kind === 'commit' ? base.commit.hash
+      : base.kind === 'original' ? base.revision : undefined;
+    const targetRevision = target.kind === 'commit' ? target.commit.hash
+      : target.kind === 'original' ? target.revision : undefined;
+    if (baseRevision === undefined) return;
+    const stats = await this.getTimelineComparisonStats(model, base.id, target.id);
+    if (cancellation?.isCancellationRequested === true) return;
+    const paths = stats?.paths.length ? stats.paths : model.selectedPaths ?? [];
+    const currentPaths = new Set(model.currentPaths ?? []);
+    const resources = paths.map((path) => [
+      vscode.Uri.file(join(model.root, path)),
+      revisionUri(model.root, baseRevision, path),
+      target.kind === 'working'
+        ? currentPaths.has(path)
+          ? vscode.Uri.file(join(model.root, path))
+          : revisionUri(model.root, EMPTY_REVISION, path)
+        : revisionUri(model.root, targetRevision as string, path)
+    ] as const);
+    if (resources.length === 0) return;
+    await vscode.commands.executeCommand(
+      'vscode.changes',
+      `${model.relativePath} · ${timelineLabel(base)} → ${timelineLabel(target)}`,
+      resources
+    );
   }
 
   private resolveTarget(input: unknown): ResolvedTarget | undefined {
@@ -631,4 +845,22 @@ function sameRoot(left: string, right: string): boolean {
   return process.platform === 'win32'
     ? left.toLocaleLowerCase() === right.toLocaleLowerCase()
     : left === right;
+}
+
+async function mapConcurrent<T, R>(
+  values: readonly T[],
+  limit: number,
+  operation: (value: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(values.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < values.length) {
+      const index = next;
+      next += 1;
+      results[index] = await operation(values[index] as T, index);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, values.length) }, worker));
+  return results;
 }

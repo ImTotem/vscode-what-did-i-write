@@ -7,8 +7,37 @@ import {
   parseLogIndex,
   parsePorcelainV2Status
 } from '../../src/git/parsers.js';
+import * as parserModule from '../../src/git/parsers.js';
 
 describe('Git parsers', () => {
+  it('parses NUL-delimited numstat records and ignores binary line counts', () => {
+    const parse = (parserModule as unknown as {
+      parseNumStat?: (input: Buffer) => readonly unknown[];
+    }).parseNumStat;
+
+    expect(parse).toBeTypeOf('function');
+    expect(parse?.(Buffer.from('10\t4\tsrc/a file.ts\x00-\t-\tassets/data.bin\x003\t0\t한글.ts\x00'))).toEqual([
+      { additions: 10, deletions: 4, path: 'src/a file.ts' },
+      { additions: 3, deletions: 0, path: '한글.ts' }
+    ]);
+  });
+
+  it('groups one NUL-delimited numstat log by commit hash', () => {
+    const parse = (parserModule as unknown as {
+      parseCommitNumStats?: (input: Buffer) => ReadonlyMap<string, readonly unknown[]>;
+    }).parseCommitNumStats;
+    const raw = [
+      '', 'aaa', '', '\n2\t1\tsrc/a.ts', '',
+      'bbb', '', '\n3\t0\tsrc/b.ts', '\n-\t-\tassets/data.bin', ''
+    ].join('\0');
+
+    expect(parse).toBeTypeOf('function');
+    expect([...(parse?.(Buffer.from(raw)) ?? [])]).toEqual([
+      ['aaa', [{ additions: 2, deletions: 1, path: 'src/a.ts' }]],
+      ['bbb', [{ additions: 3, deletions: 0, path: 'src/b.ts' }]]
+    ]);
+  });
+
   it('parses matching commit metadata and NUL-delimited name status', () => {
     const raw = '\x00abc\x00Alice\x00alice@example.com\x001700000000\x00제목\x00\x00A\x00src/a file.ts\x00';
 

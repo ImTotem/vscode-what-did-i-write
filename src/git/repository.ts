@@ -3,12 +3,14 @@ import { lstat, open } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 import { matchesIdentity } from '../core/identity.js';
-import type { CommitSummary, GitIdentity } from '../core/model.js';
+import type { CommitSummary, GitIdentity, LineChangeStats } from '../core/model.js';
 import { GitRunner } from './gitRunner.js';
 import {
   parseHistoryRecords,
+  parseCommitNumStats,
   parseLinePorcelainBlame,
   parseLogIndex,
+  parseNumStat,
   parsePorcelainV2Status,
   type BlameLine,
   type LogIndexEntry,
@@ -109,6 +111,47 @@ export class GitRepository {
     return history;
   }
 
+  public async getDiffStats(
+    baseRevision: string,
+    targetRevision: string | undefined,
+    paths: readonly string[]
+  ): Promise<LineChangeStats> {
+    const selectedPaths = [...new Set(paths.filter((path) => path.length > 0))].sort();
+    if (selectedPaths.length === 0) return { added: 0, modified: 0, deleted: 0, paths: [] };
+    const selectedSet = new Set(selectedPaths);
+    const directCommit = targetRevision !== undefined && baseRevision === `${targetRevision}^`;
+    const result = await this.runner.run(this.root, directCommit ? [
+      '--literal-pathspecs', 'diff-tree', '--root', '--no-commit-id', '-r',
+      '--diff-merges=first-parent', '--numstat', '-z', '--no-renames',
+      targetRevision
+    ] : [
+      '--literal-pathspecs', 'diff', '--no-ext-diff', '--no-color', '--numstat', '-z', '--no-renames',
+      baseRevision, ...(targetRevision === undefined ? [] : [targetRevision])
+    ]);
+    const records = parseNumStat(result.stdout).filter(({ path }) => selectedSet.has(path));
+    return lineChangeStats(records);
+  }
+
+  public async getCommitDiffStats(
+    commitHashes: readonly string[],
+    paths: readonly string[]
+  ): Promise<ReadonlyMap<string, LineChangeStats>> {
+    const hashes = [...new Set(commitHashes)];
+    const selectedPaths = new Set(paths);
+    const result = new Map<string, LineChangeStats>();
+    if (hashes.length === 0 || selectedPaths.size === 0) return result;
+    const log = await this.runner.run(this.root, [
+      'log', 'HEAD', '--format=%x00%H%x00', '--numstat', '-z', '--no-renames',
+      '--diff-merges=first-parent'
+    ]);
+    const recordsByHash = parseCommitNumStats(log.stdout);
+    for (const hash of hashes) {
+      const records = (recordsByHash.get(hash) ?? []).filter(({ path }) => selectedPaths.has(path));
+      result.set(hash, lineChangeStats(records));
+    }
+    return result;
+  }
+
 
   public async mapWorkingLineToHead(path: string, line: number): Promise<number | undefined> {
     if (!Number.isSafeInteger(line) || line < 1) {
@@ -170,6 +213,26 @@ export class GitRepository {
   private readStatus() {
     return this.runner.run(this.root, ['status', '--porcelain=v2', '-z', '--untracked-files=all']);
   }
+}
+
+function lineChangeStats(
+  records: readonly { readonly additions: number; readonly deletions: number; readonly path: string }[]
+): LineChangeStats {
+  let added = 0;
+  let modified = 0;
+  let deleted = 0;
+  for (const record of records) {
+    const replaced = Math.min(record.additions, record.deletions);
+    added += record.additions - replaced;
+    modified += replaced;
+    deleted += record.deletions - replaced;
+  }
+  return {
+    added,
+    modified,
+    deleted,
+    paths: [...new Set(records.map(({ path }) => path))].sort()
+  };
 }
 
 function decodeLine(bytes: Buffer): string {

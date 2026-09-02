@@ -26,6 +26,13 @@ export interface OwnedRange {
   readonly uncommitted: boolean;
 }
 
+export interface LineChangeStats {
+  readonly added: number;
+  readonly modified: number;
+  readonly deleted: number;
+  readonly paths: readonly string[];
+}
+
 export interface FileRecord {
   readonly relativePath: string;
   readonly kind: FileKind;

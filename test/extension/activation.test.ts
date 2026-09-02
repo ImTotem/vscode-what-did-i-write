@@ -30,10 +30,15 @@ const mocks = vi.hoisted(() => {
   const treeView = {
     selection: [] as unknown[],
     reveal: vi.fn(async () => undefined),
+    onDidChangeSelection: (listener: (event: { selection: readonly unknown[] }) => void) => {
+      treeSelectionListeners.add(listener);
+      return { dispose: () => treeSelectionListeners.delete(listener) };
+    },
     onDidExpandElement: () => disposable(),
     onDidCollapseElement: () => disposable(),
     dispose: vi.fn()
   };
+  const treeSelectionListeners = new Set<(event: { selection: readonly unknown[] }) => void>();
   class EventEmitter {
     public readonly event = () => disposable();
     public fire(): void {}
@@ -61,6 +66,11 @@ const mocks = vi.hoisted(() => {
     status,
     treeView,
     EventEmitter
+    ,
+    fireTreeSelection: (selection: readonly unknown[]) => {
+      treeView.selection = [...selection];
+      for (const listener of treeSelectionListeners) listener({ selection });
+    }
   };
 });
 
@@ -170,6 +180,8 @@ describe('extension activation', () => {
     const resolveNode = vi.spyOn(MyCodeTreeProvider.prototype, 'resolveNode');
     const resolvePastNode = vi.spyOn(PastActivityTreeProvider.prototype, 'resolveNode');
     const focusHistory = vi.spyOn(HistoryTimelineViewProvider.prototype, 'focus').mockResolvedValue(undefined);
+    const focusHistorySelection = vi.spyOn(HistoryTimelineViewProvider.prototype, 'focusSelection').mockResolvedValue(undefined);
+    const clearHistory = vi.spyOn(HistoryTimelineViewProvider.prototype, 'clear').mockImplementation(() => undefined);
     const rename = vi.spyOn(MyCodeFileActions.prototype, 'rename').mockResolvedValue(undefined);
     const collapseAll = vi.spyOn(MyCodeViewController.prototype, 'collapseAll').mockResolvedValue(undefined);
     const toggleVisuals = vi.spyOn(VisualModeController.prototype, 'setEnabled').mockResolvedValue(undefined);
@@ -231,6 +243,19 @@ describe('extension activation', () => {
     expect(subscriptions).toEqual(expect.arrayContaining([mocks.output, mocks.status]));
     expect(mocks.outputChannelNames).toEqual(['What Did I Write?']);
     expect(mocks.status.text).toBe('$(sync~spin) What Did I Write?: Scanning');
+
+    const selectedFile = {
+      id: 'file', kind: 'file', root: '/repo', label: 'a.ts', children: [],
+      file: { relativePath: 'src/a.ts', kind: 'modified', exists: true, working: false, binary: false, ranges: [], history: [] }
+    };
+    const selectedNodes = [{
+      id: 'folder', kind: 'folder', root: '/repo', relativePath: 'src', label: 'src', children: [selectedFile]
+    }];
+    mocks.fireTreeSelection(selectedNodes);
+    await flushActivation();
+    expect(focusHistorySelection).toHaveBeenCalledWith([selectedFile]);
+    mocks.fireTreeSelection([]);
+    expect(clearHistory).toHaveBeenCalledTimes(1);
 
     const focusFileHandler = mocks.commandHandlers.get('myCode.focusFileHistory');
     const focusLineHandler = mocks.commandHandlers.get('myCode.focusLineHistory');
@@ -319,6 +344,8 @@ describe('extension activation', () => {
     resolveNode.mockRestore();
     resolvePastNode.mockRestore();
     focusHistory.mockRestore();
+    focusHistorySelection.mockRestore();
+    clearHistory.mockRestore();
     rename.mockRestore();
     collapseAll.mockRestore();
     toggleVisuals.mockRestore();

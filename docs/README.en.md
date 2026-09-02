@@ -23,7 +23,7 @@ Build and install the local package:
 ```powershell
 npm install
 npm run package
-code --install-extension .\what-did-i-write-0.1.1.vsix
+code --install-extension .\what-did-i-write-0.2.0.vsix
 ```
 
 Open a Git repository after installation. Non-Git folders are ignored. If Git or the global identity is missing, the extension shows an actionable warning and writes details to the **What Did I Write?** output channel.
@@ -38,9 +38,9 @@ In the normal Explorer, only files containing your current code are decorated, a
 
 The **MY CODE** icon is an independent Activity Bar destination next to Explorer and Source Control. It contains three sibling views:
 
-- **MY CHANGES** — an Explorer-like folder hierarchy containing your current files.
+- **MY CHANGES** — an Explorer-like folder hierarchy containing your current files; multi-selection includes unique descendant files.
 - **PAST ACTIVITY** — a collapsed-by-default, newest-first list of paths you changed in the past.
-- **FILE HISTORY** — the selected file or line's working changes and matching commits.
+- **FILE HISTORY** — the selected files' combined newest-first commits and authored-line statistics.
 
 Open a candidate text file to see VS Code's native Quick Diff gutter marker for your authored lines. The full source stays visible and no border is drawn over the code.
 What Did I Write? supplies a virtual original with your authored lines removed; VS Code renders the marker according to `scm.diffDecorations`.
@@ -59,7 +59,7 @@ The history timeline keeps current working changes at the top, then lists commit
 | **MY CHANGES** context menu | Explorer-style open, reveal, path copy, create, cut/copy/paste, rename, and delete actions. |
 | Editor native Quick Diff gutter / overview ruler | VS Code-native markers for lines attributed to you. |
 | Editor gutter hover / click | The marker expands on hover; click it for the native inline diff. Use **FILE HISTORY** for commit history. |
-| **FILE HISTORY** | Newest-first commit rail; click an entry to update the preview diff beside the source. |
+| **FILE HISTORY** | Combined selection history with current-line, per-commit, and BASE comparison statistics. |
 | Command Palette | Every What Did I Write? command, including Retry and Show Output. |
 
 ## Commands and settings

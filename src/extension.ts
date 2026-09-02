@@ -13,7 +13,13 @@ import { HistoryController } from './ui/historyController.js';
 import { HistoryTimelineViewProvider } from './ui/historyTimeline.js';
 import { MyCodeDragAndDropController } from './ui/myCodeDragAndDrop.js';
 import { MyCodeFileActions } from './ui/myCodeFileActions.js';
-import { MyCodeTreeProvider, PastActivityTreeProvider, type MyCodeNode, type PastActivityNode } from './ui/myCodeTree.js';
+import {
+  fileNodesForSelection,
+  MyCodeTreeProvider,
+  PastActivityTreeProvider,
+  type MyCodeNode,
+  type PastActivityNode
+} from './ui/myCodeTree.js';
 import { MyCodeViewController, VisualModeController } from './ui/myCodeViewController.js';
 import { OWNERSHIP_ORIGINAL_SCHEME, OwnershipQuickDiffController } from './ui/ownershipQuickDiff.js';
 import { RefreshController } from './ui/refreshController.js';
@@ -207,6 +213,15 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.registerTextDocumentContentProvider(
       OWNERSHIP_ORIGINAL_SCHEME, ownershipQuickDiff
     ),
+    myChangesView.onDidChangeSelection(({ selection }) => {
+      const files = fileNodesForSelection(selection);
+      if (files.length === 0) {
+        historyTimeline.clear();
+        return;
+      }
+      void runHistoryCommand('select MY CHANGES history', files, () =>
+        historyTimeline.focusSelection(files));
+    }),
     vscode.commands.registerCommand('myCode.refresh', refreshAllViews),
     vscode.commands.registerCommand('myCode.showOutput', () => output.show()),
     vscode.commands.registerCommand('myCode.retryIdentity', () => refreshController.retryIdentity()),
@@ -294,11 +309,15 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
     vscode.window.onDidChangeWindowState(({ focused }) => refreshController.setFocused(focused)),
-    vscode.window.onDidChangeActiveTextEditor((editor) => historyTimeline.followEditor(editor))
+    vscode.window.onDidChangeActiveTextEditor((editor) => {
+      if (myChangesView.selection.length === 0) historyTimeline.followEditor(editor);
+    })
   );
 
   refreshController.setFocused(vscode.window.state.focused);
-  historyTimeline.followEditor(vscode.window.activeTextEditor);
+  if (myChangesView.selection.length === 0) {
+    historyTimeline.followEditor(vscode.window.activeTextEditor);
+  }
   void withMyCodeProgress(async () => {
     await registry.start();
     await refreshFingerprintsWhenFocused();

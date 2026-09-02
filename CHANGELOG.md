@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.2.0 - 2026-09-02
+
+- Combines MY CHANGES file and folder selections into one newest-first FILE HISTORY timeline.
+- Shows current authored lines, per-commit line changes, and fixed-height BASE comparison totals.
+- Clears FILE HISTORY when the MY CHANGES selection is cleared.
+
 ## 0.1.1 - 2026-08-31
 
 - Replaced the unreliable Expand All action with a persistent Collapse All action.

@@ -175,6 +175,90 @@ describe('history QuickPick rows', () => {
 });
 
 describe('history timeline model', () => {
+  it('merges selected files into one deduplicated newest-first timeline with line stats', async () => {
+    const newest = commit('ddddddd44444444', 'Me', 'me@example.com', 1_700_000_300, 'Newest');
+    const shared = commit('ccccccc33333333', 'Me', 'me@example.com', 1_700_000_200, 'Shared refactor');
+    const oldest = commit('bbbbbbb22222222', 'Me', 'me@example.com', 1_700_000_100, 'Oldest');
+    const files: FileRecord[] = [
+      { relativePath: 'src/a.ts', kind: 'modified', exists: true, working: false, binary: false,
+        ranges: [{ start: 0, endExclusive: 3, uncommitted: false }], history: [newest, shared] },
+      { relativePath: 'src/b.ts', kind: 'modified', exists: true, working: false, binary: false,
+        ranges: [{ start: 4, endExclusive: 6, uncommitted: false }], history: [shared, oldest] }
+    ];
+    const statsByTarget = new Map([
+      [newest.hash, { added: 3, modified: 1, deleted: 0, paths: ['src/a.ts'] }],
+      [shared.hash, { added: 1, modified: 4, deleted: 2, paths: ['src/a.ts', 'src/b.ts'] }],
+      [oldest.hash, { added: 2, modified: 0, deleted: 0, paths: ['src/b.ts'] }]
+    ]);
+    const getDiffStats = vi.fn(async (_base: string, target: string | undefined) =>
+      statsByTarget.get(target ?? '') ?? { added: 0, modified: 0, deleted: 0, paths: [] });
+    const getCommitDiffStats = vi.fn(async () => statsByTarget);
+    const repository = {
+      getWorkingChanges: vi.fn(async () => []),
+      getUserIndex: vi.fn(async () => ({
+        commits: [newest, shared, oldest],
+        entries: [
+          { commit: newest, changes: [{ status: 'M', path: 'src/a.ts' }] },
+          { commit: shared, changes: [{ status: 'M', path: 'src/a.ts' }, { status: 'M', path: 'src/b.ts' }] },
+          { commit: oldest, changes: [{ status: 'A', path: 'src/b.ts' }] }
+        ]
+      })),
+      getDiffStats,
+      getCommitDiffStats
+    };
+    const controller = new HistoryController(registryWithFiles(repository, files), () => 1_700_000_400_000);
+    const getSelectionTimeline = (controller as unknown as {
+      getSelectionTimeline?: (selection: readonly unknown[]) => Promise<unknown>;
+    }).getSelectionTimeline;
+
+    expect(getSelectionTimeline).toBeTypeOf('function');
+    const model = await getSelectionTimeline?.call(controller, files.map((file) => ({
+      kind: 'file', root: ROOT, file
+    }))) as {
+      mode: string;
+      fileCount: number;
+      currentOwnedLines: number;
+      selectedPaths: readonly string[];
+      entries: ReadonlyArray<{ kind: string; id: string; stats?: unknown; revision?: string }>;
+    } | undefined;
+
+    expect(model).toMatchObject({
+      mode: 'selection', fileCount: 2, currentOwnedLines: 5,
+      selectedPaths: ['src/a.ts', 'src/b.ts']
+    });
+    expect(model?.entries.filter(({ kind }) => kind === 'commit')).toEqual([
+      expect.objectContaining({ id: `commit:${newest.hash}`, stats: statsByTarget.get(newest.hash) }),
+      expect.objectContaining({ id: `commit:${shared.hash}`, stats: statsByTarget.get(shared.hash) }),
+      expect.objectContaining({ id: `commit:${oldest.hash}`, stats: statsByTarget.get(oldest.hash) })
+    ]);
+    expect(model?.entries.at(-1)).toMatchObject({ kind: 'original', revision: `${oldest.hash}^` });
+    expect(getCommitDiffStats).toHaveBeenCalledTimes(1);
+    expect(getDiffStats).not.toHaveBeenCalled();
+  });
+
+  it('keeps the existing single-file diff flow when one MY CHANGES file is selected', async () => {
+    const file: FileRecord = {
+      relativePath: 'src/a.ts', kind: 'modified', exists: true, working: false, binary: false,
+      ranges: [{ start: 0, endExclusive: 3, uncommitted: false }], history: [mine]
+    };
+    const stats = { added: 1, modified: 2, deleted: 0, paths: ['src/a.ts'] };
+    const repository = {
+      getWorkingChanges: vi.fn(async () => []),
+      getFileHistoryEntries: vi.fn(async () => [{ commit: mine, path: 'src/a.ts', parentPath: 'src/a.ts' }]),
+      getUserIndex: vi.fn(async () => ({
+        commits: [mine], entries: [{ commit: mine, changes: [{ status: 'M', path: 'src/a.ts' }] }]
+      })),
+      getDiffStats: vi.fn(async () => stats),
+      getCommitDiffStats: vi.fn(async () => new Map([[mine.hash, stats]]))
+    };
+    const controller = new HistoryController(registryWithFiles(repository, [file]));
+
+    const model = await controller.getSelectionTimeline([{ kind: 'file', root: ROOT, file }]);
+
+    expect(model).toMatchObject({ mode: 'file', fileCount: 1, currentOwnedLines: 3 });
+    expect(model?.entries.find(({ kind }) => kind === 'commit')).toMatchObject({ stats });
+  });
+
   it('puts working changes first and matching name-or-email commits newest first', async () => {
     const newestByName = commit('ccccccc33333333', 'Me', 'different@example.com', 1_700_000_200, 'Newest by name');
     const repository = {
@@ -185,6 +269,10 @@ describe('history timeline model', () => {
       ]),
       getFileHistory: vi.fn(async () => []),
       getLineHistory: vi.fn(async () => []),
+      getCommitDiffStats: vi.fn(async () => new Map([
+        [newestByName.hash, { added: 2, modified: 1, deleted: 0, paths: ['src/new name.ts'] }],
+        [mine.hash, { added: 0, modified: 3, deleted: 1, paths: ['src/old name.ts'] }]
+      ])),
       getWorkingChanges: vi.fn(async () => [
         { status: 'R.', path: 'src/new name.ts', originalPath: 'src/old name.ts' }
       ])
@@ -199,7 +287,11 @@ describe('history timeline model', () => {
       head: 'f'.repeat(40),
       sourcePath: join(ROOT, 'src/new name.ts'),
       relativePath: 'src/new name.ts',
-      mode: 'file'
+      mode: 'file',
+      fileCount: 1,
+      currentOwnedLines: 0,
+      selectedPaths: ['src/new name.ts', 'src/old name.ts', 'src/older name.ts'],
+      currentPaths: ['src/new name.ts']
     });
     expect(model?.entries.map(({ kind }) => kind)).toEqual(['working', 'commit', 'commit', 'original']);
     expect(model?.entries.slice(1, 3).map((entry) => entry.kind === 'commit' && entry.commit.hash)).toEqual([
@@ -208,6 +300,9 @@ describe('history timeline model', () => {
     ]);
     expect(model?.entries[1]).toMatchObject({ kind: 'commit', latest: true, path: 'src/new name.ts' });
     expect(model?.entries[2]).toMatchObject({ kind: 'commit', latest: false, parentPath: 'src/older name.ts' });
+    expect(model?.entries[1]).toMatchObject({
+      stats: { added: 2, modified: 1, deleted: 0, paths: ['src/new name.ts'] }
+    });
     expect(model?.entries[3]).toMatchObject({
       kind: 'original',
       title: 'ORIGINAL',
@@ -357,6 +452,103 @@ describe('history timeline model', () => {
       'new name.ts ' + String.fromCharCode(0xb7) + ' bbbbbbb → ccccccc',
       { preview: true, preserveFocus: false, viewColumn: 3 }
     );
+  });
+
+  it('calculates BASE-to-current totals for every selected path', async () => {
+    const base = commit('1111111111111111', 'Me', 'me@example.com', 1_700_000_000, 'base');
+    const gitStats = { added: 12, modified: 8, deleted: 3, paths: ['src/a.ts', 'src/b.ts'] };
+    const getDiffStats = vi.fn(async () => gitStats);
+    const controller = new HistoryController(registryWithFiles({ getDiffStats }, []));
+    const getTimelineComparisonStats = (controller as unknown as {
+      getTimelineComparisonStats?: (model: unknown, baseId: string, targetId?: string) => Promise<unknown>;
+    }).getTimelineComparisonStats;
+    const model = {
+      root: ROOT,
+      head: 'f'.repeat(40),
+      sourcePath: ROOT,
+      sourceExists: false,
+      relativePath: '2 selected files',
+      mode: 'selection',
+      selectedPaths: ['src/a.ts', 'src/b.ts', 'src/new.ts'],
+      currentPaths: ['src/a.ts', 'src/b.ts', 'src/new.ts'],
+      untrackedPaths: ['src/new.ts'],
+      untrackedOwnedLines: 4,
+      entries: [{ id: `commit:${base.hash}`, kind: 'commit', commit: base, path: 'src/a.ts' }]
+    };
+
+    expect(getTimelineComparisonStats).toBeTypeOf('function');
+    await expect(getTimelineComparisonStats?.call(controller, model, `commit:${base.hash}`)).resolves.toEqual({
+      added: 16, modified: 8, deleted: 3, paths: ['src/a.ts', 'src/b.ts', 'src/new.ts']
+    });
+    expect(getDiffStats).toHaveBeenCalledWith(base.hash, undefined, ['src/a.ts', 'src/b.ts', 'src/new.ts']);
+  });
+
+  it('opens a selected-path BASE comparison in one reusable multi-diff editor', async () => {
+    const base = commit('1111111111111111', 'Me', 'me@example.com', 1_700_000_000, 'base');
+    const target = commit('2222222222222222', 'Me', 'me@example.com', 1_700_000_100, 'target');
+    const getDiffStats = vi.fn(async () => ({
+      added: 2, modified: 1, deleted: 0, paths: ['src/a.ts', 'src/b.ts']
+    }));
+    const controller = new HistoryController(registryWithFiles({ getDiffStats }, []));
+    const model = {
+      root: ROOT,
+      head: 'f'.repeat(40),
+      sourcePath: ROOT,
+      sourceExists: false,
+      relativePath: '2 selected files',
+      mode: 'selection' as const,
+      selectedPaths: ['src/a.ts', 'src/b.ts'],
+      currentPaths: ['src/a.ts', 'src/b.ts'],
+      entries: [
+        { id: `commit:${base.hash}`, kind: 'commit' as const, commit: base, path: 'src/a.ts',
+          title: base.subject, relativeDate: 'older', authoredAt: base.authoredAt, latest: false },
+        { id: `commit:${target.hash}`, kind: 'commit' as const, commit: target, path: 'src/a.ts',
+          title: target.subject, relativeDate: 'newer', authoredAt: target.authoredAt, latest: true }
+      ]
+    };
+
+    await controller.openTimelineComparison(model, `commit:${base.hash}`, `commit:${target.hash}`);
+
+    expect(mocks.executeCommand).toHaveBeenCalledWith(
+      'vscode.changes',
+      '2 selected files · 1111111 → 2222222',
+      [
+        [expect.anything(), expectRevision(base.hash, 'src/a.ts'), expectRevision(target.hash, 'src/a.ts')],
+        [expect.anything(), expectRevision(base.hash, 'src/b.ts'), expectRevision(target.hash, 'src/b.ts')]
+      ]
+    );
+  });
+
+  it('does not open a stale selected-path diff after its statistics finish', async () => {
+    const base = commit('1111111111111111', 'Me', 'me@example.com', 1_700_000_000, 'base');
+    const target = commit('2222222222222222', 'Me', 'me@example.com', 1_700_000_100, 'target');
+    let release: ((value: { added: number; modified: number; deleted: number; paths: string[] }) => void) | undefined;
+    const pending = new Promise<{ added: number; modified: number; deleted: number; paths: string[] }>(resolve => {
+      release = resolve;
+    });
+    const controller = new HistoryController(registryWithFiles({ getDiffStats: vi.fn(() => pending) }, []));
+    const model = {
+      root: ROOT, head: 'f'.repeat(40), sourcePath: ROOT, sourceExists: false,
+      relativePath: '2 selected files', mode: 'selection' as const,
+      selectedPaths: ['src/a.ts'], currentPaths: ['src/a.ts'],
+      entries: [
+        { id: `commit:${base.hash}`, kind: 'commit' as const, commit: base, path: 'src/a.ts',
+          title: base.subject, relativeDate: 'older', authoredAt: base.authoredAt, latest: false },
+        { id: `commit:${target.hash}`, kind: 'commit' as const, commit: target, path: 'src/a.ts',
+          title: target.subject, relativeDate: 'newer', authoredAt: target.authoredAt, latest: true }
+      ]
+    };
+    const cancellation = { isCancellationRequested: false };
+
+    const opening = controller.openTimelineComparison(
+      model, `commit:${base.hash}`, `commit:${target.hash}`, cancellation
+    );
+    await Promise.resolve();
+    cancellation.isCancellationRequested = true;
+    release?.({ added: 1, modified: 0, deleted: 0, paths: ['src/a.ts'] });
+    await opening;
+
+    expect(mocks.executeCommand).not.toHaveBeenCalled();
   });
 
   it('compares a commit base with current working changes', async () => {
@@ -648,6 +840,28 @@ function registryWith(
           relativePath, kind: 'modified', exists: true, working: true,
           binary: false, ranges, history
         }],
+        scanning: false,
+        generatedAt: 1
+      })
+    }
+  };
+  return {
+    repositories: [entry],
+    findByUri: vi.fn((uri: { fsPath: string }) => uri.fsPath.startsWith(ROOT) ? entry : undefined)
+  } as unknown as RepositoryRegistry;
+}
+
+function registryWithFiles(repository: Record<string, unknown>, files: readonly FileRecord[]) {
+  const entry = {
+    root: ROOT,
+    state: 'ready' as const,
+    repository,
+    analyzer: {
+      getSnapshot: () => ({
+        root: ROOT,
+        head: 'f'.repeat(40),
+        identity,
+        files,
         scanning: false,
         generatedAt: 1
       })

@@ -17,6 +17,7 @@ import {
   projectPastActivity,
   projectTree
 } from '../../src/ui/myCodeTree.js';
+import * as treeModule from '../../src/ui/myCodeTree.js';
 import type { CommitSummary, RepositorySnapshot } from '../../src/core/model.js';
 
 describe('projectTree', () => {
@@ -116,6 +117,23 @@ function file(
 }
 
 describe('current and past projections', () => {
+  it('expands overlapping folder and file selections into unique file nodes', () => {
+    const roots = projectCurrentTree([snapshot('/workspace', [
+      file('src/a.ts', 'modified'), file('src/nested/b.ts', 'added'), file('other.ts', 'modified')
+    ])]);
+    const src = roots.find(({ label }) => label === 'src');
+    const nestedFile = src?.children[0]?.children[0];
+    const selectFiles = (treeModule as unknown as {
+      fileNodesForSelection?: (nodes: readonly unknown[]) => readonly { readonly file: { readonly relativePath: string } }[];
+    }).fileNodesForSelection;
+
+    expect(selectFiles).toBeTypeOf('function');
+    expect(selectFiles?.([src, nestedFile].filter((node) => node !== undefined))
+      .map(({ file: selected }) => selected.relativePath)).toEqual([
+        'src/a.ts', 'src/nested/b.ts'
+      ]);
+  });
+
   it('shows single-repository current roots directly without a CURRENT group', () => {
     const roots = projectCurrentTree([snapshot('/workspace', [
       file('z-last.ts', 'modified'), file('old.ts', 'past', false), file('a-added.ts', 'added')

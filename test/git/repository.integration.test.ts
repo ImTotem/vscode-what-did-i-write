@@ -27,6 +27,86 @@ afterEach(async () => {
 });
 
 describe('GitRepository', () => {
+  it('calculates selected-path line changes between repository states', async () => {
+    const fixture = await createGitFixture();
+    fixtures.push(fixture);
+    await fixture.setLocalIdentity(fixture.globalIdentity);
+    await fixture.writeText('src/a.ts', 'keep\nold\nremove\n');
+    await fixture.commit('base');
+    const base = (await fixture.run(['rev-parse', 'HEAD'])).stdout.toString('utf8').trim();
+    await fixture.writeText('src/a.ts', 'keep\nnew\nadd one\nadd two\n');
+    await fixture.commit('refactor');
+    const target = (await fixture.run(['rev-parse', 'HEAD'])).stdout.toString('utf8').trim();
+    const repository = await GitRepository.discover(fixture.root, fixture.runner);
+    const getDiffStats = (repository as unknown as {
+      getDiffStats?: (baseRevision: string, targetRevision: string | undefined, paths: readonly string[]) => Promise<unknown>;
+    }).getDiffStats;
+
+    expect(getDiffStats).toBeTypeOf('function');
+    await expect(getDiffStats?.call(repository, base, target, ['src/a.ts'])).resolves.toEqual({
+      added: 1,
+      modified: 2,
+      deleted: 0,
+      paths: ['src/a.ts']
+    });
+  });
+
+  it('does not pair unrelated additions and deletions from different files as modifications', async () => {
+    const fixture = await createGitFixture();
+    fixtures.push(fixture);
+    await fixture.setLocalIdentity(fixture.globalIdentity);
+    await fixture.writeText('removed.ts', 'one\ntwo\n');
+    await fixture.commit('base');
+    const base = (await fixture.run(['rev-parse', 'HEAD'])).stdout.toString('utf8').trim();
+    await fixture.run(['rm', '--', 'removed.ts']);
+    await fixture.writeText('added.ts', 'new one\nnew two\n');
+    await fixture.commit('replace file');
+    const target = (await fixture.run(['rev-parse', 'HEAD'])).stdout.toString('utf8').trim();
+    const repository = await GitRepository.discover(fixture.root, fixture.runner);
+
+    await expect(repository.getDiffStats(base, target, ['removed.ts', 'added.ts'])).resolves.toEqual({
+      added: 2, modified: 0, deleted: 2, paths: ['added.ts', 'removed.ts']
+    });
+  });
+
+  it('calculates line changes for a root commit without requiring a parent', async () => {
+    const fixture = await createGitFixture();
+    fixtures.push(fixture);
+    await fixture.setLocalIdentity(fixture.globalIdentity);
+    await fixture.writeText('root.ts', 'one\ntwo\n');
+    await fixture.commit('root');
+    const rootCommit = (await fixture.run(['rev-parse', 'HEAD'])).stdout.toString('utf8').trim();
+    const repository = await GitRepository.discover(fixture.root, fixture.runner);
+
+    await expect(repository.getDiffStats(`${rootCommit}^`, rootCommit, ['root.ts'])).resolves.toEqual({
+      added: 2, modified: 0, deleted: 0, paths: ['root.ts']
+    });
+  });
+
+  it('loads selected-path statistics for multiple commits in one batch API', async () => {
+    const fixture = await createGitFixture();
+    fixtures.push(fixture);
+    await fixture.setLocalIdentity(fixture.globalIdentity);
+    await fixture.writeText('src/a.ts', 'one\ntwo\n');
+    await fixture.commit('root');
+    const rootCommit = (await fixture.run(['rev-parse', 'HEAD'])).stdout.toString('utf8').trim();
+    await fixture.writeText('src/a.ts', 'one\nchanged\n');
+    await fixture.writeText('src/b.ts', 'new one\nnew two\n');
+    await fixture.commit('second');
+    const secondCommit = (await fixture.run(['rev-parse', 'HEAD'])).stdout.toString('utf8').trim();
+    const repository = await GitRepository.discover(fixture.root, fixture.runner);
+    const batch = (repository as unknown as {
+      getCommitDiffStats?: (hashes: readonly string[], paths: readonly string[]) => Promise<ReadonlyMap<string, unknown>>;
+    }).getCommitDiffStats;
+
+    expect(batch).toBeTypeOf('function');
+    const result = await batch?.call(repository, [secondCommit, rootCommit], ['src/a.ts', 'src/b.ts']);
+    expect([...(result ?? [])]).toEqual([
+      [secondCommit, { added: 2, modified: 1, deleted: 0, paths: ['src/a.ts', 'src/b.ts'] }],
+      [rootCommit, { added: 2, modified: 0, deleted: 0, paths: ['src/a.ts'] }]
+    ]);
+  });
+
   it('discovers a clean multi-author repository and uses only reachable HEAD history', async () => {
     const fixture = await createScenario();
     const repository = await GitRepository.discover(fixture.root, fixture.runner);

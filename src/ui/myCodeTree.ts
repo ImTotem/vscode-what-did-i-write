@@ -88,6 +88,21 @@ export function projectPastActivity(snapshots: readonly RepositorySnapshot[]): r
       || left.relativePath.localeCompare(right.relativePath));
 }
 
+export function fileNodesForSelection(nodes: readonly MyCodeNode[]): FileTreeNode[] {
+  const files = new Map<string, FileTreeNode>();
+  const visit = (node: MyCodeNode): void => {
+    if (node.kind === 'file') {
+      files.set(`${node.root}\0${node.file.relativePath}`, node);
+      return;
+    }
+    for (const child of node.children) visit(child);
+  };
+  for (const node of nodes) visit(node);
+  return [...files.values()].sort((left, right) =>
+    left.root.localeCompare(right.root)
+    || left.file.relativePath.localeCompare(right.file.relativePath));
+}
+
 /** @deprecated Use projectCurrentTree and projectPastActivity for the split views. */
 export function projectTree(snapshots: readonly RepositorySnapshot[]): readonly MyCodeNode[] {
   const repositories = [...snapshots]

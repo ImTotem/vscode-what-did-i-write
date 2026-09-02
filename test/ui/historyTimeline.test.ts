@@ -46,8 +46,8 @@ describe('renderTimelineHtml', () => {
       'vscode-resource:'
     );
 
-    expect(html).toContain('Right-click a history entry to set it as BASE');
-    expect(html).toContain('Right-click the BASE again to clear it');
+    expect(html).toContain('Calculating changes...');
+    expect(html).not.toContain('Right-click a history entry to set it as BASE');
     expect(html).not.toContain('Set as comparison base');
     expect(html).not.toContain('role="menu"');
     expect(html).toContain("vscode.postMessage({ type: 'setBase', id: target.dataset.entryId })");
@@ -71,6 +71,23 @@ describe('renderTimelineHtml', () => {
     expect(html).not.toContain('comparison-menu');
     expect(html).not.toContain('data-action="set-base"');
     expect(html).toContain("applyBase(typeof event.data.id === 'string' ? event.data.id : undefined)");
+  });
+
+  it('keeps one fixed summary row while switching from guidance to aggregate stats', () => {
+    const model = selectionTimelineModel();
+    const guidance = renderTimelineHtml({ kind: 'ready', model }, 'n', 'vscode-resource:');
+    const summary = renderTimelineHtml({
+      kind: 'ready', model, baseId: 'commit:older',
+      summaryStats: { added: 12, modified: 8, deleted: 3, paths: ['src/a.ts', 'src/b.ts'] }
+    } as never, 'n', 'vscode-resource:');
+
+    expect(guidance).toContain('class="comparison-summary"');
+    expect(guidance).toContain('Right-click a commit to set BASE');
+    expect(summary).toContain('class="comparison-summary"');
+    expect(summary).toContain('TOTAL +12 ~8 -3');
+    expect(summary).toContain('+3 ~1 -0');
+    expect(summary).toContain('title="Right-click again to clear BASE"');
+    expect(summary).toContain('min-height: 18px');
   });
 
   it('renders explicit loading, empty, and error states', () => {
@@ -102,6 +119,207 @@ describe('renderTimelineHtml', () => {
 });
 
 describe('HistoryTimelineViewProvider', () => {
+  it('shows selection counts in the FILE HISTORY title and clears everything on deselection', async () => {
+    const model = selectionTimelineModel();
+    const history = {
+      getTimeline: vi.fn(async () => timelineModel()),
+      getSelectionTimeline: vi.fn(async () => model),
+      openTimelineEntry: vi.fn(async () => undefined)
+    };
+    const provider = new HistoryTimelineViewProvider(history as never);
+    const view = fakeView();
+    provider.resolveWebviewView(view.value);
+    const focusSelection = (provider as unknown as {
+      focusSelection?: (selection: readonly unknown[]) => Promise<void>;
+    }).focusSelection;
+    const clear = (provider as unknown as { clear?: () => void }).clear;
+
+    expect(focusSelection).toBeTypeOf('function');
+    expect(clear).toBeTypeOf('function');
+    await focusSelection?.call(provider, [{ id: 'a' }, { id: 'b' }]);
+    expect(history.getSelectionTimeline).toHaveBeenCalled();
+    expect(view.description).toBe('2 files · 5L');
+
+    clear?.call(provider);
+    expect(view.description).toBeUndefined();
+    expect(view.webview.html).toContain('File history');
+    expect(view.webview.html).toContain('Open a file or run Show File History');
+    provider.dispose();
+  });
+
+  it('replaces the fixed guidance row with BASE-to-current totals without rerendering', async () => {
+    const model = selectionTimelineModel();
+    const stats = { added: 12, modified: 8, deleted: 3, paths: ['src/a.ts', 'src/b.ts'] };
+    const history = {
+      getTimeline: vi.fn(async () => timelineModel()),
+      getSelectionTimeline: vi.fn(async () => model),
+      getTimelineComparisonStats: vi.fn(async () => stats),
+      openTimelineEntry: vi.fn(async () => undefined),
+      openTimelineComparison: vi.fn(async () => undefined)
+    };
+    const provider = new HistoryTimelineViewProvider(history as never);
+    const view = fakeView();
+    provider.resolveWebviewView(view.value);
+    await (provider as unknown as { focusSelection(selection: readonly unknown[]): Promise<void> })
+      .focusSelection([{ id: 'a' }, { id: 'b' }]);
+    const htmlBeforeBase = view.webview.html;
+
+    view.receive({ type: 'setBase', id: 'commit:older' });
+    await flush();
+
+    expect(history.getTimelineComparisonStats).toHaveBeenCalledWith(model, 'commit:older', undefined);
+    expect(view.webview.html).toBe(htmlBeforeBase);
+    expect(view.webview.postMessage).toHaveBeenCalledWith({
+      type: 'setSummary', text: 'TOTAL +12 ~8 -3'
+    });
+    provider.dispose();
+  });
+
+  it('keeps the timeline visible when aggregate statistics cannot be calculated', async () => {
+    const model = selectionTimelineModel();
+    const failure = new Error('numstat failed');
+    const history = {
+      getTimeline: vi.fn(async () => timelineModel()),
+      getSelectionTimeline: vi.fn(async () => model),
+      getTimelineComparisonStats: vi.fn(async () => { throw failure; }),
+      openTimelineEntry: vi.fn(async () => undefined)
+    };
+    const onError = vi.fn();
+    const provider = new HistoryTimelineViewProvider(history as never, onError);
+    const view = fakeView();
+    provider.resolveWebviewView(view.value);
+    await provider.focusSelection([{ id: 'a' }, { id: 'b' }]);
+    const timeline = view.webview.html;
+
+    view.receive({ type: 'setBase', id: 'commit:older' });
+    await flush();
+    await flush();
+
+    expect(onError).toHaveBeenCalledWith(failure, 'calculate-history-stats', '2 selected files');
+    expect(view.webview.html).toBe(timeline);
+    expect(view.webview.postMessage).toHaveBeenCalledWith({
+      type: 'setSummary', text: 'Change totals unavailable'
+    });
+    provider.dispose();
+  });
+
+  it('does not let a slower previous target overwrite the latest comparison totals', async () => {
+    const model = selectionTimelineModel();
+    const slowOpen = deferred<void>();
+    const initial = { added: 1, modified: 1, deleted: 1, paths: ['src/a.ts'] };
+    const latest = { added: 9, modified: 8, deleted: 7, paths: ['src/b.ts'] };
+    const history = {
+      getTimeline: vi.fn(async () => timelineModel()),
+      getSelectionTimeline: vi.fn(async () => model),
+      getTimelineComparisonStats: vi.fn(async (_model: unknown, _base: string, target?: string) => {
+        if (target === 'original:oldest') return latest;
+        return initial;
+      }),
+      openTimelineEntry: vi.fn(async () => undefined),
+      openTimelineComparison: vi.fn(async (_model: unknown, _base: string, target: string) => {
+        if (target === 'commit:newest') await slowOpen.promise;
+      })
+    };
+    const provider = new HistoryTimelineViewProvider(history as never);
+    const view = fakeView();
+    provider.resolveWebviewView(view.value);
+    await provider.focusSelection([{ id: 'a' }, { id: 'b' }]);
+    view.receive({ type: 'setBase', id: 'commit:older' });
+    await flush();
+    view.webview.postMessage.mockClear();
+
+    view.receive({ type: 'select', id: 'commit:newest' });
+    await flush();
+    view.receive({ type: 'select', id: 'original:oldest' });
+    await flush();
+    slowOpen.resolve(undefined);
+    await flush();
+    await flush();
+
+    const summaries = (view.webview.postMessage.mock.calls as unknown as Array<[unknown]>)
+      .map(([message]) => message)
+      .filter((message) => (message as { type?: unknown }).type === 'setSummary');
+    expect(summaries.at(-1)).toEqual({ type: 'setSummary', text: 'TOTAL +9 ~8 -7' });
+    provider.dispose();
+  });
+
+  it('does not let delayed BASE acknowledgement overwrite a newer target total', async () => {
+    const model = selectionTimelineModel();
+    const delayedBase = deferred<boolean>();
+    const history = {
+      getTimeline: vi.fn(async () => timelineModel()),
+      getSelectionTimeline: vi.fn(async () => model),
+      getTimelineComparisonStats: vi.fn(async (_model: unknown, _base: string, target?: string) =>
+        target === 'commit:newest'
+          ? { added: 9, modified: 8, deleted: 7, paths: ['src/b.ts'] }
+          : { added: 1, modified: 1, deleted: 1, paths: ['src/a.ts'] }),
+      openTimelineEntry: vi.fn(async () => undefined),
+      openTimelineComparison: vi.fn(async () => undefined)
+    };
+    const provider = new HistoryTimelineViewProvider(history as never);
+    const view = fakeView();
+    provider.resolveWebviewView(view.value);
+    await provider.focusSelection([{ id: 'a' }, { id: 'b' }]);
+    view.webview.postMessage.mockImplementation(async (message?: unknown) => {
+      const value = message as { type?: unknown; id?: unknown } | undefined;
+      return value?.type === 'setBase' && typeof value.id === 'string'
+        ? delayedBase.promise
+        : true;
+    });
+
+    view.receive({ type: 'setBase', id: 'commit:older' });
+    await flush();
+    view.receive({ type: 'select', id: 'commit:newest' });
+    await flush();
+    delayedBase.resolve(true);
+    await flush();
+    await flush();
+
+    const summaries = (view.webview.postMessage.mock.calls as unknown as Array<[unknown]>)
+      .map(([message]) => message)
+      .filter((message) => (message as { type?: unknown }).type === 'setSummary');
+    expect(summaries.at(-1)).toEqual({ type: 'setSummary', text: 'TOTAL +9 ~8 -7' });
+    provider.dispose();
+  });
+
+  it('ignores a stale comparison failure after a newer target succeeds', async () => {
+    const model = selectionTimelineModel();
+    const staleFailure = new Error('stale diff failed');
+    let rejectStale: ((reason: unknown) => void) | undefined;
+    const stale = new Promise<void>((_resolve, reject) => { rejectStale = reject; });
+    const history = {
+      getTimeline: vi.fn(async () => timelineModel()),
+      getSelectionTimeline: vi.fn(async () => model),
+      getTimelineComparisonStats: vi.fn(async () => ({
+        added: 9, modified: 8, deleted: 7, paths: ['src/b.ts']
+      })),
+      openTimelineEntry: vi.fn(async () => undefined),
+      openTimelineComparison: vi.fn(async (_model: unknown, _base: string, target: string) => {
+        if (target === 'commit:newest') await stale;
+      })
+    };
+    const onError = vi.fn();
+    const provider = new HistoryTimelineViewProvider(history as never, onError);
+    const view = fakeView();
+    provider.resolveWebviewView(view.value);
+    await provider.focusSelection([{ id: 'a' }, { id: 'b' }]);
+    view.receive({ type: 'setBase', id: 'commit:older' });
+    await flush();
+    const timeline = view.webview.html;
+
+    view.receive({ type: 'select', id: 'commit:newest' });
+    await flush();
+    view.receive({ type: 'select', id: 'original:oldest' });
+    await flush();
+    rejectStale?.(staleFailure);
+    await flush();
+    await flush();
+
+    expect(onError).not.toHaveBeenCalledWith(staleFailure, 'open-history-diff', model.relativePath);
+    expect(view.webview.html).toBe(timeline);
+    provider.dispose();
+  });
+
   it('coalesces a burst of registry publications into one visible refresh', async () => {
     const history = {
       getTimeline: vi.fn(async () => timelineModel()),
@@ -355,7 +573,8 @@ describe('HistoryTimelineViewProvider', () => {
     expect(history.openTimelineComparison).toHaveBeenCalledWith(
       model,
       'commit:older',
-      'working'
+      'working',
+      expect.anything()
     );
     provider.dispose();
   });
@@ -377,10 +596,16 @@ describe('HistoryTimelineViewProvider', () => {
     view.receive({ type: 'setBase', id: 'commit:older' });
     await flush();
 
-    expect(view.webview.postMessage.mock.calls.slice(-2)).toEqual([
-      [{ type: 'setBase', id: 'commit:older' }],
-      [{ type: 'setBase' }]
+    const baseMessages = (view.webview.postMessage.mock.calls as unknown as Array<[unknown]>)
+      .map(([message]) => message)
+      .filter((message) => (message as { type?: unknown }).type === 'setBase');
+    expect(baseMessages.slice(-2)).toEqual([
+      { type: 'setBase', id: 'commit:older' },
+      { type: 'setBase' }
     ]);
+    expect(view.webview.postMessage).toHaveBeenCalledWith({
+      type: 'setSummary', text: 'Right-click a commit to set BASE'
+    });
 
     view.receive({ type: 'select', id: 'working' });
     await flush();
@@ -573,6 +798,26 @@ function fileTimelineModel(): HistoryTimelineModel {
   };
 }
 
+function selectionTimelineModel(): HistoryTimelineModel {
+  const model = fileTimelineModel();
+  return {
+    ...model,
+    sourcePath: ROOT,
+    sourceExists: false,
+    relativePath: '2 selected files',
+    mode: 'selection',
+    fileCount: 2,
+    currentOwnedLines: 5,
+    selectedPaths: ['src/a.ts', 'src/b.ts'],
+    currentPaths: ['src/a.ts', 'src/b.ts'],
+    entries: model.entries.map((entry) => entry.kind === 'commit'
+      ? { ...entry, stats: entry.id === 'commit:older'
+        ? { added: 3, modified: 1, deleted: 0, paths: ['src/a.ts'] }
+        : { added: 2, modified: 0, deleted: 1, paths: ['src/b.ts'] } }
+      : entry)
+  };
+}
+
 function fakeView(initiallyVisible = true) {
   let listener: ((message: unknown) => unknown) | undefined;
   let disposeListener: (() => unknown) | undefined;
@@ -580,6 +825,7 @@ function fakeView(initiallyVisible = true) {
   let disposed = false;
   let visible = initiallyVisible;
   let html = '';
+  let description: string | undefined;
   const webview = {
     get html() { return html; },
     set html(value: string) {
@@ -596,8 +842,11 @@ function fakeView(initiallyVisible = true) {
   };
   return {
     webview,
+    get description() { return description; },
     value: {
       webview,
+      get description() { return description; },
+      set description(value: string | undefined) { description = value; },
       get visible() { return visible; },
       onDidDispose: (next: () => unknown) => {
         disposeListener = next;
