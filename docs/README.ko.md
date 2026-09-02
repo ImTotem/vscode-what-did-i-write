@@ -23,7 +23,7 @@ What Did I Write?는 현재 체크아웃한 Git 저장소에서 내가 작성한
 ```powershell
 npm install
 npm run package
-code --install-extension .\what-did-i-write-0.2.1.vsix
+code --install-extension .\what-did-i-write-0.2.2.vsix
 ```
 
 설치 후 Git 저장소를 여세요. Git 저장소가 아닌 폴더에는 아무 표시도 하지 않습니다. Git이나 전역 사용자 정보를 찾지 못하면 해결 방법이 포함된 경고를 한 번 보여주고, 자세한 내용은 **What Did I Write?** 출력 채널에 기록합니다.
@@ -38,7 +38,7 @@ code --install-extension .\what-did-i-write-0.2.1.vsix
 
 **MY CODE**는 탐색기 및 소스 제어와 나란히 있는 독립 Activity Bar 메뉴입니다. 다음 세 개의 뷰로 구성됩니다.
 
-- **내 변경 사항** — 내 현재 파일을 실제 탐색기처럼 표시하며, 다중 선택한 폴더의 하위 파일을 중복 없이 포함합니다.
+- **내 변경 사항** — 내 현재 파일을 실제 탐색기처럼 표시하며, 다중 선택한 폴더의 하위 파일을 중복 없이 포함합니다. 한 번 클릭하면 미리보기, 두 번 클릭하면 고정 탭으로 엽니다.
 - **과거 활동** — 기본으로 접혀 있으며, 과거에 변경한 경로를 최신순으로 표시합니다.
 - **파일 히스토리** — 선택 파일들의 커밋을 최신순으로 합치고 내 작성 줄 통계를 표시합니다.
 

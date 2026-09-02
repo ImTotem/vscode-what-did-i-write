@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.2.2 - 2026-09-02
+
+- Moves focus to a nearby retained selection after Ctrl-deselecting a MY CHANGES row.
+- Opens files in preview on one click and pins the tab on the second same-file click.
+
 ## 0.2.1 - 2026-09-02
 
 - Renders selected commit history immediately from the analyzed file index.

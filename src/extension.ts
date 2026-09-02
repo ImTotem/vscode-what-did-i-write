@@ -89,6 +89,7 @@ export function activate(context: vscode.ExtensionContext): void {
     canSelectMany: true,
     dragAndDropController
   });
+  let previousMyChangesSelection: readonly MyCodeNode[] = [];
   const viewController = new MyCodeViewController();
   const visualModeController = new VisualModeController(
     decorationProvider,
@@ -214,6 +215,12 @@ export function activate(context: vscode.ExtensionContext): void {
       OWNERSHIP_ORIGINAL_SCHEME, ownershipQuickDiff
     ),
     myChangesView.onDidChangeSelection(({ selection }) => {
+      const focusTarget = focusAfterDeselection(previousMyChangesSelection, selection);
+      previousMyChangesSelection = [...selection];
+      if (focusTarget !== undefined) {
+        void Promise.resolve(myChangesView.reveal(focusTarget, { select: false, focus: true }))
+          .catch((error: unknown) => reportError(error, 'focus MY CHANGES selection', focusTarget.id));
+      }
       const files = fileNodesForSelection(selection);
       if (files.length === 0) {
         historyTimeline.clear();
@@ -329,6 +336,23 @@ export async function deactivate(): Promise<void> {
   const controller = activeVisualModeController;
   activeVisualModeController = undefined;
   await controller?.shutdown();
+}
+
+function focusAfterDeselection(
+  previous: readonly MyCodeNode[],
+  current: readonly MyCodeNode[]
+): MyCodeNode | undefined {
+  if (current.length === 0 || current.length >= previous.length) return undefined;
+  const currentIds = new Set(current.map(({ id }) => id));
+  const removedIndex = previous.findIndex(({ id }) => !currentIds.has(id));
+  if (removedIndex < 0) return undefined;
+  for (let distance = 1; distance < previous.length; distance += 1) {
+    const before = previous[removedIndex - distance];
+    if (before !== undefined && currentIds.has(before.id)) return before;
+    const after = previous[removedIndex + distance];
+    if (after !== undefined && currentIds.has(after.id)) return after;
+  }
+  return undefined;
 }
 
 

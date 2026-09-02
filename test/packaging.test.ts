@@ -21,7 +21,7 @@ describe('release package contract', () => {
 
     expect(readme).toContain('What Did I Write?');
     expect(readme).toContain('Find the files, lines, and commits you authored.');
-    expect(readme).toContain('what-did-i-write-0.2.1.vsix');
+    expect(readme).toContain('what-did-i-write-0.2.2.vsix');
     expect(readme).toContain('local Git');
     expect(readme).toContain('MY CODE');
     expect(readme).toContain('`A`');
@@ -35,7 +35,7 @@ describe('release package contract', () => {
   });
 
   it('has release notes and excludes development-only content from the VSIX', () => {
-    expect(read('CHANGELOG.md')).toContain('0.2.1');
+    expect(read('CHANGELOG.md')).toContain('0.2.2');
     expect(read('LICENSE')).toContain('No license is granted');
     expect(manifest.scripts?.package).toContain('--allow-missing-repository');
 

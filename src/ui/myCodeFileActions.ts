@@ -54,6 +54,7 @@ export interface MyCodeFileActionsOptions {
   readonly onError: (error: unknown, operation: string, path: string) => void;
   readonly boundary?: MyCodeFileActionBoundary;
   readonly localize?: Localize;
+  readonly now?: () => number;
 }
 
 interface ResolvedNode {
@@ -92,10 +93,13 @@ export class MyCodeFileActions {
   private readonly boundary: MyCodeFileActionBoundary;
   private readonly t: Localize;
   private clipboard: FileClipboard | undefined;
+  private lastOpen: { readonly id: string; readonly at: number } | undefined;
+  private readonly now: () => number;
 
   public constructor(private readonly options: MyCodeFileActionsOptions) {
     this.boundary = options.boundary ?? createVsCodeBoundary();
     this.t = options.localize ?? localize;
+    this.now = options.now ?? Date.now;
   }
 
   public targets(clicked: MyCodeFileActionNode): readonly MyCodeFileActionNode[] {
@@ -120,7 +124,14 @@ export class MyCodeFileActions {
   }
 
   public async open(clicked: MyCodeFileActionNode): Promise<void> {
-    await this.guard('open', clicked, () => this.runCommand('open', clicked, true, 'vscode.open'));
+    const now = this.now();
+    const pinned = this.lastOpen?.id === clicked.id
+      && now >= this.lastOpen.at
+      && now - this.lastOpen.at <= 500;
+    this.lastOpen = pinned ? undefined : { id: clicked.id, at: now };
+    await this.guard('open', clicked, () => this.runCommand(
+      'open', clicked, true, 'vscode.open', { preview: !pinned }
+    ));
   }
 
   public async openToSide(clicked: MyCodeFileActionNode): Promise<void> {

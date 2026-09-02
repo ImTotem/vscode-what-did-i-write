@@ -27,7 +27,7 @@ Staged, unstaged, and untracked files are treated as your current work.
 Build a local installable package with `npm run package`, then install it:
 
 ```powershell
-code --install-extension .\what-did-i-write-0.2.1.vsix
+code --install-extension .\what-did-i-write-0.2.2.vsix
 ```
 
 Open a Git repository after installation. Folders outside Git repositories are
@@ -48,7 +48,7 @@ The **MY CODE** icon is an independent Activity Bar destination, next to
 Explorer and Source Control. Its sidebar has three sibling views: **MY CHANGES**
 for current files, collapsed-by-default **PAST ACTIVITY** for a flat newest-first
 history list, and **FILE HISTORY** for the selected file or line. Expand folders
-in **MY CHANGES** and select a file to open it; selecting a past row focuses its
+in **MY CHANGES** and select a file to preview it; double-clicking pins the tab. Selecting a past row focuses its
 history without making the deleted path mutable.
 
 The **MY CHANGES** list uses a collapsible Explorer-like folder hierarchy. Selecting files or folders combines their unique descendant files into one history.

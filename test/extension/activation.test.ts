@@ -257,6 +257,19 @@ describe('extension activation', () => {
     mocks.fireTreeSelection([]);
     expect(clearHistory).toHaveBeenCalledTimes(1);
 
+    const secondFile = { ...selectedFile, id: 'second', label: 'b.ts', file: { ...selectedFile.file, relativePath: 'src/b.ts' } };
+    const thirdFile = { ...selectedFile, id: 'third', label: 'c.ts', file: { ...selectedFile.file, relativePath: 'src/c.ts' } };
+    mocks.fireTreeSelection([selectedFile, secondFile, thirdFile]);
+    await flushActivation();
+    mocks.treeView.reveal.mockClear();
+    mocks.fireTreeSelection([selectedFile, thirdFile]);
+    await flushActivation();
+    expect(mocks.treeView.reveal).toHaveBeenCalledWith(
+      selectedFile,
+      { select: false, focus: true }
+    );
+    expect(mocks.treeView.selection).toEqual([selectedFile, thirdFile]);
+
     const focusFileHandler = mocks.commandHandlers.get('myCode.focusFileHistory');
     const focusLineHandler = mocks.commandHandlers.get('myCode.focusLineHistory');
     await Promise.resolve(focusFileHandler?.('/repo/source.ts'));

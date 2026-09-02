@@ -23,7 +23,7 @@ Build and install the local package:
 ```powershell
 npm install
 npm run package
-code --install-extension .\what-did-i-write-0.2.1.vsix
+code --install-extension .\what-did-i-write-0.2.2.vsix
 ```
 
 Open a Git repository after installation. Non-Git folders are ignored. If Git or the global identity is missing, the extension shows an actionable warning and writes details to the **What Did I Write?** output channel.
@@ -38,7 +38,7 @@ In the normal Explorer, only files containing your current code are decorated, a
 
 The **MY CODE** icon is an independent Activity Bar destination next to Explorer and Source Control. It contains three sibling views:
 
-- **MY CHANGES** — an Explorer-like folder hierarchy containing your current files; multi-selection includes unique descendant files.
+- **MY CHANGES** — an Explorer-like folder hierarchy containing your current files; multi-selection includes unique descendant files. Single-click previews a file and double-click pins its tab.
 - **PAST ACTIVITY** — a collapsed-by-default, newest-first list of paths you changed in the past.
 - **FILE HISTORY** — the selected files' combined newest-first commits and authored-line statistics.
 

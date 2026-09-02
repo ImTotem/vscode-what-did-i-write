@@ -3,7 +3,7 @@
   "type": "commonjs",
   "publisher": "local-only",
   "displayName": "%extension.displayName%",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "%extension.description%",
   "license": "UNLICENSED",
   "categories": [

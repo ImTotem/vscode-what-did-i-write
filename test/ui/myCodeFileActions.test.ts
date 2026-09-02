@@ -68,6 +68,24 @@ describe('MyCodeFileActions target normalization', () => {
   });
 });
 
+describe('MyCodeFileActions editor opening', () => {
+  it('opens one click as preview and the second same-file click as pinned', async () => {
+    let now = 1_000;
+    const current = fileNode('src/current.ts');
+    const boundary = fakeBoundary([[join(ROOT, 'src/current.ts'), 'file']]);
+    const { actions } = actionHarness({ selection: [current], boundary, now: () => now });
+
+    await actions.open(current);
+    now = 1_200;
+    await actions.open(current);
+
+    expect(boundary.commands).toEqual([
+      ['vscode.open', join(ROOT, 'src/current.ts'), { preview: true }],
+      ['vscode.open', join(ROOT, 'src/current.ts'), { preview: false }]
+    ]);
+  });
+});
+
 describe('MyCodeFileActions localization', () => {
   it('localizes immutable-history warnings through VS Code l10n', async () => {
     translate.mockImplementation((message: string) => message === 'Past activity is read-only.'
@@ -617,7 +635,7 @@ describe('MyCodeFileActions commands and prompts', () => {
     await actions.copyRelativePath(historical);
 
     expect(boundary.commands).toEqual([
-      ['vscode.open', join(ROOT, 'src', 'current.ts')],
+      ['vscode.open', join(ROOT, 'src', 'current.ts'), { preview: true }],
       ['vscode.open', join(ROOT, 'src', 'current.ts'), 'beside'],
       ['revealInExplorer', join(ROOT, 'src')],
       ['revealFileInOS', ROOT]
@@ -787,17 +805,20 @@ function actionHarness(options: {
   boundary?: FakeBoundary;
   roots?: readonly string[];
   rootProvider?: () => readonly string[];
+  now?: () => number;
 } = {}) {
   const boundary = options.boundary ?? fakeBoundary();
   const onError = vi.fn();
   const refresh = vi.fn();
-  const actions = new MyCodeFileActions({
+  const actionOptions = {
     selection: () => options.selection ?? [],
     roots: options.rootProvider ?? (() => options.roots ?? [ROOT]),
     refresh,
     onError,
-    boundary
-  });
+    boundary,
+    now: options.now
+  };
+  const actions = new MyCodeFileActions(actionOptions);
   return { actions, boundary, onError, refresh };
 }
 
