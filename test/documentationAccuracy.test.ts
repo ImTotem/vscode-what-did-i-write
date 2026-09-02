@@ -8,7 +8,7 @@ describe('README accuracy', () => {
 
     expect(readme).toContain('# What Did I Write?');
     expect(readme).toContain('Find the files, lines, and commits you authored.');
-    expect(readme).toContain('what-did-i-write-0.2.0.vsix');
+    expect(readme).toContain('what-did-i-write-0.2.1.vsix');
     expect(readme).toContain('What Did I Write?');
     expect(readme).toContain('output channel');
   });

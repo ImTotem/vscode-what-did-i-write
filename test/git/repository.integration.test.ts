@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { GitIdentity } from '../../src/core/model.js';
 import {
@@ -95,16 +95,21 @@ describe('GitRepository', () => {
     await fixture.commit('second');
     const secondCommit = (await fixture.run(['rev-parse', 'HEAD'])).stdout.toString('utf8').trim();
     const repository = await GitRepository.discover(fixture.root, fixture.runner);
+    const run = vi.spyOn(fixture.runner, 'run');
     const batch = (repository as unknown as {
-      getCommitDiffStats?: (hashes: readonly string[], paths: readonly string[]) => Promise<ReadonlyMap<string, unknown>>;
+      getCommitDiffStats?: (
+        head: string, hashes: readonly string[], paths: readonly string[]
+      ) => Promise<ReadonlyMap<string, unknown>>;
     }).getCommitDiffStats;
 
     expect(batch).toBeTypeOf('function');
-    const result = await batch?.call(repository, [secondCommit, rootCommit], ['src/a.ts', 'src/b.ts']);
+    const result = await batch?.call(repository, secondCommit, [secondCommit, rootCommit], ['src/a.ts', 'src/b.ts']);
+    await batch?.call(repository, secondCommit, [secondCommit], ['src/b.ts']);
     expect([...(result ?? [])]).toEqual([
       [secondCommit, { added: 2, modified: 1, deleted: 0, paths: ['src/a.ts', 'src/b.ts'] }],
       [rootCommit, { added: 2, modified: 0, deleted: 0, paths: ['src/a.ts'] }]
     ]);
+    expect(run.mock.calls.filter(([, args]) => args.includes('--numstat'))).toHaveLength(1);
   });
 
   it('discovers a clean multi-author repository and uses only reachable HEAD history', async () => {

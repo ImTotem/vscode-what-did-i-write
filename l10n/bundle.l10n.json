@@ -133,7 +133,8 @@
   "Your commit": "Your commit",
   "Your uncommitted work": "Your uncommitted work",
   "{operation} refresh": "{operation} refresh",
-  "{count} files · {lines}L": "{count} files · {lines}L",
+  "{count} files": "{count} files",
+  "{lines}L": "{lines}L",
   "{count} selected files": "{count} selected files",
   "{path} has no commits by your Git identity.": "{path} has no commits by your Git identity.",
   "Line {line} · Your code": "Line {line} · Your code"

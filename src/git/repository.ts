@@ -14,6 +14,7 @@ import {
   parsePorcelainV2Status,
   type BlameLine,
   type LogIndexEntry,
+  type NumStatRecord,
   type WorkingChange
 } from './parsers.js';
 
@@ -36,6 +37,11 @@ export interface FileHistoryEntry {
 }
 
 export class GitRepository {
+  private readonly commitStatsIndexes = new Map<
+    string,
+    Promise<ReadonlyMap<string, ReadonlyMap<string, NumStatRecord>>>
+  >();
+
   private constructor(
     readonly root: string,
     private readonly runner: GitRunner
@@ -133,6 +139,7 @@ export class GitRepository {
   }
 
   public async getCommitDiffStats(
+    head: string,
     commitHashes: readonly string[],
     paths: readonly string[]
   ): Promise<ReadonlyMap<string, LineChangeStats>> {
@@ -140,16 +147,48 @@ export class GitRepository {
     const selectedPaths = new Set(paths);
     const result = new Map<string, LineChangeStats>();
     if (hashes.length === 0 || selectedPaths.size === 0) return result;
-    const log = await this.runner.run(this.root, [
-      'log', 'HEAD', '--format=%x00%H%x00', '--numstat', '-z', '--no-renames',
-      '--diff-merges=first-parent'
-    ]);
-    const recordsByHash = parseCommitNumStats(log.stdout);
+    const recordsByHash = await this.commitStatsIndex(head);
     for (const hash of hashes) {
-      const records = (recordsByHash.get(hash) ?? []).filter(({ path }) => selectedPaths.has(path));
+      const byPath = recordsByHash.get(hash) ?? new Map<string, NumStatRecord>();
+      const records = selectedPaths.size < byPath.size
+        ? [...selectedPaths].flatMap((path) => {
+            const record = byPath.get(path);
+            return record === undefined ? [] : [record];
+          })
+        : [...byPath.values()].filter(({ path }) => selectedPaths.has(path));
       result.set(hash, lineChangeStats(records));
     }
     return result;
+  }
+
+  private commitStatsIndex(
+    head: string
+  ): Promise<ReadonlyMap<string, ReadonlyMap<string, NumStatRecord>>> {
+    const cached = this.commitStatsIndexes.get(head);
+    if (cached !== undefined) {
+      this.commitStatsIndexes.delete(head);
+      this.commitStatsIndexes.set(head, cached);
+      return cached;
+    }
+    const loading = this.runner.run(this.root, [
+      'log', head, '--format=%x00%H%x00', '--numstat', '-z', '--no-renames',
+      '--diff-merges=first-parent'
+    ]).then(({ stdout }) => new Map(
+      [...parseCommitNumStats(stdout)].map(([hash, records]) => [
+        hash,
+        new Map(records.map((record) => [record.path, record]))
+      ])
+    ));
+    this.commitStatsIndexes.set(head, loading);
+    while (this.commitStatsIndexes.size > 2) {
+      const oldest = this.commitStatsIndexes.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.commitStatsIndexes.delete(oldest);
+    }
+    void loading.catch(() => {
+      if (this.commitStatsIndexes.get(head) === loading) this.commitStatsIndexes.delete(head);
+    });
+    return loading;
   }
 
 
@@ -246,10 +285,14 @@ function projectMatchingEntriesToHead(
   const currentPathByHistoricalPath = new Map<string, string>();
   const matchingEntries: LogIndexEntry[] = [];
   for (const entry of entries) {
-    const changes = entry.changes.map((change) => ({
-      ...change,
-      path: currentPathByHistoricalPath.get(change.path) ?? change.path
-    }));
+    const changes = entry.changes.map((change) => {
+      const path = currentPathByHistoricalPath.get(change.path) ?? change.path;
+      return {
+        ...change,
+        path,
+        ...(path === change.path ? {} : { historicalPath: change.path })
+      };
+    });
     for (let index = 0; index < entry.changes.length; index += 1) {
       const historicalChange = entry.changes[index];
       const projectedChange = changes[index];

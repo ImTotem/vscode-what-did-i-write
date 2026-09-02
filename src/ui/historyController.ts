@@ -6,7 +6,7 @@ import { matchesIdentity } from '../core/identity.js';
 import type { CommitSummary, GitIdentity, LineChangeStats, OwnedRange } from '../core/model.js';
 import type { RegisteredRepository, RepositoryRegistry } from '../extension/repositoryRegistry.js';
 import type { WorkingChange } from '../git/parsers.js';
-import type { FileHistoryEntry, UserIndex } from '../git/repository.js';
+import type { FileHistoryEntry } from '../git/repository.js';
 import { formatDateTime, formatRelativeDate, localize } from '../localization.js';
 import { revisionUri } from './gitContentProvider.js';
 import type { HistoryTreeNode } from './myCodeTree.js';
@@ -21,13 +21,13 @@ interface HistoryRepository {
   mapWorkingLineToHead?(path: string, line: number): Promise<number | undefined>;
   getLineHistory(path: string, line: number): Promise<CommitSummary[]>;
   getWorkingChanges(): Promise<WorkingChange[]>;
-  getUserIndex?(identity: GitIdentity): Promise<UserIndex>;
   getDiffStats?(
     baseRevision: string,
     targetRevision: string | undefined,
     paths: readonly string[]
   ): Promise<LineChangeStats>;
   getCommitDiffStats?(
+    head: string,
     commitHashes: readonly string[],
     paths: readonly string[]
   ): Promise<ReadonlyMap<string, LineChangeStats>>;
@@ -269,13 +269,6 @@ export class HistoryController {
     const currentOwnedLines = sourceRecord?.ranges.reduce(
       (total, range) => total + Math.max(0, range.endExclusive - range.start), 0
     ) ?? 0;
-    if (zeroBasedLine === undefined && repository.getCommitDiffStats !== undefined && commits.length > 0) {
-      const statsByHash = await repository.getCommitDiffStats(
-        commits.map(({ commit }) => commit.hash), selectedPaths
-      );
-      if (cancelled()) return undefined;
-      commits = commits.map((entry) => ({ ...entry, stats: statsByHash.get(entry.commit.hash) }));
-    }
     return {
       root: target.root,
       head: target.head,
@@ -294,6 +287,30 @@ export class HistoryController {
     };
   }
 
+  public async getTimelineCommitStats(
+    model: HistoryTimelineModel
+  ): Promise<ReadonlyMap<string, LineChangeStats>> {
+    const result = new Map<string, LineChangeStats>();
+    const paths = model.selectedPaths;
+    if (paths === undefined || paths.length === 0) return result;
+    const commits = model.entries.filter((entry): entry is CommitTimelineEntry => entry.kind === 'commit');
+    if (commits.length === 0) return result;
+    const entry = this.registry.repositories.find(({ root }) => sameRoot(root, model.root));
+    if (entry === undefined) return result;
+    const repository = historyRepository(entry);
+    if (repository.getCommitDiffStats === undefined) return result;
+    const byHash = await repository.getCommitDiffStats(
+      model.head,
+      commits.map(({ commit }) => commit.hash),
+      paths
+    );
+    for (const commit of commits) {
+      const stats = byHash.get(commit.commit.hash);
+      if (stats !== undefined) result.set(commit.id, stats);
+    }
+    return result;
+  }
+
   public async getSelectionTimeline(
     inputs: readonly unknown[],
     cancellation?: Pick<vscode.CancellationToken, 'isCancellationRequested'>
@@ -307,8 +324,6 @@ export class HistoryController {
     const root = targets[0]?.root;
     if (root === undefined || targets.some((target) => !sameRoot(target.root, root))) return undefined;
     const first = targets[0] as ResolvedTarget;
-    const repository = historyRepository(first.entry);
-    if (repository.getUserIndex === undefined || repository.getDiffStats === undefined) return undefined;
     if (targets.length === 1) {
       return this.getTimeline(join(root, targets[0]?.path as string), undefined, cancellation);
     }
@@ -319,32 +334,20 @@ export class HistoryController {
     const currentOwnedLines = selectedRecords.reduce((total, record) => total + record.ranges.reduce(
       (fileTotal, range) => fileTotal + Math.max(0, range.endExclusive - range.start), 0
     ), 0);
-    const [index, workingChanges] = await Promise.all([
-      repository.getUserIndex(first.identity),
-      repository.getWorkingChanges()
-    ]);
-    if (cancelled()) return undefined;
-    const selectedEntries = index.entries.flatMap((entry) => {
-      const changes = entry.changes.filter(({ path }) => selectedSet.has(path));
-      return changes.length === 0 || !matchesIdentity(
-        first.identity, entry.commit.authorName, entry.commit.authorEmail
-      ) ? [] : [{ commit: entry.commit, changes }];
-    }).sort((left, right) => right.commit.authoredAt - left.commit.authoredAt);
+    const commitPaths = new Map<string, { readonly commit: CommitSummary; readonly path: string }>();
     const aliases = new Set(selectedPaths);
-    for (const { changes } of selectedEntries) {
-      for (const change of changes) {
-        if (change.originalPath !== undefined) aliases.add(change.originalPath);
+    for (const record of selectedRecords) {
+      for (const alias of record.aliases ?? [record.relativePath]) aliases.add(alias);
+      for (const commit of record.history) {
+        if (!commitPaths.has(commit.hash)) {
+          commitPaths.set(commit.hash, { commit, path: record.relativePath });
+        }
       }
     }
+    const selectedEntries = [...commitPaths.values()]
+      .sort((left, right) => right.commit.authoredAt - left.commit.authoredAt);
     const allPaths = [...aliases].sort();
-    const statsByHash = repository.getCommitDiffStats === undefined
-      ? new Map((await mapConcurrent(selectedEntries, 4, async ({ commit }) => [
-          commit.hash,
-          await repository.getDiffStats?.(`${commit.hash}^`, commit.hash, allPaths)
-        ] as const)).filter((entry): entry is readonly [string, LineChangeStats] => entry[1] !== undefined))
-      : await repository.getCommitDiffStats(selectedEntries.map(({ commit }) => commit.hash), allPaths);
-    if (cancelled()) return undefined;
-    const commits = selectedEntries.map(({ commit, changes }, index) => ({
+    const commits = selectedEntries.map(({ commit, path }, index) => ({
       id: `commit:${commit.hash}`,
       kind: 'commit' as const,
       title: commit.subject,
@@ -352,8 +355,7 @@ export class HistoryController {
       authoredAt: commit.authoredAt,
       latest: index === 0,
       commit,
-      path: changes[0]?.path ?? selectedPaths[0] as string,
-      stats: statsByHash.get(commit.hash)
+      path
     }));
     const oldest = commits.at(-1);
     const original: OriginalTimelineEntry[] = oldest === undefined ? [] : [{
@@ -365,9 +367,10 @@ export class HistoryController {
       path: selectedPaths[0] as string,
       exists: true
     }];
-    const selectedWorking = workingChanges.filter(({ path, originalPath }) =>
-      selectedSet.has(path) || (originalPath !== undefined && selectedSet.has(originalPath)));
-    const untrackedPaths = new Set(selectedWorking.filter(({ status }) => status === '?').map(({ path }) => path));
+    const selectedWorking = selectedRecords.filter(({ working }) => working);
+    const untrackedPaths = new Set(selectedRecords
+      .filter(({ untracked }) => untracked === true)
+      .map(({ relativePath }) => relativePath));
     const untrackedOwnedLines = selectedRecords
       .filter(({ relativePath }) => untrackedPaths.has(relativePath))
       .reduce((total, record) => total + record.ranges.reduce(
@@ -845,22 +848,4 @@ function sameRoot(left: string, right: string): boolean {
   return process.platform === 'win32'
     ? left.toLocaleLowerCase() === right.toLocaleLowerCase()
     : left === right;
-}
-
-async function mapConcurrent<T, R>(
-  values: readonly T[],
-  limit: number,
-  operation: (value: T, index: number) => Promise<R>
-): Promise<R[]> {
-  const results = new Array<R>(values.length);
-  let next = 0;
-  const worker = async (): Promise<void> => {
-    while (next < values.length) {
-      const index = next;
-      next += 1;
-      results[index] = await operation(values[index] as T, index);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, values.length) }, worker));
-  return results;
 }

@@ -35,9 +35,11 @@ export interface LineChangeStats {
 
 export interface FileRecord {
   readonly relativePath: string;
+  readonly aliases?: readonly string[];
   readonly kind: FileKind;
   readonly exists: boolean;
   readonly working: boolean;
+  readonly untracked?: boolean;
   readonly binary: boolean;
   readonly ranges: readonly OwnedRange[];
   readonly history: readonly CommitSummary[];

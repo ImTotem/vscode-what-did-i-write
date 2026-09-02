@@ -148,11 +148,14 @@ describe('RepositoryAnalyzer', () => {
     const index = await repository.getUserIndex(fixture.globalIdentity);
 
     expect(index.commits.map(({ subject }) => subject)).toEqual(['author writes file']);
-    expect(index.entries[0]?.changes).toEqual([{ status: 'A', path: renamedPath }]);
+    expect(index.entries[0]?.changes).toEqual([{
+      status: 'A', path: renamedPath, historicalPath: originalPath
+    }]);
 
+    const storagePath = await createTemporaryDirectory();
     const analyzer = new RepositoryAnalyzer(
       repository,
-      new CacheStore(await createTemporaryDirectory())
+      new CacheStore(storagePath)
     );
     await analyzer.initialize();
     const current = await analyzer.ensureFile(renamedPath, 'active-editor');
@@ -161,7 +164,8 @@ describe('RepositoryAnalyzer', () => {
     expect(current).toMatchObject({
       relativePath: renamedPath,
       kind: 'added',
-      exists: true
+      exists: true,
+      aliases: [originalPath, renamedPath]
     });
     expect(current?.ranges).toEqual([
       expect.objectContaining({
@@ -169,6 +173,13 @@ describe('RepositoryAnalyzer', () => {
         uncommitted: false
       })
     ]);
+    analyzer.dispose();
+
+    const cachedAnalyzer = new RepositoryAnalyzer(repository, new CacheStore(storagePath));
+    await cachedAnalyzer.initialize();
+    const cached = await cachedAnalyzer.ensureFile(renamedPath, 'active-editor');
+    expect(cached).toMatchObject({ aliases: [originalPath, renamedPath] });
+    cachedAnalyzer.dispose();
   });
 
   it('reuses the metadata index by normalized identity and invalidates only what changed', async () => {
@@ -800,7 +811,7 @@ describe('RepositoryAnalyzer', () => {
     const key: CacheIndexKey = {
       rootHash: hashRepositoryRoot(root),
       head: 'a'.repeat(40),
-      normalizedIdentity: '["me","me@example.com"]'
+      normalizedIdentity: '["history-aliases-v1","me","me@example.com"]'
     };
     const malformedHashCommits = [41, 63].map((length) => ({
       ...userCommit,
@@ -860,6 +871,31 @@ describe('RepositoryAnalyzer', () => {
       expect(repository.logScans).toBe(1);
       expect(analyzer.getFile('safe.ts')?.exists).toBe(true);
     }
+  });
+
+  it('invalidates indexes created before history aliases were cached', async () => {
+    const root = await createTemporaryDirectory();
+    const storagePath = await createTemporaryDirectory();
+    await writeFile(join(root, 'safe.ts'), 'safe\n');
+    const cacheStore = new CacheStore(storagePath);
+    await cacheStore.saveIndex({
+      rootHash: hashRepositoryRoot(root),
+      head: 'a'.repeat(40),
+      normalizedIdentity: '["me","me@example.com"]'
+    }, {
+      commits: [userCommit],
+      files: [{
+        relativePath: 'safe.ts', introducedByUser: false, commitHashes: [userCommit.hash]
+      }]
+    });
+    const repository = new StaticRepository(root, ['safe.ts']);
+    const analyzer = new RepositoryAnalyzer(repository, cacheStore);
+
+    await analyzer.initialize();
+    await analyzer.ensureFile('safe.ts', 'active-editor');
+
+    expect(repository.logScans).toBe(1);
+    analyzer.dispose();
   });
 
   it('accepts a literal backslash in a POSIX cache path without rewriting it', async () => {

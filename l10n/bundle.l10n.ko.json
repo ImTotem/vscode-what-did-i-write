@@ -133,7 +133,8 @@
   "Your commit": "내가 작성한 커밋",
   "Your uncommitted work": "커밋하지 않은 내 작업",
   "{operation} refresh": "{operation} 후 새로 고침",
-  "{count} files · {lines}L": "파일 {count}개 · {lines}줄",
+  "{count} files": "파일 {count}개",
+  "{lines}L": "{lines}줄",
   "{count} selected files": "선택한 파일 {count}개",
   "{path} has no commits by your Git identity.": "{path}에 현재 Git 사용자 정보로 작성한 커밋이 없습니다.",
   "Line {line} · Your code": "{line}번 줄 · 내가 작성한 코드"

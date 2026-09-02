@@ -23,7 +23,7 @@ Build and install the local package:
 ```powershell
 npm install
 npm run package
-code --install-extension .\what-did-i-write-0.2.0.vsix
+code --install-extension .\what-did-i-write-0.2.1.vsix
 ```
 
 Open a Git repository after installation. Non-Git folders are ignored. If Git or the global identity is missing, the extension shows an actionable warning and writes details to the **What Did I Write?** output channel.
@@ -48,7 +48,7 @@ The marker expands on hover, and clicking it opens VS Code's native inline diff.
 Use **FILE HISTORY** or the Line History and File History commands for commit history.
 Binary files can be listed but are never line-decorated.
 
-The history timeline keeps current working changes at the top, then lists commits from newest to oldest. A labeled vertical rail makes the direction visible without reading timestamps. Clicking an entry keeps the source file pinned and opens or updates one reusable preview diff beside it.
+The history timeline keeps current working changes at the top, then lists commits from newest to oldest. Commits render before background statistics, which are indexed once per HEAD and applied together with themed colors and thousands separators. Clicking an entry keeps the source file pinned and opens or updates one reusable preview diff beside it.
 
 ## Where features live
 

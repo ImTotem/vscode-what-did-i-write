@@ -6,6 +6,7 @@ export interface LogIndexEntry {
     readonly status: string;
     readonly path: string;
     readonly originalPath?: string;
+    readonly historicalPath?: string;
   }[];
 }
 

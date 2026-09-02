@@ -27,7 +27,7 @@ Staged, unstaged, and untracked files are treated as your current work.
 Build a local installable package with `npm run package`, then install it:
 
 ```powershell
-code --install-extension .\what-did-i-write-0.2.0.vsix
+code --install-extension .\what-did-i-write-0.2.1.vsix
 ```
 
 Open a Git repository after installation. Folders outside Git repositories are
@@ -52,7 +52,7 @@ in **MY CHANGES** and select a file to open it; selecting a past row focuses its
 history without making the deleted path mutable.
 
 The **MY CHANGES** list uses a collapsible Explorer-like folder hierarchy. Selecting files or folders combines their unique descendant files into one history.
-The **FILE HISTORY** view shows the selection's current authored-line count, per-commit line changes, and BASE-to-target totals while placing the newest commit at the top.
+The **FILE HISTORY** view shows the selection's current authored-line count, per-commit line changes, and BASE-to-target totals while placing the newest commit at the top. Commits render immediately from the analyzed index; themed, thousands-separated statistics arrive together from a HEAD-scoped path index.
 Its vertical rail points toward older matching commits, so the time direction is visible
 without reading every timestamp. Clicking a commit keeps the source pinned and updates
 one reusable preview diff beside it.

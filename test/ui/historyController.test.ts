@@ -179,11 +179,13 @@ describe('history timeline model', () => {
     const newest = commit('ddddddd44444444', 'Me', 'me@example.com', 1_700_000_300, 'Newest');
     const shared = commit('ccccccc33333333', 'Me', 'me@example.com', 1_700_000_200, 'Shared refactor');
     const oldest = commit('bbbbbbb22222222', 'Me', 'me@example.com', 1_700_000_100, 'Oldest');
-    const files: FileRecord[] = [
+    const files: Array<FileRecord & { readonly aliases: readonly string[] }> = [
       { relativePath: 'src/a.ts', kind: 'modified', exists: true, working: false, binary: false,
-        ranges: [{ start: 0, endExclusive: 3, uncommitted: false }], history: [newest, shared] },
+        ranges: [{ start: 0, endExclusive: 3, uncommitted: false }], history: [newest, shared],
+        aliases: ['src/a.ts', 'src/old-a.ts'] },
       { relativePath: 'src/b.ts', kind: 'modified', exists: true, working: false, binary: false,
-        ranges: [{ start: 4, endExclusive: 6, uncommitted: false }], history: [shared, oldest] }
+        ranges: [{ start: 4, endExclusive: 6, uncommitted: false }], history: [shared, oldest],
+        aliases: ['src/b.ts'] }
     ];
     const statsByTarget = new Map([
       [newest.hash, { added: 3, modified: 1, deleted: 0, paths: ['src/a.ts'] }],
@@ -195,14 +197,6 @@ describe('history timeline model', () => {
     const getCommitDiffStats = vi.fn(async () => statsByTarget);
     const repository = {
       getWorkingChanges: vi.fn(async () => []),
-      getUserIndex: vi.fn(async () => ({
-        commits: [newest, shared, oldest],
-        entries: [
-          { commit: newest, changes: [{ status: 'M', path: 'src/a.ts' }] },
-          { commit: shared, changes: [{ status: 'M', path: 'src/a.ts' }, { status: 'M', path: 'src/b.ts' }] },
-          { commit: oldest, changes: [{ status: 'A', path: 'src/b.ts' }] }
-        ]
-      })),
       getDiffStats,
       getCommitDiffStats
     };
@@ -224,15 +218,19 @@ describe('history timeline model', () => {
 
     expect(model).toMatchObject({
       mode: 'selection', fileCount: 2, currentOwnedLines: 5,
-      selectedPaths: ['src/a.ts', 'src/b.ts']
+      selectedPaths: ['src/a.ts', 'src/b.ts', 'src/old-a.ts']
     });
     expect(model?.entries.filter(({ kind }) => kind === 'commit')).toEqual([
-      expect.objectContaining({ id: `commit:${newest.hash}`, stats: statsByTarget.get(newest.hash) }),
-      expect.objectContaining({ id: `commit:${shared.hash}`, stats: statsByTarget.get(shared.hash) }),
-      expect.objectContaining({ id: `commit:${oldest.hash}`, stats: statsByTarget.get(oldest.hash) })
+      expect.objectContaining({ id: `commit:${newest.hash}` }),
+      expect.objectContaining({ id: `commit:${shared.hash}` }),
+      expect.objectContaining({ id: `commit:${oldest.hash}` })
     ]);
+    for (const entry of model?.entries.filter(({ kind }) => kind === 'commit') ?? []) {
+      expect(entry).not.toHaveProperty('stats');
+    }
     expect(model?.entries.at(-1)).toMatchObject({ kind: 'original', revision: `${oldest.hash}^` });
-    expect(getCommitDiffStats).toHaveBeenCalledTimes(1);
+    expect(repository.getWorkingChanges).not.toHaveBeenCalled();
+    expect(getCommitDiffStats).not.toHaveBeenCalled();
     expect(getDiffStats).not.toHaveBeenCalled();
   });
 
@@ -256,7 +254,8 @@ describe('history timeline model', () => {
     const model = await controller.getSelectionTimeline([{ kind: 'file', root: ROOT, file }]);
 
     expect(model).toMatchObject({ mode: 'file', fileCount: 1, currentOwnedLines: 3 });
-    expect(model?.entries.find(({ kind }) => kind === 'commit')).toMatchObject({ stats });
+    expect(model?.entries.find(({ kind }) => kind === 'commit')).not.toHaveProperty('stats');
+    expect(repository.getCommitDiffStats).not.toHaveBeenCalled();
   });
 
   it('puts working changes first and matching name-or-email commits newest first', async () => {
@@ -300,9 +299,21 @@ describe('history timeline model', () => {
     ]);
     expect(model?.entries[1]).toMatchObject({ kind: 'commit', latest: true, path: 'src/new name.ts' });
     expect(model?.entries[2]).toMatchObject({ kind: 'commit', latest: false, parentPath: 'src/older name.ts' });
-    expect(model?.entries[1]).toMatchObject({
-      stats: { added: 2, modified: 1, deleted: 0, paths: ['src/new name.ts'] }
+    expect(model?.entries[1]).not.toHaveProperty('stats');
+    expect(repository.getCommitDiffStats).not.toHaveBeenCalled();
+    const getTimelineCommitStats = (controller as unknown as {
+      getTimelineCommitStats?: (timeline: unknown) => Promise<ReadonlyMap<string, unknown>>;
+    }).getTimelineCommitStats;
+    expect(getTimelineCommitStats).toBeTypeOf('function');
+    const commitStats = await getTimelineCommitStats?.call(controller, model);
+    expect(commitStats?.get(`commit:${newestByName.hash}:src%2Fnew%20name.ts`)).toEqual({
+      added: 2, modified: 1, deleted: 0, paths: ['src/new name.ts']
     });
+    expect(repository.getCommitDiffStats).toHaveBeenCalledWith(
+      'f'.repeat(40),
+      [newestByName.hash, mine.hash],
+      ['src/new name.ts', 'src/old name.ts', 'src/older name.ts']
+    );
     expect(model?.entries[3]).toMatchObject({
       kind: 'original',
       title: 'ORIGINAL',

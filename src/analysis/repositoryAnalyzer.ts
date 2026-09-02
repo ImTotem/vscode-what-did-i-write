@@ -41,6 +41,7 @@ export interface AnalyzerDisposable {
 
 interface Candidate {
   readonly relativePath: string;
+  readonly aliases: readonly string[];
   readonly introducedByUser: boolean;
   readonly touchedByUser: boolean;
   readonly history: readonly CommitSummary[];
@@ -56,6 +57,7 @@ interface Candidate {
 
 interface MutableCandidate {
   relativePath: string;
+  aliases: string[];
   introducedByUser: boolean;
   touchedByUser: boolean;
   history: CommitSummary[];
@@ -641,6 +643,8 @@ function buildCandidates(index: UserIndex, identity: GitIdentity): Map<string, M
     for (const change of entry.changes) {
       const relativePath = normalizeRelativePath(change.path);
       const candidate = candidates.get(relativePath) ?? newCandidate(relativePath);
+      if (change.historicalPath !== undefined) addAlias(candidate, normalizeRelativePath(change.historicalPath));
+      if (change.originalPath !== undefined) addAlias(candidate, normalizeRelativePath(change.originalPath));
       candidate.touchedByUser = true;
       candidate.introducedByUser ||= change.status.trim() === 'A';
       if (!candidate.history.some(({ hash }) => hash === entry.commit.hash)) {
@@ -657,6 +661,7 @@ function createCacheKey(root: string, head: string, identity: GitIdentity): Cach
     rootHash: hashRepositoryRoot(root),
     head,
     normalizedIdentity: JSON.stringify([
+      'history-aliases-v1',
       normalizeIdentityPart(identity.name),
       normalizeEmail(identity.email)
     ])
@@ -669,6 +674,7 @@ function indexForCache(candidates: ReadonlyMap<string, MutableCandidate>): Cache
     for (const commit of candidate.history) commits.set(commit.hash, commit);
     return {
       relativePath: candidate.relativePath,
+      aliases: [...candidate.aliases].sort(),
       introducedByUser: candidate.introducedByUser,
       commitHashes: candidate.history.map(({ hash }) => hash)
     };
@@ -682,6 +688,7 @@ function candidatesFromCache(index: CachedRepositoryIndex): Map<string, MutableC
     const candidate = newCandidate(normalizeRelativePath(file.relativePath));
     candidate.touchedByUser = true;
     candidate.introducedByUser = file.introducedByUser;
+    candidate.aliases = [...new Set(file.aliases ?? [candidate.relativePath])].sort();
     candidate.history = file.commitHashes.flatMap((hash) => {
       const commit = commits.get(hash);
       return commit === undefined ? [] : [commit];
@@ -695,6 +702,7 @@ function cloneCandidates(
 ): Map<string, MutableCandidate> {
   return new Map([...candidates].map(([path, candidate]) => [path, {
     relativePath: candidate.relativePath,
+    aliases: [...candidate.aliases],
     introducedByUser: candidate.introducedByUser,
     touchedByUser: candidate.touchedByUser,
     history: [...candidate.history],
@@ -721,6 +729,7 @@ function overlayWorkingChanges(
 
     if (change.originalPath !== undefined) {
       const originalPath = normalizeRelativePath(change.originalPath);
+      addAlias(candidate, originalPath);
       const original = candidates.get(originalPath) ?? newCandidate(originalPath);
       original.touchedByUser = true;
       original.working = true;
@@ -732,6 +741,7 @@ function overlayWorkingChanges(
 function newCandidate(relativePath: string): MutableCandidate {
   return {
     relativePath,
+    aliases: [relativePath],
     introducedByUser: false,
     touchedByUser: false,
     history: [],
@@ -753,13 +763,19 @@ function toFileRecord(candidate: Candidate): FileRecord | undefined {
   });
   return kind === undefined ? undefined : {
     relativePath: candidate.relativePath,
+    aliases: [...candidate.aliases].sort(),
     kind,
     exists: candidate.exists,
     working: candidate.working,
+    untracked: candidate.untracked,
     binary: candidate.binary,
     ranges: candidate.ranges,
     history: candidate.history
   };
+}
+
+function addAlias(candidate: MutableCandidate, alias: string): void {
+  if (!candidate.aliases.includes(alias)) candidate.aliases.push(alias);
 }
 
 function classify(input: {

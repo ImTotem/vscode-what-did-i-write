@@ -12,6 +12,7 @@ export interface CacheIndexKey {
 
 export interface CachedIndexFile {
   readonly relativePath: string;
+  readonly aliases?: readonly string[];
   readonly introducedByUser: boolean;
   readonly commitHashes: readonly string[];
 }
@@ -128,6 +129,12 @@ function isCachedIndexFile(value: unknown): value is CachedIndexFile {
     && typeof value.relativePath === 'string'
     && isSafeNormalizedRelativePath(value.relativePath)
     && typeof value.introducedByUser === 'boolean'
+    && (value.aliases === undefined || (
+      Array.isArray(value.aliases)
+      && value.aliases.length > 0
+      && new Set(value.aliases).size === value.aliases.length
+      && value.aliases.every((alias) => typeof alias === 'string' && isSafeNormalizedRelativePath(alias))
+    ))
     && Array.isArray(value.commitHashes)
     && value.commitHashes.every((hash) => typeof hash === 'string');
 }

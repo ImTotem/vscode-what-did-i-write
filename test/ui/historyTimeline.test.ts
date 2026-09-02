@@ -84,10 +84,46 @@ describe('renderTimelineHtml', () => {
     expect(guidance).toContain('class="comparison-summary"');
     expect(guidance).toContain('Right-click a commit to set BASE');
     expect(summary).toContain('class="comparison-summary"');
-    expect(summary).toContain('TOTAL +12 ~8 -3');
-    expect(summary).toContain('+3 ~1 -0');
+    expect(summary).toContain('TOTAL');
+    expect(summary).toContain('+12');
+    expect(summary).toContain('~8');
+    expect(summary).toContain('-3');
+    expect(summary).toContain('+3');
+    expect(summary).toContain('~1');
+    expect(summary).toContain('-0');
     expect(summary).toContain('title="Right-click again to clear BASE"');
     expect(summary).toContain('min-height: 18px');
+  });
+
+  it('formats and colors file, line, addition, modification, and deletion counts', () => {
+    const model = {
+      ...selectionTimelineModel(),
+      fileCount: 1234,
+      currentOwnedLines: 567890,
+      entries: selectionTimelineModel().entries.map((entry) => entry.kind === 'commit'
+        ? { ...entry, stats: { added: 1234, modified: 5678, deleted: 90, paths: ['src/a.ts'] } }
+        : entry)
+    };
+    const html = renderTimelineHtml({
+      kind: 'ready', model, baseId: 'commit:older',
+      summaryStats: { added: 1234, modified: 5678, deleted: 90, paths: ['src/a.ts'] }
+    }, 'n', 'vscode-resource:');
+
+    expect(html).toContain('1,234 files');
+    expect(html).toContain('567,890L');
+    expect(html).toContain('+1,234');
+    expect(html).toContain('~5,678');
+    expect(html).toContain('-90');
+    expect(html).toContain('class="selection-files"');
+    expect(html).toContain('class="selection-lines"');
+    expect(html).toContain('class="stats-added"');
+    expect(html).toContain('class="stats-modified"');
+    expect(html).toContain('class="stats-deleted"');
+    expect(html).toContain('--vscode-gitDecoration-addedResourceForeground');
+    expect(html).toContain('--vscode-gitDecoration-modifiedResourceForeground');
+    expect(html).toContain('--vscode-gitDecoration-deletedResourceForeground');
+    expect(html).toContain('--vscode-charts-blue');
+    expect(html).toContain('--vscode-charts-purple');
   });
 
   it('renders explicit loading, empty, and error states', () => {
@@ -119,6 +155,48 @@ describe('renderTimelineHtml', () => {
 });
 
 describe('HistoryTimelineViewProvider', () => {
+  it('renders commits before background statistics and applies every row in one message', async () => {
+    const model = {
+      ...selectionTimelineModel(),
+      entries: selectionTimelineModel().entries.map((entry) => entry.kind === 'commit'
+        ? (({ stats: _stats, ...commit }) => commit)(entry)
+        : entry)
+    };
+    const pending = deferred<ReadonlyMap<string, { added: number; modified: number; deleted: number; paths: string[] }>>();
+    const history = {
+      getTimeline: vi.fn(async () => timelineModel()),
+      getSelectionTimeline: vi.fn(async () => model),
+      getTimelineCommitStats: vi.fn(() => pending.promise),
+      openTimelineEntry: vi.fn(async () => undefined)
+    };
+    const provider = new HistoryTimelineViewProvider(history as never);
+    const view = fakeView();
+    provider.resolveWebviewView(view.value);
+
+    await provider.focusSelection([{ id: 'a' }, { id: 'b' }]);
+
+    expect(view.webview.html).toContain('Older change');
+    expect(history.getTimelineCommitStats).toHaveBeenCalledWith(model);
+    expect(view.webview.html).not.toContain('+1,234');
+    const htmlBeforeStats = view.webview.html;
+    pending.resolve(new Map([
+      ['commit:newest', { added: 1234, modified: 2, deleted: 3, paths: ['src/a.ts'] }],
+      ['commit:older', { added: 4, modified: 5, deleted: 6, paths: ['src/b.ts'] }]
+    ]));
+    await flush();
+    await flush();
+
+    expect(view.webview.html).toBe(htmlBeforeStats);
+    expect(view.webview.postMessage).toHaveBeenCalledWith({
+      type: 'setCommitStats',
+      items: [
+        { id: 'commit:newest', added: '1,234', modified: '2', deleted: '3' },
+        { id: 'commit:older', added: '4', modified: '5', deleted: '6' }
+      ]
+    });
+    provider.dispose();
+  });
+
   it('shows selection counts in the FILE HISTORY title and clears everything on deselection', async () => {
     const model = selectionTimelineModel();
     const history = {
@@ -138,7 +216,9 @@ describe('HistoryTimelineViewProvider', () => {
     expect(clear).toBeTypeOf('function');
     await focusSelection?.call(provider, [{ id: 'a' }, { id: 'b' }]);
     expect(history.getSelectionTimeline).toHaveBeenCalled();
-    expect(view.description).toBe('2 files · 5L');
+    expect(view.description).toBeUndefined();
+    expect(view.webview.html).toContain('2 files');
+    expect(view.webview.html).toContain('5L');
 
     clear?.call(provider);
     expect(view.description).toBeUndefined();
@@ -170,7 +250,7 @@ describe('HistoryTimelineViewProvider', () => {
     expect(history.getTimelineComparisonStats).toHaveBeenCalledWith(model, 'commit:older', undefined);
     expect(view.webview.html).toBe(htmlBeforeBase);
     expect(view.webview.postMessage).toHaveBeenCalledWith({
-      type: 'setSummary', text: 'TOTAL +12 ~8 -3'
+      type: 'setSummary', stats: { added: '12', modified: '8', deleted: '3' }
     });
     provider.dispose();
   });
@@ -239,7 +319,9 @@ describe('HistoryTimelineViewProvider', () => {
     const summaries = (view.webview.postMessage.mock.calls as unknown as Array<[unknown]>)
       .map(([message]) => message)
       .filter((message) => (message as { type?: unknown }).type === 'setSummary');
-    expect(summaries.at(-1)).toEqual({ type: 'setSummary', text: 'TOTAL +9 ~8 -7' });
+    expect(summaries.at(-1)).toEqual({
+      type: 'setSummary', stats: { added: '9', modified: '8', deleted: '7' }
+    });
     provider.dispose();
   });
 
@@ -278,7 +360,9 @@ describe('HistoryTimelineViewProvider', () => {
     const summaries = (view.webview.postMessage.mock.calls as unknown as Array<[unknown]>)
       .map(([message]) => message)
       .filter((message) => (message as { type?: unknown }).type === 'setSummary');
-    expect(summaries.at(-1)).toEqual({ type: 'setSummary', text: 'TOTAL +9 ~8 -7' });
+    expect(summaries.at(-1)).toEqual({
+      type: 'setSummary', stats: { added: '9', modified: '8', deleted: '7' }
+    });
     provider.dispose();
   });
 
